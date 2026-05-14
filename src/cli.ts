@@ -36,7 +36,7 @@ program
   .option(
     "-m, --model <model>",
     "model for the main agent: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m (or a raw claude-* id)",
-    "opus-4.7",
+    "sonnet-4.6",
   )
   .option("--no-attach", "do not auto-attach to the tmux session")
   .action(async (goalParts: string[], opts) => {

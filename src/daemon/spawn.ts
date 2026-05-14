@@ -25,6 +25,38 @@ export const MODEL_ALIASES: Record<string, string> = {
   opus: "claude-opus-4-7",
 };
 
+/** Default model per agent role. Workers do code edits and benefit from Opus
+ *  4.7 with the 1M-context variant; every other role (orchestration, review,
+ *  test validation) runs on Sonnet 4.6. Override per-spawn by setting
+ *  `spec.model` explicitly, or globally via the HARNESS_MODEL_<ROLE> env vars
+ *  (e.g. HARNESS_MODEL_WORKER=opus-4.7). */
+export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
+  main: "sonnet-4.6",
+  reviewer: "sonnet-4.6",
+  worker: "opus-4.7-1m",
+  tester: "sonnet-4.6",
+};
+
+export function defaultModelForRole(role: AgentRole): string {
+  const envKey = `HARNESS_MODEL_${role.toUpperCase()}`;
+  const override = process.env[envKey];
+  return resolveModel(override ?? DEFAULT_MODEL_BY_ROLE[role]);
+}
+
+/** Thinking-token budgets. Claude Code reads MAX_THINKING_TOKENS from the
+ *  environment. "medium" is our default; bump to "high" for heavier reasoning. */
+export const THINKING_BUDGETS: Record<string, number> = {
+  off: 0,
+  low: 4000,
+  medium: 10000,
+  high: 32000,
+};
+
+export function defaultThinkingTokens(): number {
+  const level = (process.env.HARNESS_THINKING ?? "medium").toLowerCase();
+  return THINKING_BUDGETS[level] ?? THINKING_BUDGETS.medium!;
+}
+
 /** Resolve a user-supplied --model value to a real Claude model id.
  *  Accepts either an alias from MODEL_ALIASES or a literal `claude-*` id. */
 export function resolveModel(input: string): string {
@@ -65,6 +97,7 @@ export function buildClaudeCommand(paths: HarnessPaths, agent_id: string, spec: 
   flags.push("--append-system-prompt", shellQuote(systemPrompt));
   const user = shellQuote(spec.prompt);
   // export agent id, then exec claude
+  const thinking = defaultThinkingTokens();
   return [
     `export HARNESS_AGENT_ID=${shellQuote(agent_id)}`,
     `export HARNESS_SOCKET=${shellQuote(paths.socket)}`,
@@ -72,6 +105,7 @@ export function buildClaudeCommand(paths: HarnessPaths, agent_id: string, spec: 
     // harness-start prompt gets pre-populated into the input box and re-submitted
     // after the current prompt begins processing.
     `export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`,
+    `export MAX_THINKING_TOKENS=${thinking}`,
     `exec claude ${flags.join(" ")} ${user}`,
   ].join(" && ");
 }

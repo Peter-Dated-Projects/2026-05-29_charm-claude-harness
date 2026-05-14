@@ -10,7 +10,7 @@ import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, type SpawnSpec } from "./spawn.ts";
 import {
   CreateTicketsInput,
   SpawnReviewersInput,
@@ -103,7 +103,8 @@ async function main() {
 
   function spawnAgent(spec: SpawnSpec): string {
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
-    const cmd = buildClaudeCommand(paths, agent.id, spec);
+    const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
+    const cmd = buildClaudeCommand(paths, agent.id, resolved);
     const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
     registry.attach(agent.id, { pane_id: pane });
     coord.upsert(registry.get(agent.id)!);
@@ -227,6 +228,23 @@ async function main() {
           try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
           const i = agentPaneIds.indexOf(a.pane_id);
           if (i >= 0) agentPaneIds.splice(i, 1);
+        }
+        registry.remove(agent_id);
+        coord.remove(agent_id);
+        relayout();
+        return { ok: true };
+      }
+      case "kill_agent": {
+        const { agent_id } = params as { agent_id: string };
+        const a = registry.get(agent_id);
+        if (!a) throw new Error(`unknown agent: ${agent_id}`);
+        if (a.pane_id) {
+          try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
+          const i = agentPaneIds.indexOf(a.pane_id);
+          if (i >= 0) agentPaneIds.splice(i, 1);
+        }
+        if (a.ticket_id && (a.state === "spawning" || a.state === "running")) {
+          try { store.update(a.ticket_id, { status: "failed", stage: "failed" }); } catch { /* ignore */ }
         }
         registry.remove(agent_id);
         coord.remove(agent_id);

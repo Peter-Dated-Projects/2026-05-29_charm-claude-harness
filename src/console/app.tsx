@@ -271,15 +271,18 @@ function ApprovalsTab({ status, inputActive }: { status: Status; inputActive: bo
 function AgentsTab({ status, inputActive }: { status: Status; inputActive: boolean }) {
   const [idx, setIdx] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
+  const [killArm, setKillArm] = useState<string | null>(null);
   const agents = status.agents;
   const selected = agents[Math.min(idx, agents.length - 1)];
   const canDismiss = selected && (selected.state === "done" || selected.state === "failed");
+  const canKill = selected && (selected.state === "spawning" || selected.state === "running");
 
   useInput(async (input, key) => {
     if (!agents.length) return;
-    if (key.upArrow || input === "k") setIdx((i) => Math.max(0, i - 1));
-    if (key.downArrow || input === "j") setIdx((i) => Math.min(agents.length - 1, i + 1));
+    if (key.upArrow || input === "k") { setIdx((i) => Math.max(0, i - 1)); setKillArm(null); return; }
+    if (key.downArrow || input === "j") { setIdx((i) => Math.min(agents.length - 1, i + 1)); setKillArm(null); return; }
     if (input === "d") {
+      setKillArm(null);
       if (!selected) return;
       if (!canDismiss) {
         setMessage(`cannot dismiss ${selected.id}: state is ${selected.state}`);
@@ -291,6 +294,24 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
         setIdx((i) => Math.max(0, Math.min(i, agents.length - 2)));
       } catch (e: any) { setMessage(e.message); }
     }
+    if (input === "x") {
+      if (!selected) return;
+      if (!canKill) {
+        setMessage(`cannot kill ${selected.id}: state is ${selected.state} (use [d] to dismiss)`);
+        return;
+      }
+      if (killArm !== selected.id) {
+        setKillArm(selected.id);
+        setMessage(`press x again to kill ${selected.id}`);
+        return;
+      }
+      try {
+        await rpcCall(PATHS.socket, "kill_agent", { agent_id: selected.id });
+        setMessage(`killed ${selected.id}`);
+        setKillArm(null);
+        setIdx((i) => Math.max(0, Math.min(i, agents.length - 2)));
+      } catch (e: any) { setMessage(e.message); setKillArm(null); }
+    }
   }, { isActive: inputActive });
 
   return (
@@ -301,7 +322,8 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
       ) : agents.map((a, i) => {
         const finished = a.state === "done" || a.state === "failed";
         const color = i === idx ? "cyan" : finished ? (a.state === "done" ? "green" : "red") : undefined;
-        const badge = finished ? " [d to dismiss]" : "";
+        const armed = killArm === a.id;
+        const badge = finished ? " [d to dismiss]" : armed ? " [x again to kill]" : "";
         return (
           <Text key={a.id} color={color} bold={i === idx} wrap="truncate-end">
             {i === idx ? "▶ " : "  "}{a.role} {a.id} — {a.state}
@@ -312,7 +334,7 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
         );
       })}
       <Box marginTop={1}>
-        <Text dimColor>↑/↓ navigate · [d]ismiss done/failed{message ? ` · ${message}` : ""}</Text>
+        <Text dimColor>↑/↓ navigate · [d]ismiss done/failed · [x]·[x] kill running{message ? ` · ${message}` : ""}</Text>
       </Box>
     </Box>
   );
@@ -339,7 +361,8 @@ function App() {
     if (input === "1") setTab("artifacts");
     if (input === "2") setTab("approvals");
     if (input === "3") setTab("agents");
-    if (key.tab) setTab((t) => (t === "artifacts" ? "approvals" : t === "approvals" ? "agents" : "artifacts"));
+    if (key.tab && key.shift) setTab((t) => (t === "artifacts" ? "agents" : t === "agents" ? "approvals" : "artifacts"));
+    else if (key.tab) setTab((t) => (t === "artifacts" ? "approvals" : t === "approvals" ? "agents" : "artifacts"));
   });
 
   // Auto-flip to Approvals when something is waiting
@@ -355,7 +378,7 @@ function App() {
         <Text inverse={tab === "approvals"} wrap="truncate-end"> 2·Approvals{pendingCount ? ` (${pendingCount})` : ""} </Text>
         <Text> </Text>
         <Text inverse={tab === "agents"} wrap="truncate-end"> 3·Agents{finishedCount ? ` (${finishedCount} done)` : ""} </Text>
-        <Text dimColor wrap="truncate-end">   ·  tab to switch · :q quit · :a detach</Text>
+        <Text dimColor wrap="truncate-end">   ·  tab/shift-tab to switch · :q quit · :a detach</Text>
       </Box>
       {tab === "artifacts"
         ? <ArtifactsTab status={status} inputActive={true} />
