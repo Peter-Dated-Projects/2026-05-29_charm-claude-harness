@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 import React, { useEffect, useState, useMemo } from "react";
-import { render, Box, Text, useInput, useApp } from "ink";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { render, Box, Text, useInput, useStdout } from "ink";
+import { renderMarkdown, MarkdownRow } from "./markdown.tsx";
+import { useMouseWheel } from "./mouse.ts";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import chokidar from "chokidar";
 import { Command } from "commander";
@@ -9,7 +11,7 @@ import { harnessPaths, type HarnessPaths } from "../paths.ts";
 import { rpcCall } from "../daemon/rpc.ts";
 import type { ApprovalGate, Agent, TicketFrontmatter } from "../schema.ts";
 
-type Tab = "artifacts" | "approvals";
+type Tab = "artifacts" | "approvals" | "agents";
 
 const program = new Command();
 program.option("-r, --root <path>", "project root", process.cwd()).parse(process.argv);
@@ -96,7 +98,7 @@ function defaultFile(stage: ReturnType<typeof inferStage>, files: string[], appr
   return files[0] ?? null;
 }
 
-function ArtifactsTab({ status }: { status: Status }) {
+function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: boolean }) {
   const files = useFileTree(PATHS);
   const stage = inferStage(status);
   const pendingTicket = status.pending_approvals.find((g) => g.stage === 2)?.ticket_id ?? null;
@@ -104,39 +106,122 @@ function ArtifactsTab({ status }: { status: Status }) {
   const [selected, setSelected] = useState<string | null>(null);
   const active = selected ?? auto;
   const content = useFileContent(active);
+  const { stdout } = useStdout();
+  // Re-render on terminal resize so viewer dimensions stay live.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = () => forceTick((n) => n + 1);
+    stdout.on("resize", onResize);
+    return () => { stdout.off("resize", onResize); };
+  }, [stdout]);
+
+  const cols = stdout?.columns ?? 100;
+  const termRows = stdout?.rows ?? 30;
+  // Chrome accounting (deterministic — Yoga's measureElement under flexGrow
+  // returns natural-content height not the grown height, so we compute directly).
+  const APP_CHROME = 2;           // tabs row + status row
+  const PANEL_BORDERS = 2;        // top + bottom border on each panel
+  const PANEL_PADX = 2;           // paddingX={1} on each side
+  const VIEWER_CHROME = PANEL_BORDERS + 2; // borders + title row + hint row
+  const FILES_WIDTH = 28;
+  const FILES_COLUMN_TOTAL = FILES_WIDTH + PANEL_BORDERS + PANEL_PADX;
+  const VIEWER_HSIDE = PANEL_BORDERS + PANEL_PADX;
+  const viewerHeight = Math.max(1, termRows - APP_CHROME - VIEWER_CHROME);
+  const viewerWidth = Math.max(8, cols - FILES_COLUMN_TOTAL - VIEWER_HSIDE);
+  const rowHeight = Math.max(3, termRows - APP_CHROME);
+
+  const rows = useMemo(() => renderMarkdown(content, viewerWidth), [content, viewerWidth]);
+  const [scroll, setScroll] = useState(0);
+  const maxScroll = Math.max(0, rows.length - viewerHeight);
+
+  // Clamp scroll when the file (and thus row count) changes
+  useEffect(() => { setScroll(0); }, [active]);
+  useEffect(() => { setScroll((s) => Math.min(s, maxScroll)); }, [maxScroll]);
+
+  // Mouse wheel — keep handler stable across renders by depending only on maxScroll.
+  const onWheel = React.useCallback(
+    (delta: number) => setScroll((s) => Math.max(0, Math.min(maxScroll, s + delta))),
+    [maxScroll],
+  );
+  useMouseWheel(onWheel);
 
   useInput((input, key) => {
-    if (!files.length) return;
-    const idx = active ? files.indexOf(active) : 0;
-    if (key.upArrow || input === "k") setSelected(files[Math.max(0, idx - 1)] ?? null);
-    if (key.downArrow || input === "j") setSelected(files[Math.min(files.length - 1, idx + 1)] ?? null);
-    if (input === "g") setSelected(null);
-  });
+    if (key.upArrow || input === "k") {
+      if (!files.length) return;
+      const idx = active ? files.indexOf(active) : 0;
+      setSelected(files[Math.max(0, idx - 1)] ?? null);
+    } else if (key.downArrow || input === "j") {
+      if (!files.length) return;
+      const idx = active ? files.indexOf(active) : 0;
+      setSelected(files[Math.min(files.length - 1, idx + 1)] ?? null);
+    } else if (input === "r") {
+      setSelected(null);
+    } else if (key.ctrl && input === "d") {
+      setScroll((s) => Math.min(maxScroll, s + Math.floor(viewerHeight / 2)));
+    } else if (key.ctrl && input === "u") {
+      setScroll((s) => Math.max(0, s - Math.floor(viewerHeight / 2)));
+    } else if (input === " " || key.pageDown) {
+      setScroll((s) => Math.min(maxScroll, s + viewerHeight));
+    } else if (input === "b" || key.pageUp) {
+      setScroll((s) => Math.max(0, s - viewerHeight));
+    } else if (input === "g") {
+      setScroll(0);
+    } else if (input === "G") {
+      setScroll(maxScroll);
+    }
+  }, { isActive: inputActive });
+
+  const slice = rows.slice(scroll, scroll + viewerHeight);
+  const pct = rows.length === 0 ? 100 : Math.min(100, Math.round(((scroll + viewerHeight) / rows.length) * 100));
+
+  // Files panel inner content rows = total panel height - borders - header row.
+  // (Viewer has title + hint chrome; Files has only the header row.)
+  const filesCapacity = Math.max(1, rowHeight - PANEL_BORDERS - 1);
+  const activeIdx = active ? files.indexOf(active) : -1;
+  const filesScroll = activeIdx < 0
+    ? 0
+    : Math.max(0, Math.min(files.length - filesCapacity, activeIdx - Math.floor(filesCapacity / 2)));
+  const visibleFiles = files.slice(filesScroll, filesScroll + filesCapacity);
 
   return (
-    <Box flexDirection="row" flexGrow={1}>
-      <Box flexDirection="column" width={28} borderStyle="single" paddingX={1}>
-        <Text bold>Files <Text dimColor>(stage: {stage})</Text></Text>
-        {files.length === 0 ? <Text dimColor>(none)</Text> : files.map((f) => {
+    <Box flexDirection="row" height={rowHeight} flexShrink={0} overflow="hidden">
+      <Box flexDirection="column" width={FILES_WIDTH} height={rowHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
+        <Text bold wrap="truncate-end">Files <Text dimColor>(stage: {stage})</Text></Text>
+        {files.length === 0 ? <Text dimColor wrap="truncate-end">(none)</Text> : visibleFiles.map((f) => {
           const rel = relative(ROOT, f);
           const isActive = f === active;
           const isAuto = f === auto && !selected;
           return (
-            <Text key={f} color={isActive ? "cyan" : undefined} bold={isActive}>
+            <Text key={f} color={isActive ? "cyan" : undefined} bold={isActive} wrap="truncate-end">
               {isActive ? "▶ " : "  "}{rel}{isAuto ? " ·" : ""}
             </Text>
           );
         })}
       </Box>
-      <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
-        <Text bold>{active ? relative(ROOT, active) : "(no file)"}</Text>
-        <Text>{truncate(content, 4000)}</Text>
+      <Box flexDirection="column" flexGrow={1} height={rowHeight} borderStyle="single" paddingX={1} overflow="hidden">
+        <Box flexShrink={0}>
+          <Text bold wrap="truncate-end">{active ? relative(ROOT, active) : "(no file)"}</Text>
+          <Text> </Text>
+          <Text dimColor wrap="truncate-end">
+            {rows.length === 0 ? "" : `[${scroll + 1}-${Math.min(rows.length, scroll + viewerHeight)}/${rows.length} · ${pct}%]`}
+          </Text>
+        </Box>
+        {slice.map((row, i) => <MarkdownRow key={scroll + i} row={row} />)}
+        {/* Pad with blank lines so the hint stays glued to the panel bottom even on short files. */}
+        {slice.length < viewerHeight &&
+          Array.from({ length: viewerHeight - slice.length }).map((_, i) => (
+            <Text key={`pad-${i}`}> </Text>
+          ))}
+        <Text dimColor wrap="truncate-end">
+          ↑/↓ files · wheel/space/b page · ^d/^u half · g/G top/bot · r reset
+        </Text>
       </Box>
     </Box>
   );
 }
 
-function ApprovalsTab({ status }: { status: Status }) {
+function ApprovalsTab({ status, inputActive }: { status: Status; inputActive: boolean }) {
   const [idx, setIdx] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const gates = status.pending_approvals;
@@ -160,7 +245,7 @@ function ApprovalsTab({ status }: { status: Status }) {
         setMessage(`rejected ${g.id}`);
       } catch (e: any) { setMessage(e.message); }
     }
-  });
+  }, { isActive: inputActive });
 
   return (
     <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
@@ -183,17 +268,78 @@ function ApprovalsTab({ status }: { status: Status }) {
   );
 }
 
+function AgentsTab({ status, inputActive }: { status: Status; inputActive: boolean }) {
+  const [idx, setIdx] = useState(0);
+  const [message, setMessage] = useState<string | null>(null);
+  const agents = status.agents;
+  const selected = agents[Math.min(idx, agents.length - 1)];
+  const canDismiss = selected && (selected.state === "done" || selected.state === "failed");
+
+  useInput(async (input, key) => {
+    if (!agents.length) return;
+    if (key.upArrow || input === "k") setIdx((i) => Math.max(0, i - 1));
+    if (key.downArrow || input === "j") setIdx((i) => Math.min(agents.length - 1, i + 1));
+    if (input === "d") {
+      if (!selected) return;
+      if (!canDismiss) {
+        setMessage(`cannot dismiss ${selected.id}: state is ${selected.state}`);
+        return;
+      }
+      try {
+        await rpcCall(PATHS.socket, "dismiss_agent", { agent_id: selected.id });
+        setMessage(`dismissed ${selected.id}`);
+        setIdx((i) => Math.max(0, Math.min(i, agents.length - 2)));
+      } catch (e: any) { setMessage(e.message); }
+    }
+  }, { isActive: inputActive });
+
+  return (
+    <Box flexDirection="column" flexGrow={1} borderStyle="single" paddingX={1}>
+      <Text bold>Agents ({agents.length})</Text>
+      {agents.length === 0 ? (
+        <Text dimColor>no agents running</Text>
+      ) : agents.map((a, i) => {
+        const finished = a.state === "done" || a.state === "failed";
+        const color = i === idx ? "cyan" : finished ? (a.state === "done" ? "green" : "red") : undefined;
+        const badge = finished ? " [d to dismiss]" : "";
+        return (
+          <Text key={a.id} color={color} bold={i === idx} wrap="truncate-end">
+            {i === idx ? "▶ " : "  "}{a.role} {a.id} — {a.state}
+            {a.ticket_id ? ` · ${a.ticket_id}` : ""}
+            {a.pane_id ? ` · ${a.pane_id}` : ""}
+            {badge}
+          </Text>
+        );
+      })}
+      <Box marginTop={1}>
+        <Text dimColor>↑/↓ navigate · [d]ismiss done/failed{message ? ` · ${message}` : ""}</Text>
+      </Box>
+    </Box>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("artifacts");
   const status = useStatus();
-  const { exit } = useApp();
   const pendingCount = status.pending_approvals.length;
+  const finishedCount = status.agents.filter((a) => a.state === "done" || a.state === "failed").length;
+  const { stdout } = useStdout();
+  // Track terminal height live so the App box clips to the *current* pane size,
+  // not the size captured at mount. Without this, a tmux resize leaves a stale
+  // height and content overflows above the viewport when scrolling.
+  const [termRows, setTermRows] = useState<number>(stdout?.rows ?? 30);
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = () => setTermRows(stdout.rows ?? 30);
+    stdout.on("resize", onResize);
+    return () => { stdout.off("resize", onResize); };
+  }, [stdout]);
 
   useInput((input, key) => {
     if (input === "1") setTab("artifacts");
     if (input === "2") setTab("approvals");
-    if (key.tab) setTab((t) => (t === "artifacts" ? "approvals" : "artifacts"));
-    if (input === "q") exit();
+    if (input === "3") setTab("agents");
+    if (key.tab) setTab((t) => (t === "artifacts" ? "approvals" : t === "approvals" ? "agents" : "artifacts"));
   });
 
   // Auto-flip to Approvals when something is waiting
@@ -202,26 +348,27 @@ function App() {
   }, [pendingCount]);
 
   return (
-    <Box flexDirection="column" height={process.stdout.rows ?? 30}>
-      <Box>
-        <Text inverse={tab === "artifacts"}> 1·Artifacts </Text>
+    <Box flexDirection="column" height={termRows} overflow="hidden">
+      <Box flexShrink={0}>
+        <Text inverse={tab === "artifacts"} wrap="truncate-end"> 1·Artifacts </Text>
         <Text> </Text>
-        <Text inverse={tab === "approvals"}> 2·Approvals{pendingCount ? ` (${pendingCount})` : ""} </Text>
-        <Text dimColor>   ·  tab to switch · q to quit</Text>
+        <Text inverse={tab === "approvals"} wrap="truncate-end"> 2·Approvals{pendingCount ? ` (${pendingCount})` : ""} </Text>
+        <Text> </Text>
+        <Text inverse={tab === "agents"} wrap="truncate-end"> 3·Agents{finishedCount ? ` (${finishedCount} done)` : ""} </Text>
+        <Text dimColor wrap="truncate-end">   ·  tab to switch · :q quit · :a detach</Text>
       </Box>
-      {tab === "artifacts" ? <ArtifactsTab status={status} /> : <ApprovalsTab status={status} />}
-      <Box>
-        <Text dimColor>
+      {tab === "artifacts"
+        ? <ArtifactsTab status={status} inputActive={true} />
+        : tab === "approvals"
+        ? <ApprovalsTab status={status} inputActive={true} />
+        : <AgentsTab status={status} inputActive={true} />}
+      <Box flexShrink={0}>
+        <Text dimColor wrap="truncate-end">
           agents: {status.agents.length} · tickets: {status.tickets.length} · {ROOT}
         </Text>
       </Box>
     </Box>
   );
-}
-
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n) + `\n\n…(${s.length - n} more chars)`;
 }
 
 render(<App />);

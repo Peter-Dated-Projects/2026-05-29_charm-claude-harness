@@ -103,8 +103,8 @@ async function main() {
           ids.push(spawnAgent({
             role: "reviewer",
             ticket_id: tid,
-            prompt: `Review and enrich tickets/${tid}.md in place.`,
-            interactive: false,
+            prompt: `Review and enrich .charm/tickets/${tid}.md in place.`,
+            interactive: true,
           }));
         }
         return { agent_ids: ids };
@@ -125,7 +125,7 @@ async function main() {
           ids.push(spawnAgent({
             role: "worker",
             ticket_id: tid,
-            prompt: `Implement ticket T-${tid.slice(2)}. First read tickets/${tid}.md and COORDINATION.md, then call update_plan() with your plan, then implement.`,
+            prompt: `Implement ticket T-${tid.slice(2)}. First read .charm/tickets/${tid}.md and .charm/COORDINATION.md, then call update_plan() with your plan, then implement.`,
             interactive: true,
           }));
           store.update(tid, { status: "running", stage: "in_progress" });
@@ -162,13 +162,37 @@ async function main() {
         }
         return { ok: true };
       }
+      case "dismiss_agent": {
+        const { agent_id } = params as { agent_id: string };
+        const a = registry.get(agent_id);
+        if (!a) throw new Error(`unknown agent: ${agent_id}`);
+        if (a.state !== "done" && a.state !== "failed") {
+          throw new Error(`agent ${agent_id} is ${a.state}; only done/failed can be dismissed`);
+        }
+        if (a.pane_id) {
+          try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
+        }
+        registry.remove(agent_id);
+        coord.remove(agent_id);
+        return { ok: true };
+      }
+      case "shutdown": {
+        // Kill the tmux session first so panes (console, agents) tear down
+        // before the daemon disappears. Schedule cleanup on next tick so the
+        // RPC reply gets flushed.
+        setTimeout(() => {
+          try { tmux.killSession(); } catch { /* ignore */ }
+          cleanup();
+        }, 50);
+        return { ok: true };
+      }
       case "request_review": {
         const input = RequestReviewInput.parse(params);
         const id = spawnAgent({
           role: "tester",
           ticket_id: input.ticket_id,
-          prompt: `Validate ticket ${input.ticket_id}: read tickets/${input.ticket_id}.md acceptance criteria, run tests, produce a checklist result. No code edits.`,
-          interactive: false,
+          prompt: `Validate ticket ${input.ticket_id}: read .charm/tickets/${input.ticket_id}.md acceptance criteria, run tests, produce a checklist result. No code edits.`,
+          interactive: true,
         });
         return { agent_id: id };
       }
