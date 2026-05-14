@@ -8,22 +8,70 @@ export type SpawnSpec = {
   ticket_id: string | null;
   prompt: string;
   interactive: boolean;
+  /** Resolved Claude Code model id (e.g. "claude-opus-4-7", "claude-sonnet-4-6[1m]").
+   *  When set, passed via `--model` and surfaced to the agent in its system prompt
+   *  so it knows which model it is running as. */
+  model?: string;
 };
+
+/** User-facing aliases resolved to Claude Code model ids. */
+export const MODEL_ALIASES: Record<string, string> = {
+  "sonnet-4.6": "claude-sonnet-4-6",
+  "sonnet-4.6-1m": "claude-sonnet-4-6[1m]",
+  "opus-4.6": "claude-opus-4-6",
+  "opus-4.7": "claude-opus-4-7",
+  "opus-4.7-1m": "claude-opus-4-7[1m]",
+  sonnet: "claude-sonnet-4-6",
+  opus: "claude-opus-4-7",
+};
+
+/** Resolve a user-supplied --model value to a real Claude model id.
+ *  Accepts either an alias from MODEL_ALIASES or a literal `claude-*` id. */
+export function resolveModel(input: string): string {
+  const v = input.trim();
+  if (MODEL_ALIASES[v]) return MODEL_ALIASES[v]!;
+  if (v.startsWith("claude-")) return v;
+  const choices = Object.keys(MODEL_ALIASES).join(", ");
+  throw new Error(`unknown --model "${input}". Use one of: ${choices} (or a raw claude-* id)`);
+}
 
 /** Build the shell command that the tmux pane will run.
  *  HARNESS_AGENT_ID is exported so the MCP shim can identify the agent. */
 export function buildClaudeCommand(paths: HarnessPaths, agent_id: string, spec: SpawnSpec): string {
   const promptFile = join(paths.promptsDir, `${spec.role}.md`);
-  const systemPrompt = existsSync(promptFile) ? readFileSync(promptFile, "utf8") : `You are a ${spec.role}.`;
+  const rolePrompt = existsSync(promptFile) ? readFileSync(promptFile, "utf8") : `You are a ${spec.role}.`;
+  // The harness renders agent-produced markdown (PROJECT.md, COORDINATION.md,
+  // tickets/*.md) inside an Ink TUI. Terminal emoji rendering inflates row
+  // height inconsistently across fonts/terminals, which breaks the layout —
+  // so forbid emojis in every artifact agents write.
+  const HARNESS_RULES = [
+    "",
+    "## Harness output rules (override any contrary instruction)",
+    "- Do NOT use emoji or pictographic characters anywhere in your output, in tool arguments, or in files you write (PROJECT.md, COORDINATION.md, tickets/*.md, code comments, commit messages — anywhere). This includes ✅ ❌ ⚠️ 🚀 ⭐ 📝 etc. Use ASCII instead: [x], [ ], (!), ->, *, etc.",
+    "- Do NOT use box-drawing or other wide Unicode decoration in markdown output. ASCII only for status indicators, bullets, and dividers.",
+  ].join("\n");
+  const modelLine = spec.model
+    ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
+    : "";
+  const systemPrompt = rolePrompt + HARNESS_RULES + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
-  flags.push("--append-system-prompt", shellQuote(systemPrompt));
+  if (spec.model) flags.push("--model", shellQuote(spec.model));
+  // `--mcp-config` is variadic (`<configs...>`) — commander slurps every
+  // following positional until the next flag. Put it FIRST so the next flag
+  // (`--append-system-prompt`) terminates the list, otherwise the user prompt
+  // gets eaten as a phantom MCP config path.
   flags.push("--mcp-config", shellQuote(paths.mcpConfig));
+  flags.push("--append-system-prompt", shellQuote(systemPrompt));
   const user = shellQuote(spec.prompt);
   // export agent id, then exec claude
   return [
     `export HARNESS_AGENT_ID=${shellQuote(agent_id)}`,
     `export HARNESS_SOCKET=${shellQuote(paths.socket)}`,
+    // Disable Claude Code's per-project prompt history — otherwise the previous
+    // harness-start prompt gets pre-populated into the input box and re-submitted
+    // after the current prompt begins processing.
+    `export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`,
     `exec claude ${flags.join(" ")} ${user}`,
   ].join(" && ");
 }

@@ -117,6 +117,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "set_session_description",
+  {
+    description:
+      "Main-agent: set or update a one-sentence (≤80 char) human-readable description of this session, " +
+      "shown by `harness list`. Call this once near the end of Stage 0 (after PROJECT.md firms up) " +
+      "and again any time you realize the framing has materially changed (e.g. scope pivot).",
+    inputSchema: { description: z.string().min(1).max(80) },
+  },
+  async (args) => ok(await call("set_session_description", args)),
+);
+
+server.registerTool(
   "request_review",
   {
     description: "Worker-only: spawn a tester agent on a finished ticket.",

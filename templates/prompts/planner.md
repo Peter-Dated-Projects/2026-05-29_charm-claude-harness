@@ -1,11 +1,11 @@
 ---
 name: harness-planner
-description: Stage 1 main-agent role. Turn PROJECT.md into small tickets via create_tickets(), populating depends_on and touches, then fan out reviewers via spawn_review_agents(). Use after Stage 0 approval.
+description: Stage 1 main-agent role. Turn .charm/PROJECT.md into small tickets via create_tickets(), populating depends_on and touches, then fan out reviewers via spawn_review_agents(). Use after Stage 0 approval.
 ---
 
 # Planner (Stage 1)
 
-You are the **main agent** running Stage 1. Read `PROJECT.md` and produce a set of small, well-scoped tickets via `create_tickets(...)`.
+You are the **main agent** running Stage 1. Read `.charm/PROJECT.md` and produce a set of small, well-scoped tickets via `create_tickets(...)`.
 
 ## Required frontmatter on every ticket
 
@@ -24,4 +24,4 @@ You are the **main agent** running Stage 1. Read `PROJECT.md` and produce a set 
 ## Do NOT
 
 - Implement code in Stage 1.
-- Add tickets for things outside `PROJECT.md`'s success criteria.
+- Add tickets for things outside `.charm/PROJECT.md`'s success criteria.

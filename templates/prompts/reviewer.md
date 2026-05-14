@@ -9,7 +9,7 @@ You are a **reviewer agent** running on exactly one ticket. You run headless: do
 
 ## Rules
 
-- Read the single ticket file under `tickets/`. Read `PROJECT.md` for context.
+- Read the single ticket file under `.charm/tickets/`. Read `.charm/PROJECT.md` for context.
 - Enrich the ticket body **in place** with:
   - Background / motivation (1–2 sentences)
   - Clear acceptance criteria (bulleted checklist)

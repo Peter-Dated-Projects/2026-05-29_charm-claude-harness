@@ -11,6 +11,11 @@ export class Tmux {
   newSession(window: string, cwd: string): void {
     const r = spawnSync("tmux", ["new-session", "-d", "-s", this.session, "-n", window, "-c", cwd], { stdio: "inherit" });
     if (r.status !== 0) throw new Error(`tmux new-session failed (${r.status})`);
+    // Keep dead panes visible so a crashing claude leaves its error on screen
+    // instead of silently collapsing the layout.
+    spawnSync("tmux", ["set-option", "-t", this.session, "remain-on-exit", "on"]);
+    // Mouse: click to focus a pane, scroll inside it.
+    spawnSync("tmux", ["set-option", "-t", this.session, "mouse", "on"]);
   }
 
   hasSession(): boolean {
@@ -20,6 +25,20 @@ export class Tmux {
 
   killSession(): void {
     spawnSync("tmux", ["kill-session", "-t", this.session]);
+  }
+
+  /**
+   * Bind `:` (no prefix) at the session level so any pane — console or agent —
+   * pops a tmux command-prompt that runs `cmdTemplate` with the typed text
+   * substituted for `%%%`. The substitution happens via tmux's own `%1` token.
+   */
+  bindCommandPrompt(cmdTemplate: string): void {
+    // `command-prompt -p ":" "run-shell '<cmd with %1>'"`
+    const inner = `run-shell '${cmdTemplate.replace(/'/g, `'\\''`)}'`;
+    spawnSync("tmux", [
+      "bind-key", "-T", "root", ":",
+      "command-prompt", "-p", ":", inner,
+    ]);
   }
 
   /** Split current window and start a command. Returns the new pane id (e.g. "%17"). */
@@ -79,5 +98,36 @@ export class Tmux {
 
   attach(): void {
     spawn("tmux", ["attach-session", "-t", this.session], { stdio: "inherit" });
+  }
+
+  /** Window dimensions in cells. */
+  windowSize(window: string): { w: number; h: number } {
+    const r = spawnSync(
+      "tmux",
+      ["display-message", "-p", "-t", `${this.session}:${window}`, "#{window_width}x#{window_height}"],
+      { encoding: "utf8" },
+    );
+    if (r.status !== 0) throw new Error(`tmux display-message failed: ${r.stderr}`);
+    const m = r.stdout.trim().match(/^(\d+)x(\d+)$/);
+    if (!m) throw new Error(`bad window size: ${r.stdout}`);
+    return { w: Number(m[1]), h: Number(m[2]) };
+  }
+
+  /** Look up the current pane_index for a stable pane_id. Returns null if the pane no longer exists. */
+  paneIndex(paneId: string): number | null {
+    const r = spawnSync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_index}"], { encoding: "utf8" });
+    if (r.status !== 0) return null;
+    const n = Number(r.stdout.trim());
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** Apply a tmux custom layout string (incl. checksum prefix) to the named window. */
+  applyLayout(window: string, layout: string): void {
+    const r = spawnSync(
+      "tmux",
+      ["select-layout", "-t", `${this.session}:${window}`, layout],
+      { encoding: "utf8" },
+    );
+    if (r.status !== 0) throw new Error(`tmux select-layout failed: ${r.stderr}`);
   }
 }

@@ -113,3 +113,19 @@ export const RequestReviewInput = z.object({
   ticket_id: z.string(),
 });
 export type RequestReviewInput = z.infer<typeof RequestReviewInput>;
+
+// One-sentence human-readable summary of this session, shown by `harness list`.
+// 80-char cap is enforced here (not just in the prompt) so a chatty agent
+// can't blow up the listing layout.
+export const SetSessionDescriptionInput = z.object({
+  description: z.string().min(1).max(80),
+});
+export type SetSessionDescriptionInput = z.infer<typeof SetSessionDescriptionInput>;
+
+export const SessionMeta = z.object({
+  description: z.string(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  source: z.enum(["agent", "fallback"]).default("agent"),
+});
+export type SessionMeta = z.infer<typeof SessionMeta>;
