@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
 import { Command } from "commander";
 import { harnessPaths } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
@@ -7,6 +7,7 @@ import { AgentRegistry } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
 import { Solver, type InFlight } from "./solver.ts";
 import { Tmux } from "./tmux.ts";
+import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
 import { buildClaudeCommand, type SpawnSpec } from "./spawn.ts";
@@ -18,6 +19,8 @@ import {
   UpdatePlanInput,
   ReportStatusInput,
   RequestReviewInput,
+  SetSessionDescriptionInput,
+  SessionMeta,
 } from "../schema.ts";
 
 type DaemonOpts = { root: string; session: string };
@@ -63,12 +66,49 @@ async function main() {
         return { ticket_id: a.ticket_id!, touches: t?.frontmatter.touches ?? [] };
       });
 
+  // Pane layout state. consolePaneId is the Ink TUI pane (pinned left column);
+  // agentPaneIds is every Claude pane in spawn order, starting with the "main"
+  // agent pane registered by `cli.ts start` before any sub-agents.
+  let consolePaneId: string | null = null;
+  const agentPaneIds: string[] = [];
+  const WINDOW = "harness";
+
+  function relayout() {
+    if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
+    try {
+      const win = tmux.windowSize(WINDOW);
+      const cIdx = tmux.paneIndex(consolePaneId);
+      if (cIdx === null) return;
+      const agentIdxs: number[] = [];
+      for (const pid of agentPaneIds) {
+        const idx = tmux.paneIndex(pid);
+        if (idx !== null) agentIdxs.push(idx);
+      }
+      if (agentIdxs.length === 0) return;
+      // Console keeps the same 35% share it had under the old fixed split,
+      // floored at 40 cols so the Ink TUI stays readable on small terminals.
+      const consoleWidth = Math.max(40, Math.floor(win.w * 0.35));
+      const layout = buildLayoutString({
+        windowWidth: win.w,
+        windowHeight: win.h,
+        consolePaneIndex: cIdx,
+        agentPaneIndexes: agentIdxs,
+        consoleWidth,
+      });
+      tmux.applyLayout(WINDOW, layout);
+    } catch (e) {
+      console.error("[harnessd] relayout failed:", e);
+    }
+  }
+
   function spawnAgent(spec: SpawnSpec): string {
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
     const cmd = buildClaudeCommand(paths, agent.id, spec);
     const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
     registry.attach(agent.id, { pane_id: pane });
     coord.upsert(registry.get(agent.id)!);
+    agentPaneIds.push(pane);
+    relayout();
     return agent.id;
   }
 
@@ -90,6 +130,20 @@ async function main() {
       }
       case "pending_approvals":
         return approvals.pending();
+      case "register_panes": {
+        // Called once by `cli.ts start` after creating the tmux session, so
+        // the daemon knows which pane to pin as the console column and which
+        // panes already belong to the agent grid (the main agent at minimum).
+        const { console_pane_id, agent_pane_ids } = params as {
+          console_pane_id: string;
+          agent_pane_ids: string[];
+        };
+        consolePaneId = console_pane_id;
+        agentPaneIds.length = 0;
+        agentPaneIds.push(...agent_pane_ids);
+        relayout();
+        return { ok: true };
+      }
       // ---- MCP-facing tools ----
       case "create_tickets": {
         const input = CreateTicketsInput.parse(params);
@@ -171,9 +225,32 @@ async function main() {
         }
         if (a.pane_id) {
           try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
+          const i = agentPaneIds.indexOf(a.pane_id);
+          if (i >= 0) agentPaneIds.splice(i, 1);
         }
         registry.remove(agent_id);
         coord.remove(agent_id);
+        relayout();
+        return { ok: true };
+      }
+      case "set_session_description": {
+        const input = SetSessionDescriptionInput.parse(params);
+        const now = Date.now();
+        // Preserve created_at if the agent updates an existing description.
+        let createdAt = now;
+        if (existsSync(paths.metaJson)) {
+          try {
+            const prev = SessionMeta.parse(JSON.parse(readFileSync(paths.metaJson, "utf8")));
+            createdAt = prev.created_at;
+          } catch { /* corrupted — start fresh */ }
+        }
+        const meta: SessionMeta = {
+          description: input.description,
+          created_at: createdAt,
+          updated_at: now,
+          source: "agent",
+        };
+        writeFileSync(paths.metaJson, JSON.stringify(meta, null, 2) + "\n");
         return { ok: true };
       }
       case "shutdown": {
