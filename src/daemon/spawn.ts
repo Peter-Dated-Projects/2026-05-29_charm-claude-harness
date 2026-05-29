@@ -25,13 +25,33 @@ export const MODEL_ALIASES: Record<string, string> = {
   "opus-4.6": "claude-opus-4-6",
   "opus-4.7": "claude-opus-4-7",
   "opus-4.7-1m": "claude-opus-4-7[1m]",
+  "opus-4.8": "claude-opus-4-8",
+  "opus-4.8-1m": "claude-opus-4-8[1m]",
   sonnet: "claude-sonnet-4-6",
-  opus: "claude-opus-4-7",
+  opus: "claude-opus-4-8",
 };
 
-/** Default model per agent role. Every role runs on Sonnet 4.6 (the most recent
- *  Sonnet) by default. Override per-spawn by setting `spec.model` explicitly, or
- *  globally via the CHARM_MODEL_<ROLE> env vars (e.g. CHARM_MODEL_WORKER=opus-4.7). */
+/** A charm "mode" pins every agent role to a single model family, so the whole
+ *  fleet (main + reviewers + workers + testers) runs on one model:
+ *    research    -> Sonnet  (fast, cheap; exploration and research workflows)
+ *    development -> Opus     (most capable; for writing and shipping code)
+ *  Selected at `charm start` via --research / --development (alias --dev) or the
+ *  interactive startup prompt, then propagated to the daemon as CHARM_MODE. */
+export type CharmMode = "research" | "development";
+
+export const MODE_MODEL: Record<CharmMode, string> = {
+  research: "sonnet-4.6",
+  development: "opus-4.8",
+};
+
+export function isMode(v: string | undefined | null): v is CharmMode {
+  return v === "research" || v === "development";
+}
+
+/** Default model per agent role, used only when no mode and no per-role override
+ *  is set. Override per-spawn by setting `spec.model` explicitly, globally via the
+ *  CHARM_MODEL_<ROLE> env vars (e.g. CHARM_MODEL_WORKER=opus-4.7), or for the whole
+ *  fleet via the charm mode (CHARM_MODE=research|development). */
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   main: "sonnet-4.6",
   reviewer: "sonnet-4.6",
@@ -39,10 +59,16 @@ export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   tester: "sonnet-4.6",
 };
 
+/** Resolve the model for a spawned agent role. Precedence, highest first:
+ *    1. CHARM_MODEL_<ROLE> env override (power-user, per-role)
+ *    2. CHARM_MODE (research -> Sonnet, development -> Opus) — the fleet-wide mode
+ *    3. DEFAULT_MODEL_BY_ROLE static fallback */
 export function defaultModelForRole(role: AgentRole): string {
-  const envKey = `CHARM_MODEL_${role.toUpperCase()}`;
-  const override = process.env[envKey];
-  return resolveModel(override ?? DEFAULT_MODEL_BY_ROLE[role]);
+  const override = process.env[`CHARM_MODEL_${role.toUpperCase()}`];
+  if (override) return resolveModel(override);
+  const mode = process.env.CHARM_MODE;
+  if (isMode(mode)) return resolveModel(MODE_MODEL[mode]);
+  return resolveModel(DEFAULT_MODEL_BY_ROLE[role]);
 }
 
 /** Thinking-token budgets. Claude Code reads MAX_THINKING_TOKENS from the

@@ -4,7 +4,8 @@
 #
 # Usage:
 #   ./charm.sh init [--root PATH]
-#   ./charm.sh start "your goal here"
+#   ./charm.sh start "your goal here"     (prompts for research vs development mode)
+#   ./charm.sh start --research "goal"     (Sonnet fleet) | --development / --dev (Opus fleet)
 #   ./charm.sh status
 #   ./charm.sh approve <gate_id> [--reject]
 #   ./charm.sh attach
@@ -29,7 +30,7 @@ fi
 
 case "${1:-}" in
   "" | -h | --help | help)
-    sed -n '4,12p' "$0"
+    sed -n '4,13p' "$0"
     exit 0
     ;;
   stop)

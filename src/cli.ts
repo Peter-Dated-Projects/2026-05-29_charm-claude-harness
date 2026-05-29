@@ -33,10 +33,12 @@ program
   .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session", "charm")
+  .option("--research", "research mode: run every agent on Sonnet", false)
+  .option("--development", "development mode: run every agent on Opus", false)
+  .option("--dev", "alias for --development", false)
   .option(
     "-m, --model <model>",
-    "model for the main agent: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m (or a raw claude-* id)",
-    "sonnet-4.6",
+    "override the MAIN agent's model only (sub-agents follow the mode): sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
   )
   .option("--no-attach", "do not auto-attach to the tmux session")
   .action(async (goalParts: string[], opts) => {
@@ -51,13 +53,19 @@ program
     const goal = (goalParts ?? []).join(" ").trim();
     const plain = goal.length === 0;
 
-    // 1. Spawn charmd in background
+    // 0. Resolve the charm mode (research -> Sonnet fleet, development -> Opus fleet).
+    // From flags if given; otherwise an in-terminal prompt (or research as the
+    // non-interactive fallback so piped/--no-attach usage doesn't hang).
+    const mode = await resolveMode(opts);
+
+    // 1. Spawn charmd in background. CHARM_MODE tells the daemon which model to
+    // give every sub-agent it spawns (workers, reviewers, testers).
     const logFile = join(paths.logsDir, "charmd.log");
     const daemonEntry = resolveBinary("dev:daemon", "src/daemon/index.ts");
     const child = spawn("bun", ["run", daemonEntry, "--root", paths.root, "--session", opts.session], {
       stdio: ["ignore", "inherit", "inherit"],
       detached: true,
-      env: { ...process.env },
+      env: { ...process.env, CHARM_MODE: mode },
     });
     child.unref();
     console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
@@ -75,15 +83,17 @@ program
     tmux.newSession("charm", paths.root);
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
-    const { buildClaudeCommand, resolveModel } = await import("./daemon/spawn.ts");
+    const { buildClaudeCommand, resolveModel, MODE_MODEL } = await import("./daemon/spawn.ts");
     let mainModel: string;
     try {
-      mainModel = resolveModel(opts.model);
+      // The mode picks the fleet's model; -m/--model is an advanced override of
+      // the main pane only (sub-agents still follow the mode via CHARM_MODE).
+      mainModel = resolveModel(opts.model ?? MODE_MODEL[mode]);
     } catch (e: any) {
       console.error(e.message);
       process.exit(2);
     }
-    console.log(`[charm] main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
+    console.log(`[charm] mode: ${mode} | main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
     const mainCmd = buildClaudeCommand(paths, "main-001", {
       role: "main",
       ticket_id: null,
@@ -190,6 +200,29 @@ program.parseAsync(process.argv).catch((e) => {
   console.error(e);
   process.exit(1);
 });
+
+type StartOpts = { research?: boolean; development?: boolean; dev?: boolean };
+
+/** Decide the charm mode for a `start` run. Explicit flags win; conflicting flags
+ *  error out. With no flag we show the in-terminal selector on a TTY, and fall
+ *  back to research (the historical default) for non-interactive invocations. */
+async function resolveMode(opts: StartOpts): Promise<"research" | "development"> {
+  const wantsResearch = !!opts.research;
+  const wantsDev = !!opts.development || !!opts.dev;
+  if (wantsResearch && wantsDev) {
+    console.error("[charm] pick one mode: --research or --development (not both).");
+    process.exit(2);
+  }
+  if (wantsResearch) return "research";
+  if (wantsDev) return "development";
+
+  if (process.stdin.isTTY) {
+    const { promptMode } = await import("./cli/mode-prompt.tsx");
+    return promptMode();
+  }
+  console.error("[charm] no mode flag and no TTY for the prompt; defaulting to --research (Sonnet).");
+  return "research";
+}
 
 function scaffoldCharmDir(
   paths: ReturnType<typeof charmPaths>,
