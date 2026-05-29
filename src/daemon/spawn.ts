@@ -60,6 +60,23 @@ export function defaultThinkingTokens(): number {
   return THINKING_BUDGETS[level] ?? THINKING_BUDGETS.high!;
 }
 
+/** Permission modes accepted by `claude --permission-mode`. Spawned agents run unattended
+ *  in tmux panes, so they default to `auto` (skips permission prompts). Override per
+ *  environment via CHARM_PERMISSION_MODE; an unrecognized value falls back to `auto`. */
+export const PERMISSION_MODES = [
+  "auto",
+  "acceptEdits",
+  "bypassPermissions",
+  "default",
+  "dontAsk",
+  "plan",
+] as const;
+
+export function defaultPermissionMode(): string {
+  const mode = (process.env.CHARM_PERMISSION_MODE ?? "auto").trim();
+  return (PERMISSION_MODES as readonly string[]).includes(mode) ? mode : "auto";
+}
+
 /** Resolve a user-supplied --model value to a real Claude model id.
  *  Accepts either an alias from MODEL_ALIASES or a literal `claude-*` id. */
 export function resolveModel(input: string): string {
@@ -88,6 +105,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "## Charm output rules (override any contrary instruction)",
     "- Do NOT use emoji or pictographic characters anywhere in your output, in tool arguments, or in files you write (PROJECT.md, COORDINATION.md, tickets/*.md, code comments, commit messages — anywhere). This includes ✅ ❌ ⚠️ 🚀 ⭐ 📝 etc. Use ASCII instead: [x], [ ], (!), ->, *, etc.",
     "- Do NOT use box-drawing or other wide Unicode decoration in markdown output. ASCII only for status indicators, bullets, and dividers.",
+    "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_review_agents, spawn_workers, request_review). Never attempt to spawn a subagent any other way.",
   ].join("\n");
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
@@ -96,11 +114,20 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   if (spec.model) flags.push("--model", shellQuote(spec.model));
+  // Spawned agents run unattended in tmux panes, so they must not stall on permission
+  // prompts. Default to `auto` (skips prompts); overridable via CHARM_PERMISSION_MODE.
+  flags.push("--permission-mode", shellQuote(defaultPermissionMode()));
   // `--mcp-config` is variadic (`<configs...>`) — commander slurps every
   // following positional until the next flag. Put it FIRST so the next flag
-  // (`--append-system-prompt`) terminates the list, otherwise the user prompt
+  // (`--disallowed-tools`) terminates the list, otherwise the user prompt
   // gets eaten as a phantom MCP config path.
   flags.push("--mcp-config", shellQuote(paths.mcpConfig));
+  // Remove Claude Code's native subagent tool (`Agent`, older alias `Task`) so agents
+  // can't spawn subagents outside charm's orchestration. All fan-out must go through the
+  // charm MCP tools (spawn_workers / spawn_review_agents / request_review), which the
+  // daemon needs for dependency + file-scope enforcement. This is also variadic, so the
+  // next flag (`--append-system-prompt`) terminates the list.
+  flags.push("--disallowed-tools", shellQuote("Agent"), shellQuote("Task"));
   flags.push("--append-system-prompt", shellQuote(systemPrompt));
   // An empty prompt means a blank interactive window (e.g. `charm start` with
   // no goal): omit the positional so Claude opens waiting for user input.
