@@ -10,6 +10,10 @@ export function charmPaths(root: string) {
     promptsDir: join(charmDir, "prompts"),
     logsDir: join(charmDir, "logs"),
     ticketsDir: join(charmDir, "tickets"),
+    // The durable, git-tracked knowledge base (the one .charm child that survives
+    // across runs). kbIndex is the tiny always-read entry point.
+    kbDir: join(charmDir, "kb"),
+    kbIndex: join(charmDir, "kb", "INDEX.md"),
     projectMd: join(charmDir, "PROJECT.md"),
     coordinationMd: join(charmDir, "COORDINATION.md"),
     mcpConfig: join(charmDir, "charm.json"),

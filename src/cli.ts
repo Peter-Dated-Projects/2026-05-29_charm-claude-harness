@@ -25,6 +25,7 @@ program
     console.log(`charm initialized at ${paths.charmDir}`);
     console.log(`  prompts:  ${paths.promptsDir}/`);
     console.log(`  tickets:  ${paths.ticketsDir}/`);
+    console.log(`  kb:       ${paths.kbDir}/  (durable, git-tracked)`);
     console.log(`  config:   ${paths.mcpConfig}`);
   });
 
@@ -233,7 +234,7 @@ function scaffoldCharmDir(
   mkdirSync(paths.promptsDir, { recursive: true });
   mkdirSync(paths.logsDir, { recursive: true });
 
-  const templatesDir = locateTemplates();
+  const templatesDir = locateTemplateDir("prompts");
   if (templatesDir) {
     for (const f of readdirSync(templatesDir)) {
       const dest = join(paths.promptsDir, f);
@@ -242,6 +243,19 @@ function scaffoldCharmDir(
     }
   } else {
     console.warn("[charm] prompt templates not found; skipping prompt scaffold");
+  }
+
+  // Seed the durable KB skeleton ONLY if it doesn't exist yet. The KB is real,
+  // accumulating data -- never clobber it on re-init/start, even with --force
+  // (force is for prompt templates, not user/agent knowledge).
+  if (!existsSync(paths.kbDir)) {
+    const kbTemplates = locateTemplateDir("kb");
+    if (kbTemplates) {
+      cpSync(kbTemplates, paths.kbDir, { recursive: true });
+    } else {
+      mkdirSync(paths.kbDir, { recursive: true });
+      console.warn("[charm] kb templates not found; created empty .charm/kb/");
+    }
   }
 
   const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
@@ -262,14 +276,14 @@ function scaffoldCharmDir(
   }
 }
 
-function locateTemplates(): string | null {
-  // When running from source: <repo>/templates/prompts/
-  // When running from compiled binary: alongside the binary, or fallback to ../templates/prompts
+function locateTemplateDir(name: string): string | null {
+  // When running from source: <repo>/templates/<name>/
+  // When running from compiled binary: alongside the binary, or fallback to ../templates/<name>
   const here = typeof import.meta.url === "string" ? dirname(fileURLToPath(import.meta.url)) : process.cwd();
   const candidates = [
-    join(here, "..", "templates", "prompts"),
-    join(here, "..", "..", "templates", "prompts"),
-    join(process.cwd(), "templates", "prompts"),
+    join(here, "..", "templates", name),
+    join(here, "..", "..", "templates", name),
+    join(process.cwd(), "templates", name),
   ];
   for (const c of candidates) if (existsSync(c)) return c;
   return null;
