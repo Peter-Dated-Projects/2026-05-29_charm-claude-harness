@@ -1,5 +1,9 @@
 node_modules/
 dist/
-.charm/
+# Charm run state is ephemeral and ignored, EXCEPT the durable knowledge base.
+# `.charm/*` ignores the run-state children; `!.charm/kb/` re-includes the KB so it
+# travels with the repo. (Works only because `.charm/` itself is not excluded.)
+.charm/*
+!.charm/kb/
 *.log
 .DS_Store
