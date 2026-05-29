@@ -18,7 +18,7 @@
     "build": "bun run build:cli && bun run build:mcp && bun run build:console",
     "build:cli": "bun build src/cli.ts --compile --outfile dist/charm",
     "build:mcp": "bun build src/mcp/server.ts --compile --outfile dist/charm-mcp",
-    "build:console": "bun build src/console/app.tsx --compile --outfile dist/charm-console --external react-devtools-core",
+    "build:console": "bun build src/console/app.tsx --compile --outfile dist/charm-console",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
@@ -37,6 +37,7 @@
   "devDependencies": {
     "@types/react": "^18.3.12",
     "bun-types": "latest",
+    "react-devtools-core": "^7.0.1",
     "typescript": "^5.6.3"
   }
 }

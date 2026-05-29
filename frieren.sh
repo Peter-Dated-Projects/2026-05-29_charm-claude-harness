@@ -55,6 +55,8 @@ cmd_dev() {
 
 cmd_build() {
     need bun
+    echo "==> Installing dependencies (bun install)..."
+    bun install
     local target="${2:-all}"
     case "$target" in
         all)
@@ -71,7 +73,7 @@ cmd_build() {
             for spec in \
                 "src/cli.ts:charm:" \
                 "src/mcp/server.ts:charm-mcp:" \
-                "src/console/app.tsx:charm-console:--external react-devtools-core"; do
+                "src/console/app.tsx:charm-console:"; do
                 local entry name extra
                 entry="${spec%%:*}"; spec="${spec#*:}"
                 name="${spec%%:*}"; extra="${spec#*:}"
