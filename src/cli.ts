@@ -29,8 +29,8 @@ program
   });
 
 program
-  .command("start <goal...>")
-  .description("start the daemon, open the tmux layout, and spawn the main agent with this goal")
+  .command("start [goal...]")
+  .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session", "harness")
   .option(
@@ -48,7 +48,8 @@ program
       process.exit(2);
     }
 
-    const goal = goalParts.join(" ");
+    const goal = (goalParts ?? []).join(" ").trim();
+    const plain = goal.length === 0;
 
     // 1. Spawn harnessd in background
     const logFile = join(paths.logsDir, "harnessd.log");
@@ -82,13 +83,14 @@ program
       console.error(e.message);
       process.exit(2);
     }
-    console.log(`[harness] main agent model: ${mainModel}`);
+    console.log(`[harness] main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
     const mainCmd = buildClaudeCommand(paths, "main-001", {
       role: "main",
       ticket_id: null,
-      prompt: `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
+      prompt: plain ? "" : `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
       interactive: true,
       model: mainModel,
+      plain,
     });
     const consoleEntry = resolveBinary("dev:console", "src/console/app.tsx");
     const consoleCmd = `bun run ${shellQuote(consoleEntry)} --root ${shellQuote(paths.root)}`;

@@ -12,6 +12,10 @@ export type SpawnSpec = {
    *  When set, passed via `--model` and surfaced to the agent in its system prompt
    *  so it knows which model it is running as. */
   model?: string;
+  /** When true, omit the role-specific system prompt: a "plain" Claude window
+   *  that's still wired to the harness MCP config and output rules, but carries
+   *  no orchestration instructions. Used by `harness start` with no goal. */
+  plain?: boolean;
 };
 
 /** User-facing aliases resolved to Claude Code model ids. */
@@ -25,15 +29,13 @@ export const MODEL_ALIASES: Record<string, string> = {
   opus: "claude-opus-4-7",
 };
 
-/** Default model per agent role. Workers do code edits and benefit from Opus
- *  4.7 with the 1M-context variant; every other role (orchestration, review,
- *  test validation) runs on Sonnet 4.6. Override per-spawn by setting
- *  `spec.model` explicitly, or globally via the HARNESS_MODEL_<ROLE> env vars
- *  (e.g. HARNESS_MODEL_WORKER=opus-4.7). */
+/** Default model per agent role. Every role runs on Sonnet 4.6 (the most recent
+ *  Sonnet) by default. Override per-spawn by setting `spec.model` explicitly, or
+ *  globally via the HARNESS_MODEL_<ROLE> env vars (e.g. HARNESS_MODEL_WORKER=opus-4.7). */
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   main: "sonnet-4.6",
   reviewer: "sonnet-4.6",
-  worker: "opus-4.7-1m",
+  worker: "sonnet-4.6",
   tester: "sonnet-4.6",
 };
 
@@ -44,7 +46,8 @@ export function defaultModelForRole(role: AgentRole): string {
 }
 
 /** Thinking-token budgets. Claude Code reads MAX_THINKING_TOKENS from the
- *  environment. "medium" is our default; bump to "high" for heavier reasoning. */
+ *  environment. "high" is our default; drop to "medium"/"low" via HARNESS_THINKING
+ *  for lighter reasoning. */
 export const THINKING_BUDGETS: Record<string, number> = {
   off: 0,
   low: 4000,
@@ -53,8 +56,8 @@ export const THINKING_BUDGETS: Record<string, number> = {
 };
 
 export function defaultThinkingTokens(): number {
-  const level = (process.env.HARNESS_THINKING ?? "medium").toLowerCase();
-  return THINKING_BUDGETS[level] ?? THINKING_BUDGETS.medium!;
+  const level = (process.env.HARNESS_THINKING ?? "high").toLowerCase();
+  return THINKING_BUDGETS[level] ?? THINKING_BUDGETS.high!;
 }
 
 /** Resolve a user-supplied --model value to a real Claude model id.
@@ -71,7 +74,11 @@ export function resolveModel(input: string): string {
  *  HARNESS_AGENT_ID is exported so the MCP shim can identify the agent. */
 export function buildClaudeCommand(paths: HarnessPaths, agent_id: string, spec: SpawnSpec): string {
   const promptFile = join(paths.promptsDir, `${spec.role}.md`);
-  const rolePrompt = existsSync(promptFile) ? readFileSync(promptFile, "utf8") : `You are a ${spec.role}.`;
+  const rolePrompt = spec.plain
+    ? ""
+    : existsSync(promptFile)
+      ? readFileSync(promptFile, "utf8")
+      : `You are a ${spec.role}.`;
   // The harness renders agent-produced markdown (PROJECT.md, COORDINATION.md,
   // tickets/*.md) inside an Ink TUI. Terminal emoji rendering inflates row
   // height inconsistently across fonts/terminals, which breaks the layout —
@@ -95,7 +102,9 @@ export function buildClaudeCommand(paths: HarnessPaths, agent_id: string, spec: 
   // gets eaten as a phantom MCP config path.
   flags.push("--mcp-config", shellQuote(paths.mcpConfig));
   flags.push("--append-system-prompt", shellQuote(systemPrompt));
-  const user = shellQuote(spec.prompt);
+  // An empty prompt means a blank interactive window (e.g. `harness start` with
+  // no goal): omit the positional so Claude opens waiting for user input.
+  if (spec.prompt) flags.push(shellQuote(spec.prompt));
   // export agent id, then exec claude
   const thinking = defaultThinkingTokens();
   return [
@@ -106,7 +115,7 @@ export function buildClaudeCommand(paths: HarnessPaths, agent_id: string, spec: 
     // after the current prompt begins processing.
     `export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`,
     `export MAX_THINKING_TOKENS=${thinking}`,
-    `exec claude ${flags.join(" ")} ${user}`,
+    `exec claude ${flags.join(" ")}`,
   ].join(" && ");
 }
 
