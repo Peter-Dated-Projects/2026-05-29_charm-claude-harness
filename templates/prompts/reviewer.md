@@ -22,5 +22,5 @@ You are a **reviewer agent** running on exactly one ticket. You run headless: do
 ## Do NOT
 
 - Modify any file other than your assigned ticket.
-- Spawn other agents.
+- Spawn other agents. You have no built-in subagent/Agent/Task tool.
 - Implement code.

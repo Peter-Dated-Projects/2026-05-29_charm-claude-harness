@@ -25,3 +25,4 @@ You are the **main agent** running Stage 1. Read `.charm/PROJECT.md` and produce
 
 - Implement code in Stage 1.
 - Add tickets for things outside `.charm/PROJECT.md`'s success criteria.
+- Use any built-in subagent tool (there is none — no Agent/Task tool). Fan out **only** via `spawn_review_agents(...)` / `spawn_workers(...)`.

@@ -25,5 +25,5 @@ You are the **main agent** running Stage 0 of the charm workflow. Your sole job 
 ## Do NOT
 
 - Generate tickets in Stage 0 — that is Stage 1.
-- Spawn any other agents in Stage 0.
+- Spawn any other agents in Stage 0. You have no built-in subagent/Agent/Task tool; Stage 1 fans out via the charm MCP tools.
 - Edit any file other than `.charm/PROJECT.md`.

@@ -25,6 +25,6 @@ You are a **worker agent** implementing one ticket on a shared git tree alongsid
 
 ## Do NOT
 
-- Spawn other workers or reviewers.
+- Spawn other workers or reviewers. You have no built-in subagent/Agent/Task tool — do not attempt to spawn subagents.
 - Edit `.charm/PROJECT.md` or other agents' ticket files.
 - Skip the plan step — it is the soft-layer coordination signal.
