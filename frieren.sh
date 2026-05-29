@@ -24,6 +24,17 @@ need() {
     }
 }
 
+# bun's `--compile` writes a ~60MB temp file (.<hash>.bun-build) into the
+# current directory and orphans it even on a successful build. The package.json
+# build scripts run from dist/ so these never touch the repo root; this sweep
+# deletes whatever's left (incl. the universal target's root/dist temps and any
+# orphans from an interrupted build). Wired as a build-time trap below.
+sweep_bun_temp() {
+    find "$ROOT" -path "$ROOT/node_modules" -prune -o \
+        -name '*.bun-build' -type f -print0 2>/dev/null \
+        | xargs -0 rm -f 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -55,6 +66,8 @@ cmd_dev() {
 
 cmd_build() {
     need bun
+    # Sweep bun's orphaned compile temps on the way out — even on failure/Ctrl-C.
+    trap sweep_bun_temp EXIT INT TERM
     echo "==> Installing dependencies (bun install)..."
     bun install
     local target="${2:-all}"
@@ -110,6 +123,7 @@ cmd_test() {
 cmd_clean() {
     echo "==> Removing build artifacts..."
     rm -rf dist/
+    sweep_bun_temp
     find . -name "*.log" -not -path "./node_modules/*" -delete 2>/dev/null || true
     find . -name ".DS_Store" -delete 2>/dev/null || true
     echo "    cleaned dist/ and *.log (kept node_modules/ — run 'clean deep' to remove)"

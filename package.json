@@ -16,9 +16,9 @@
     "dev:mcp": "bun run src/mcp/server.ts",
     "dev:console": "bun run src/console/app.tsx",
     "build": "bun run build:cli && bun run build:mcp && bun run build:console",
-    "build:cli": "bun build src/cli.ts --compile --outfile dist/charm-claude",
-    "build:mcp": "bun build src/mcp/server.ts --compile --outfile dist/charm-mcp",
-    "build:console": "bun build src/console/app.tsx --compile --outfile dist/charm-console",
+    "build:cli": "mkdir -p dist && cd dist && bun build ../src/cli.ts --compile --outfile charm-claude",
+    "build:mcp": "mkdir -p dist && cd dist && bun build ../src/mcp/server.ts --compile --outfile charm-mcp",
+    "build:console": "mkdir -p dist && cd dist && bun build ../src/console/app.tsx --compile --outfile charm-console",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
