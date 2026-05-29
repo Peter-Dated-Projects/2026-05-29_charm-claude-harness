@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const program = new Command();
 program
-  .name("charm")
+  .name("charm-claude")
   .description("Terminal-based multi-agent charm for Claude Code")
   .version("0.0.1");
 

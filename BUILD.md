@@ -17,7 +17,7 @@ bun install               # one-time, fetches deps into node_modules/
 bun run build             # → dist/charm, dist/charm-mcp, dist/charm-console
 ```
 
-Run `dist/charm --help` to verify.
+Run `dist/charm-claude --help` to verify.
 
 ## Cross-compile for Mac (both architectures)
 
@@ -26,12 +26,12 @@ Mac builds you want both Apple Silicon and Intel:
 
 ```sh
 # Apple Silicon (M1/M2/M3/M4)
-bun build src/cli.ts          --compile --target=bun-darwin-arm64 --outfile dist/arm64/charm
+bun build src/cli.ts          --compile --target=bun-darwin-arm64 --outfile dist/arm64/charm-claude
 bun build src/mcp/server.ts   --compile --target=bun-darwin-arm64 --outfile dist/arm64/charm-mcp
 bun build src/console/app.tsx --compile --target=bun-darwin-arm64 --outfile dist/arm64/charm-console --external react-devtools-core
 
 # Intel Macs
-bun build src/cli.ts          --compile --target=bun-darwin-x64   --outfile dist/x64/charm
+bun build src/cli.ts          --compile --target=bun-darwin-x64   --outfile dist/x64/charm-claude
 bun build src/mcp/server.ts   --compile --target=bun-darwin-x64   --outfile dist/x64/charm-mcp
 bun build src/console/app.tsx --compile --target=bun-darwin-x64   --outfile dist/x64/charm-console --external react-devtools-core
 ```
@@ -46,10 +46,10 @@ needed for this command alone):
 
 ```sh
 mkdir -p dist/universal
-for name in charm charm-mcp charm-console; do
+for name in charm-claude charm-mcp charm-console; do
   lipo -create -output dist/universal/$name dist/arm64/$name dist/x64/$name
 done
-file dist/universal/charm   # should print "Mach-O universal binary with 2 architectures"
+file dist/universal/charm-claude   # should print "Mach-O universal binary with 2 architectures"
 ```
 
 ## Packaging for distribution
@@ -60,7 +60,7 @@ as a tarball:
 
 ```sh
 tar -C dist/universal -czf charm-macos-universal.tar.gz \
-    charm charm-mcp charm-console
+    charm-claude charm-mcp charm-console
 ```
 
 Install instructions for the recipient:
@@ -69,7 +69,7 @@ Install instructions for the recipient:
 tar -xzf charm-macos-universal.tar.gz -C /usr/local/bin
 # or anywhere on PATH
 xattr -d com.apple.quarantine /usr/local/bin/charm* 2>/dev/null || true
-charm init && charm start "your goal"
+charm-claude init && charm-claude start "your goal"
 ```
 
 ## Gatekeeper / quarantine

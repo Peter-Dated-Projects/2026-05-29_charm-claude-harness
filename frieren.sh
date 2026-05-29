@@ -63,7 +63,7 @@ cmd_build() {
             echo "==> Building all binaries for host arch -> dist/..."
             bun run build
             ;;
-        cli)     echo "==> Building charm -> dist/charm...";        bun run build:cli ;;
+        cli)     echo "==> Building charm-claude -> dist/charm-claude...";        bun run build:cli ;;
         mcp)     echo "==> Building charm-mcp -> dist/charm-mcp..."; bun run build:mcp ;;
         console) echo "==> Building charm-console -> dist/charm-console..."; bun run build:console ;;
         universal)
@@ -71,7 +71,7 @@ cmd_build() {
             need lipo
             echo "==> Building universal (arm64 + x64) Mac binaries..."
             for spec in \
-                "src/cli.ts:charm:" \
+                "src/cli.ts:charm-claude:" \
                 "src/mcp/server.ts:charm-mcp:" \
                 "src/console/app.tsx:charm-console:"; do
                 local entry name extra
@@ -81,7 +81,7 @@ cmd_build() {
                 bun build "$entry" --compile --target=bun-darwin-x64   --outfile "dist/x64/$name"   $extra
             done
             mkdir -p dist/universal
-            for name in charm charm-mcp charm-console; do
+            for name in charm-claude charm-mcp charm-console; do
                 lipo -create -output "dist/universal/$name" "dist/arm64/$name" "dist/x64/$name"
             done
             echo "==> Universal binaries in dist/universal/"
