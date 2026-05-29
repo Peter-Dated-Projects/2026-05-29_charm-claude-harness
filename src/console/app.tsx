@@ -13,6 +13,11 @@ import type { ApprovalGate, Agent, TicketFrontmatter } from "../schema.ts";
 
 type Tab = "artifacts" | "approvals" | "agents";
 
+// The files list never shows fewer than this many rows, and is the default size.
+const MIN_FILES_ROWS = 5;
+// The viewer always keeps at least this many content rows when the list grows.
+const MIN_VIEWER_ROWS = 3;
+
 const program = new Command();
 program.option("-r, --root <path>", "project root", process.cwd()).parse(process.argv);
 const ROOT = resolve(program.opts<{ root: string }>().root);
@@ -104,6 +109,7 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
   const pendingTicket = status.pending_approvals.find((g) => g.stage === 2)?.ticket_id ?? null;
   const auto = defaultFile(stage, files, pendingTicket);
   const [selected, setSelected] = useState<string | null>(null);
+  const [filesRows, setFilesRows] = useState(MIN_FILES_ROWS);
   const active = selected ?? auto;
   const content = useFileContent(active);
   const { stdout } = useStdout();
@@ -123,13 +129,22 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
   const APP_CHROME = 2;           // tabs row + status row
   const PANEL_BORDERS = 2;        // top + bottom border on each panel
   const PANEL_PADX = 2;           // paddingX={1} on each side
+  const FILES_HEADER = 1;         // "Files" header row inside the files panel
   const VIEWER_CHROME = PANEL_BORDERS + 2; // borders + title row + hint row
-  const FILES_WIDTH = 28;
-  const FILES_COLUMN_TOTAL = FILES_WIDTH + PANEL_BORDERS + PANEL_PADX;
-  const VIEWER_HSIDE = PANEL_BORDERS + PANEL_PADX;
-  const viewerHeight = Math.max(1, termRows - APP_CHROME - VIEWER_CHROME);
-  const viewerWidth = Math.max(8, cols - FILES_COLUMN_TOTAL - VIEWER_HSIDE);
   const rowHeight = Math.max(3, termRows - APP_CHROME);
+
+  // Vertical split: files list stacked above the viewer, both full width. The
+  // files list height is user-adjustable (+/-), floored at MIN_FILES_ROWS and
+  // capped so the viewer always keeps MIN_VIEWER_ROWS of content.
+  const maxFilesRows = Math.max(
+    MIN_FILES_ROWS,
+    rowHeight - (PANEL_BORDERS + FILES_HEADER) - (MIN_VIEWER_ROWS + VIEWER_CHROME),
+  );
+  const filesRowsEff = Math.min(Math.max(MIN_FILES_ROWS, filesRows), maxFilesRows);
+  const filesPanelHeight = filesRowsEff + PANEL_BORDERS + FILES_HEADER;
+  const viewerPanelHeight = Math.max(1, rowHeight - filesPanelHeight);
+  const viewerHeight = Math.max(1, viewerPanelHeight - VIEWER_CHROME);
+  const viewerWidth = Math.max(8, cols - PANEL_BORDERS - PANEL_PADX);
 
   const rows = useMemo(() => renderMarkdown(content, viewerWidth), [content, viewerWidth]);
   const [scroll, setScroll] = useState(0);
@@ -157,6 +172,10 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
       setSelected(files[Math.min(files.length - 1, idx + 1)] ?? null);
     } else if (input === "r") {
       setSelected(null);
+    } else if (input === "+" || input === "=") {
+      setFilesRows((n) => Math.min(maxFilesRows, n + 1));
+    } else if (input === "-" || input === "_") {
+      setFilesRows((n) => Math.max(MIN_FILES_ROWS, n - 1));
     } else if (key.ctrl && input === "d") {
       setScroll((s) => Math.min(maxScroll, s + Math.floor(viewerHeight / 2)));
     } else if (key.ctrl && input === "u") {
@@ -175,9 +194,8 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
   const slice = rows.slice(scroll, scroll + viewerHeight);
   const pct = rows.length === 0 ? 100 : Math.min(100, Math.round(((scroll + viewerHeight) / rows.length) * 100));
 
-  // Files panel inner content rows = total panel height - borders - header row.
-  // (Viewer has title + hint chrome; Files has only the header row.)
-  const filesCapacity = Math.max(1, rowHeight - PANEL_BORDERS - 1);
+  // Files panel inner content rows = the user-adjustable, clamped row count.
+  const filesCapacity = filesRowsEff;
   const activeIdx = active ? files.indexOf(active) : -1;
   const filesScroll = activeIdx < 0
     ? 0
@@ -185,8 +203,8 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
   const visibleFiles = files.slice(filesScroll, filesScroll + filesCapacity);
 
   return (
-    <Box flexDirection="row" height={rowHeight} flexShrink={0} overflow="hidden">
-      <Box flexDirection="column" width={FILES_WIDTH} height={rowHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
+    <Box flexDirection="column" height={rowHeight} flexShrink={0} overflow="hidden">
+      <Box flexDirection="column" height={filesPanelHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
         <Text bold wrap="truncate-end">Files <Text dimColor>(stage: {stage})</Text></Text>
         {files.length === 0 ? <Text dimColor wrap="truncate-end">(none)</Text> : visibleFiles.map((f) => {
           const rel = relative(ROOT, f);
@@ -199,7 +217,7 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
           );
         })}
       </Box>
-      <Box flexDirection="column" flexGrow={1} height={rowHeight} borderStyle="single" paddingX={1} overflow="hidden">
+      <Box flexDirection="column" height={viewerPanelHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
         <Box flexShrink={0}>
           <Text bold wrap="truncate-end">{active ? relative(ROOT, active) : "(no file)"}</Text>
           <Text> </Text>
@@ -214,7 +232,7 @@ function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: bo
             <Text key={`pad-${i}`}> </Text>
           ))}
         <Text dimColor wrap="truncate-end">
-          ↑/↓ files · wheel/space/b page · ^d/^u half · g/G top/bot · r reset
+          ↑/↓ files · +/- resize list · wheel/space/b page · ^d/^u half · g/G top/bot · r reset
         </Text>
       </Box>
     </Box>
