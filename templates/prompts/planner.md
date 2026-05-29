@@ -1,5 +1,5 @@
 ---
-name: harness-planner
+name: charm-planner
 description: Stage 1 main-agent role. Turn .charm/PROJECT.md into small tickets via create_tickets(), populating depends_on and touches, then fan out reviewers via spawn_review_agents(). Use after Stage 0 approval.
 ---
 

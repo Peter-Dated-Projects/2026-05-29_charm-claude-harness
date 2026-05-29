@@ -3,14 +3,14 @@ import { join, basename } from "node:path";
 import matter from "gray-matter";
 import { Database } from "bun:sqlite";
 import { TicketFrontmatter, type Ticket } from "../schema.ts";
-import type { HarnessPaths } from "../paths.ts";
+import type { CharmPaths } from "../paths.ts";
 
 export class TicketStore {
   private db: Database;
 
-  constructor(private paths: HarnessPaths) {
+  constructor(private paths: CharmPaths) {
     mkdirSync(paths.ticketsDir, { recursive: true });
-    mkdirSync(paths.harnessDir, { recursive: true });
+    mkdirSync(paths.charmDir, { recursive: true });
     this.db = new Database(paths.db);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tickets (

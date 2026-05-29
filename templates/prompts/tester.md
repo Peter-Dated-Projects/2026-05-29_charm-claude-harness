@@ -1,5 +1,5 @@
 ---
-name: harness-tester
+name: charm-tester
 description: Stage 4 headless role. Validate a worker's ticket against its acceptance criteria — run tests, produce a checklist, never edit code. Report done/failed.
 ---
 

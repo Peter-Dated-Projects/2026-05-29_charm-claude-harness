@@ -114,7 +114,7 @@ export const RequestReviewInput = z.object({
 });
 export type RequestReviewInput = z.infer<typeof RequestReviewInput>;
 
-// One-sentence human-readable summary of this session, shown by `harness list`.
+// One-sentence human-readable summary of this session, shown by `charm list`.
 // 80-char cap is enforced here (not just in the prompt) so a chatty agent
 // can't blow up the listing layout.
 export const SetSessionDescriptionInput = z.object({

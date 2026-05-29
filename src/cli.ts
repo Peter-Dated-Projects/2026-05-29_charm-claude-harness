@@ -3,26 +3,26 @@ import { Command } from "commander";
 import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, cpSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { harnessPaths } from "./paths.ts";
+import { charmPaths } from "./paths.ts";
 import { rpcCall } from "./daemon/rpc.ts";
 import { Tmux } from "./daemon/tmux.ts";
 import { fileURLToPath } from "node:url";
 
 const program = new Command();
 program
-  .name("harness")
-  .description("Terminal-based multi-agent harness for Claude Code")
+  .name("charm")
+  .description("Terminal-based multi-agent charm for Claude Code")
   .version("0.0.1");
 
 program
   .command("init")
-  .description("scaffold .charm/ (tickets, harness.json, prompt templates) in the current dir")
+  .description("scaffold .charm/ (tickets, charm.json, prompt templates) in the current dir")
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-f, --force", "overwrite existing prompt files", false)
   .action((opts) => {
-    const paths = harnessPaths(resolve(opts.root));
-    scaffoldHarnessDir(paths, { force: opts.force });
-    console.log(`harness initialized at ${paths.harnessDir}`);
+    const paths = charmPaths(resolve(opts.root));
+    scaffoldCharmDir(paths, { force: opts.force });
+    console.log(`charm initialized at ${paths.charmDir}`);
     console.log(`  prompts:  ${paths.promptsDir}/`);
     console.log(`  tickets:  ${paths.ticketsDir}/`);
     console.log(`  config:   ${paths.mcpConfig}`);
@@ -32,7 +32,7 @@ program
   .command("start [goal...]")
   .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session", "harness")
+  .option("-s, --session <name>", "tmux session", "charm")
   .option(
     "-m, --model <model>",
     "model for the main agent: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m (or a raw claude-* id)",
@@ -40,9 +40,9 @@ program
   )
   .option("--no-attach", "do not auto-attach to the tmux session")
   .action(async (goalParts: string[], opts) => {
-    const paths = harnessPaths(resolve(opts.root));
+    const paths = charmPaths(resolve(opts.root));
     // Reuse an existing .charm/ if present, otherwise scaffold a fresh one.
-    scaffoldHarnessDir(paths, { force: false });
+    scaffoldCharmDir(paths, { force: false });
     if (!Tmux.available()) {
       console.error("tmux is required.");
       process.exit(2);
@@ -51,8 +51,8 @@ program
     const goal = (goalParts ?? []).join(" ").trim();
     const plain = goal.length === 0;
 
-    // 1. Spawn harnessd in background
-    const logFile = join(paths.logsDir, "harnessd.log");
+    // 1. Spawn charmd in background
+    const logFile = join(paths.logsDir, "charmd.log");
     const daemonEntry = resolveBinary("dev:daemon", "src/daemon/index.ts");
     const child = spawn("bun", ["run", daemonEntry, "--root", paths.root, "--session", opts.session], {
       stdio: ["ignore", "inherit", "inherit"],
@@ -60,7 +60,7 @@ program
       env: { ...process.env },
     });
     child.unref();
-    console.log(`[harness] daemon pid=${child.pid}, log=${logFile}`);
+    console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
 
     // 2. Wait for socket
     await waitForSocket(paths.socket, 10_000);
@@ -69,10 +69,10 @@ program
     // 3. Open tmux layout: window with main pane + console pane
     const tmux = new Tmux(opts.session);
     if (tmux.hasSession()) {
-      console.error(`[harness] tmux session '${opts.session}' already exists. Use --session or kill it.`);
+      console.error(`[charm] tmux session '${opts.session}' already exists. Use --session or kill it.`);
       process.exit(2);
     }
-    tmux.newSession("harness", paths.root);
+    tmux.newSession("charm", paths.root);
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
     const { buildClaudeCommand, resolveModel } = await import("./daemon/spawn.ts");
@@ -83,7 +83,7 @@ program
       console.error(e.message);
       process.exit(2);
     }
-    console.log(`[harness] main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
+    console.log(`[charm] main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
     const mainCmd = buildClaudeCommand(paths, "main-001", {
       role: "main",
       ticket_id: null,
@@ -95,7 +95,7 @@ program
     const consoleEntry = resolveBinary("dev:console", "src/console/app.tsx");
     const consoleCmd = `bun run ${shellQuote(consoleEntry)} --root ${shellQuote(paths.root)}`;
 
-    const consolePane = tmux.spawnInWindow("harness", consoleCmd, paths.root);
+    const consolePane = tmux.spawnInWindow("charm", consoleCmd, paths.root);
     const mainPane = tmux.splitPane({ cmd: mainCmd, cwd: paths.root, direction: "h", size: "65%" });
 
     // Tell the daemon which pane is the console (pinned left column) and
@@ -106,9 +106,9 @@ program
       agent_pane_ids: [mainPane],
     });
 
-    // Bind `:` (no prefix) to a tmux command-prompt that runs `harness ctl`.
+    // Bind `:` (no prefix) to a tmux command-prompt that runs `charm ctl`.
     // Works from any pane — console or agent — so the user can quit/detach
-    // the whole harness from wherever the cursor happens to be.
+    // the whole charm from wherever the cursor happens to be.
     const cliEntry = fileURLToPath(import.meta.url);
     const ctlTemplate =
       `${shellQuote(process.execPath)} ${shellQuote(cliEntry)} ctl ` +
@@ -116,7 +116,7 @@ program
     tmux.bindCommandPrompt(ctlTemplate);
 
     // Focus the main agent pane so keystrokes go to Claude, not the console.
-    tmux.selectPane(`${opts.session}:harness.1`);
+    tmux.selectPane(`${opts.session}:charm.1`);
 
     if (opts.attach !== false) tmux.attach();
     else console.log(`tmux session '${opts.session}' ready. attach with: tmux attach -t ${opts.session}`);
@@ -124,8 +124,8 @@ program
 
 program
   .command("attach")
-  .description("attach to the tmux session for the harness")
-  .option("-s, --session <name>", "tmux session", "harness")
+  .description("attach to the tmux session for the charm")
+  .option("-s, --session <name>", "tmux session", "charm")
   .action((opts) => {
     const tmux = new Tmux(opts.session);
     if (!tmux.hasSession()) {
@@ -140,7 +140,7 @@ program
   .description("print agents, tickets, pending approvals")
   .option("-r, --root <path>", "project root", process.cwd())
   .action(async (opts) => {
-    const paths = harnessPaths(resolve(opts.root));
+    const paths = charmPaths(resolve(opts.root));
     try {
       const s = await rpcCall<any>(paths.socket, "status");
       console.log(JSON.stringify(s, null, 2));
@@ -156,7 +156,7 @@ program
   .option("-r, --root <path>", "project root", process.cwd())
   .option("--reject", "reject instead of approve", false)
   .action(async (gateId: string, opts) => {
-    const paths = harnessPaths(resolve(opts.root));
+    const paths = charmPaths(resolve(opts.root));
     const res = await rpcCall<{ resolved: boolean }>(paths.socket, "approve_gate", {
       id: gateId,
       decision: opts.reject ? "reject" : "approve",
@@ -168,9 +168,9 @@ program
   .command("ctl <cmd>")
   .description("internal: handle a vim-style command (`:q`, `:a`) from the tmux key binding")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session", "harness")
+  .option("-s, --session <name>", "tmux session", "charm")
   .action(async (cmd: string, opts) => {
-    const paths = harnessPaths(resolve(opts.root));
+    const paths = charmPaths(resolve(opts.root));
     const tmux = new Tmux(opts.session);
     const c = cmd.trim().toLowerCase();
     if (c === "q" || c === "quit") {
@@ -183,7 +183,7 @@ program
       return;
     }
     // Unknown: surface in tmux status line briefly.
-    spawn("tmux", ["display-message", `unknown harness command: ${cmd}`], { stdio: "ignore" });
+    spawn("tmux", ["display-message", `unknown charm command: ${cmd}`], { stdio: "ignore" });
   });
 
 program.parseAsync(process.argv).catch((e) => {
@@ -191,11 +191,11 @@ program.parseAsync(process.argv).catch((e) => {
   process.exit(1);
 });
 
-function scaffoldHarnessDir(
-  paths: ReturnType<typeof harnessPaths>,
+function scaffoldCharmDir(
+  paths: ReturnType<typeof charmPaths>,
   { force }: { force: boolean },
 ) {
-  mkdirSync(paths.harnessDir, { recursive: true });
+  mkdirSync(paths.charmDir, { recursive: true });
   mkdirSync(paths.ticketsDir, { recursive: true });
   mkdirSync(paths.promptsDir, { recursive: true });
   mkdirSync(paths.logsDir, { recursive: true });
@@ -208,13 +208,13 @@ function scaffoldHarnessDir(
       cpSync(join(templatesDir, f), dest);
     }
   } else {
-    console.warn("[harness] prompt templates not found; skipping prompt scaffold");
+    console.warn("[charm] prompt templates not found; skipping prompt scaffold");
   }
 
-  const mcpBin = process.env.HARNESS_MCP_BIN ?? "harness-mcp";
+  const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
   const mcpConfig = {
     mcpServers: {
-      harness: { command: mcpBin, args: [], env: {} },
+      charm: { command: mcpBin, args: [], env: {} },
     },
   };
   if (!existsSync(paths.mcpConfig) || force) {

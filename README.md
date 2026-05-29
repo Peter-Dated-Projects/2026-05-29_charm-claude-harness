@@ -1,9 +1,9 @@
 
-# Plan — Claude Code Multi-Agent Harness ("Calm Meadow")
+# Plan — Claude Code Multi-Agent Charm ("Calm Meadow")
 
 ## Context
 
-We're building a terminal-based orchestration harness that wraps standalone `claude` CLI processes into a visible, staged, multi-agent workflow. The motivating problem: Claude Code's built-in subagent tool hides subagents inside the parent process, so the user can't watch them work or intervene. We want the opposite — every agent runs as a real `claude` process in its own terminal pane, the human approves transitions between stages, and agents coordinate through a shared planning file rather than git worktrees.
+We're building a terminal-based orchestration charm that wraps standalone `claude` CLI processes into a visible, staged, multi-agent workflow. The motivating problem: Claude Code's built-in subagent tool hides subagents inside the parent process, so the user can't watch them work or intervene. We want the opposite — every agent runs as a real `claude` process in its own terminal pane, the human approves transitions between stages, and agents coordinate through a shared planning file rather than git worktrees.
 
 All agents work on **one shared git tree** (no worktrees). Parallelism safety comes from two layers:
 1. **Hard layer** — each ticket declares its file scope (`touches:`), and the daemon refuses to run two workers whose scopes overlap.
@@ -27,7 +27,7 @@ Stage gates are blocking — the daemon halts the pipeline until the human types
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  harnessd  (Bun + TypeScript)                        │
+│  charmd  (Bun + TypeScript)                        │
 │    ticket store (.md + bun:sqlite index)             │
 │    agent registry, dep + file-scope solver           │
 │    .charm/COORDINATION.md writer (file-locked)       │
@@ -36,8 +36,8 @@ Stage gates are blocking — the daemon halts the pipeline until the human types
 └──────────────────┬───────────────────────────────────┘
                    │
        ┌───────────┴───────────┐
-       │  harness-mcp (Bun TS) │  stdio, one instance per claude
-       │  thin RPC shim        │  process; exposes harness tools
+       │  charm-mcp (Bun TS) │  stdio, one instance per claude
+       │  thin RPC shim        │  process; exposes charm tools
        └───────────┬───────────┘
                    │
   ┌────────┬───────┴────────┬─────────────┐
@@ -80,9 +80,9 @@ Stage gates are blocking — the daemon halts the pipeline until the human types
 | Console pane | **Ink** (React-based TUI) + `chokidar` | Tabbed TUI in one reserved tmux pane: **Artifacts** (live file viewer for `.charm/PROJECT.md`, `.charm/COORDINATION.md`, `.charm/tickets/*.md` with fs-watch auto-refresh and stage-aware default selection) and **Approvals** (pending human gates). Same TUI stack Claude Code itself uses. |
 | Schema validation | `zod` | RPC envelopes, MCP tool inputs, frontmatter |
 
-Distribution: `bun build src/cli.ts --compile --outfile harness` produces a standalone binary. The MCP shim is a separate compiled entrypoint (`bun build src/mcp/server.ts --compile --outfile harness-mcp`) so each `claude` process spawns it cleanly with no runtime dependency.
+Distribution: `bun build src/cli.ts --compile --outfile charm` produces a standalone binary. The MCP shim is a separate compiled entrypoint (`bun build src/mcp/server.ts --compile --outfile charm-mcp`) so each `claude` process spawns it cleanly with no runtime dependency.
 
-## Artifacts the harness owns
+## Artifacts the charm owns
 
 - `.charm/PROJECT.md` — human-approved project brief (Stage 0 output)
 - `.charm/tickets/T-NNN.md` — one ticket per file, YAML frontmatter (`title, status, stage, depends_on, touches`)
@@ -90,7 +90,7 @@ Distribution: `bun build src/cli.ts --compile --outfile harness` produces a stan
 - `.charm/db.sqlite` — fast index
 - `.charm/sock` — daemon Unix socket
 - `.charm/prompts/*.md` — system prompts for each role (first-class deliverables)
-- `.charm/harness.json` — MCP server config consumed by every `claude` process
+- `.charm/charm.json` — MCP server config consumed by every `claude` process
 
 ## Spawning a `claude` process — concrete invocations
 
@@ -98,14 +98,14 @@ Distribution: `bun build src/cli.ts --compile --outfile harness` produces a stan
 # Interactive worker (visible streaming, human can intervene)
 claude \
   --append-system-prompt "$(cat .charm/prompts/worker.md)" \
-  --mcp-config .charm/harness.json \
+  --mcp-config .charm/charm.json \
   "Implement ticket T-007. First read .charm/tickets/T-007.md and .charm/COORDINATION.md, \
    then call update_plan() with your plan, then implement."
 
 # Headless review pass (one-shot, exits when done)
 claude -p \
   --append-system-prompt "$(cat .charm/prompts/reviewer.md)" \
-  --mcp-config .charm/harness.json \
+  --mcp-config .charm/charm.json \
   "Review and enrich .charm/tickets/T-007.md in place."
 ```
 
@@ -137,17 +137,17 @@ Quality of prompts will make or break the user-perceived behavior. Write each as
 ## MVP build order
 
 1. `bun init`, `tsconfig.json`, repo layout. Single `package.json`, multiple bin entrypoints.
-2. `harness` CLI skeleton (`commander`) — `init`, `start`, `attach`, `status`.
-3. `harnessd` daemon (long-running Bun process) — Unix-socket RPC, in-memory agent registry.
+2. `charm` CLI skeleton (`commander`) — `init`, `start`, `attach`, `status`.
+3. `charmd` daemon (long-running Bun process) — Unix-socket RPC, in-memory agent registry.
 4. tmux integration — spawn pane, capture pane id, kill pane.
-5. `harness-mcp` stdio MCP server (`@modelcontextprotocol/sdk`), wired to daemon RPC.
+5. `charm-mcp` stdio MCP server (`@modelcontextprotocol/sdk`), wired to daemon RPC.
 6. Five prompt files under `.charm/prompts/`.
 7. Ticket store — `gray-matter` parse/write + `bun:sqlite` index.
 8. Dep + file-scope solver using `graphology` + `graphology-dag`.
 9. `.charm/COORDINATION.md` writer with file-locked atomic rewrites + JSON-shaped section per agent.
 10. Console pane (Ink, one reserved tmux pane): **Artifacts** tab (file tree + live markdown viewer, fs-watch via `chokidar`, stage-aware default file) and **Approvals** tab (pending gates, accept/reject inline).
 11. End-to-end smoke test (see Verification).
-12. `bun build --compile` recipes for `harness` and `harness-mcp`.
+12. `bun build --compile` recipes for `charm` and `charm-mcp`.
 
 ### Out of scope for MVP
 - Custom in-app window manager replacing tmux (v2)
@@ -159,13 +159,13 @@ Quality of prompts will make or break the user-perceived behavior. Write each as
 ## Critical files to create
 
 - `package.json`, `tsconfig.json`, `bun.lockb` at repo root
-- `src/cli.ts` — `harness` CLI entrypoint (`init`, `start`, `attach`, `status`)
+- `src/cli.ts` — `charm` CLI entrypoint (`init`, `start`, `attach`, `status`)
 - `src/daemon/{index.ts, registry.ts, tmux.ts, solver.ts, coord.ts, rpc.ts}`
-- `src/mcp/{server.ts, tools.ts}` — compiled to `harness-mcp` binary
+- `src/mcp/{server.ts, tools.ts}` — compiled to `charm-mcp` binary
 - `src/console/{app.tsx, artifacts.tsx, approvals.tsx}` — Ink-based Console pane
 - `src/schema.ts` — `zod` schemas for ticket frontmatter, RPC envelopes, MCP tool I/O
 - `.charm/prompts/{discovery,planner,reviewer,worker,tester}.md` (templates)
-- `.charm/harness.json` (MCP config template consumed by every `claude` process)
+- `.charm/charm.json` (MCP config template consumed by every `claude` process)
 
 No existing code to reuse — this is greenfield (repo only has the initial commit).
 
@@ -173,8 +173,8 @@ No existing code to reuse — this is greenfield (repo only has the initial comm
 
 End-to-end smoke test:
 
-1. `harness init` in an empty directory → confirms `.charm/tickets/`, `.charm/harness.json`, `.charm/` created.
-2. `harness start "build a markdown to-do CLI in Rust"` → tmux session opens, main agent in pane 0, Console pane reserved on the right showing the Artifacts tab (initially empty).
+1. `charm init` in an empty directory → confirms `.charm/tickets/`, `.charm/charm.json`, `.charm/` created.
+2. `charm start "build a markdown to-do CLI in Rust"` → tmux session opens, main agent in pane 0, Console pane reserved on the right showing the Artifacts tab (initially empty).
 3. Discovery chat works → `.charm/PROJECT.md` written and **appears live in the Console pane's Artifacts tab** as the main agent writes it; approval gate fires in the Approvals tab; human approves.
 4. Main generates tickets → `ls .charm/tickets/` shows N files with valid `touches` and `depends_on`.
 5. Review agents spawn → headless panes appear and exit; each ticket's body has been enriched.

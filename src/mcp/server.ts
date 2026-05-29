@@ -5,18 +5,18 @@ import { z } from "zod";
 import { rpcCall } from "../daemon/rpc.ts";
 
 /**
- * harness-mcp — stdio MCP shim spawned by every `claude` process.
- * It forwards tool calls to the running `harnessd` over a Unix socket.
+ * charm-mcp — stdio MCP shim spawned by every `claude` process.
+ * It forwards tool calls to the running `charmd` over a Unix socket.
  *
- * The daemon socket path is provided via the HARNESS_SOCKET env var (exported
- * by buildClaudeCommand). The agent's id (HARNESS_AGENT_ID) is folded into
+ * The daemon socket path is provided via the CHARM_SOCKET env var (exported
+ * by buildClaudeCommand). The agent's id (CHARM_AGENT_ID) is folded into
  * worker-side calls so the daemon knows which agent reported.
  */
 
-const SOCKET = process.env.HARNESS_SOCKET;
-const AGENT_ID = process.env.HARNESS_AGENT_ID;
+const SOCKET = process.env.CHARM_SOCKET;
+const AGENT_ID = process.env.CHARM_AGENT_ID;
 if (!SOCKET) {
-  console.error("[harness-mcp] HARNESS_SOCKET env var is required");
+  console.error("[charm-mcp] CHARM_SOCKET env var is required");
   process.exit(1);
 }
 
@@ -30,7 +30,7 @@ function ok(payload: unknown) {
   };
 }
 
-const server = new McpServer({ name: "harness-mcp", version: "0.0.1" });
+const server = new McpServer({ name: "charm-mcp", version: "0.0.1" });
 
 server.registerTool(
   "create_tickets",
@@ -87,7 +87,7 @@ server.registerTool(
     inputSchema: { plan: z.string() },
   },
   async (args) => {
-    if (!AGENT_ID) throw new Error("HARNESS_AGENT_ID not set");
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
     return ok(await call("update_plan", { agent_id: AGENT_ID, plan: args.plan }));
   },
 );
@@ -111,7 +111,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    if (!AGENT_ID) throw new Error("HARNESS_AGENT_ID not set");
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
     return ok(await call("report_status", { agent_id: AGENT_ID, ...args }));
   },
 );
@@ -121,7 +121,7 @@ server.registerTool(
   {
     description:
       "Main-agent: set or update a one-sentence (≤80 char) human-readable description of this session, " +
-      "shown by `harness list`. Call this once near the end of Stage 0 (after PROJECT.md firms up) " +
+      "shown by `charm list`. Call this once near the end of Stage 0 (after PROJECT.md firms up) " +
       "and again any time you realize the framing has materially changed (e.g. scope pivot).",
     inputSchema: { description: z.string().min(1).max(80) },
   },
@@ -139,4 +139,4 @@ server.registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error("[harness-mcp] connected (agent=" + (AGENT_ID ?? "?") + ", socket=" + SOCKET + ")");
+console.error("[charm-mcp] connected (agent=" + (AGENT_ID ?? "?") + ", socket=" + SOCKET + ")");

@@ -1,14 +1,14 @@
 {
-  "name": "claude-agent-harness",
+  "name": "charm-claude-harness",
   "version": "0.0.1",
-  "description": "Terminal-based orchestration harness for multi-agent Claude Code workflows",
+  "description": "Terminal-based orchestration charm for multi-agent Claude Code workflows",
   "type": "module",
   "private": true,
   "bin": {
-    "harness": "./src/cli.ts",
-    "harnessd": "./src/daemon/index.ts",
-    "harness-mcp": "./src/mcp/server.ts",
-    "harness-console": "./src/console/app.tsx"
+    "charm": "./src/cli.ts",
+    "charmd": "./src/daemon/index.ts",
+    "charm-mcp": "./src/mcp/server.ts",
+    "charm-console": "./src/console/app.tsx"
   },
   "scripts": {
     "dev:cli": "bun run src/cli.ts",
@@ -16,9 +16,9 @@
     "dev:mcp": "bun run src/mcp/server.ts",
     "dev:console": "bun run src/console/app.tsx",
     "build": "bun run build:cli && bun run build:mcp && bun run build:console",
-    "build:cli": "bun build src/cli.ts --compile --outfile dist/harness",
-    "build:mcp": "bun build src/mcp/server.ts --compile --outfile dist/harness-mcp",
-    "build:console": "bun build src/console/app.tsx --compile --outfile dist/harness-console --external react-devtools-core",
+    "build:cli": "bun build src/cli.ts --compile --outfile dist/charm",
+    "build:mcp": "bun build src/mcp/server.ts --compile --outfile dist/charm-mcp",
+    "build:console": "bun build src/console/app.tsx --compile --outfile dist/charm-console --external react-devtools-core",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
