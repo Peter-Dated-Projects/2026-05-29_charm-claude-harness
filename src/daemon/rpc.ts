@@ -53,7 +53,12 @@ export async function rpcCall<T = unknown>(socketPath: string, method: string, p
   return new Promise<T>((resolve, reject) => {
     let buf = "";
     let settled = false;
-    const sock = Bun.connect({
+    // Bun.connect returns a promise that rejects if the connection can't be
+    // established (e.g. ENOENT when the daemon socket doesn't exist). None of
+    // the socket handlers below fire in that case, so we must catch the
+    // connect rejection here — otherwise rpcCall never settles and the failure
+    // surfaces as an unhandled rejection that crashes the CLI.
+    Bun.connect({
       unix: socketPath,
       socket: {
         data(s, data) {
@@ -84,7 +89,11 @@ export async function rpcCall<T = unknown>(socketPath: string, method: string, p
           if (!settled) reject(new Error("rpc socket closed before reply"));
         },
       },
+    }).catch((err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
     });
-    void sock;
   });
 }

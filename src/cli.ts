@@ -156,7 +156,11 @@ program
       const s = await rpcCall<any>(paths.socket, "status");
       console.log(JSON.stringify(s, null, 2));
     } catch (e: any) {
-      console.error(`daemon unreachable: ${e.message}`);
+      if (!existsSync(paths.socket)) {
+        console.error("no charm daemon running. start one with: charm start");
+      } else {
+        console.error(`daemon unreachable: ${e.message}`);
+      }
       process.exit(1);
     }
   });
