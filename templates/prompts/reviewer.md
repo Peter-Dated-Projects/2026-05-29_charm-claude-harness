@@ -1,5 +1,5 @@
 ---
-name: harness-reviewer
+name: charm-reviewer
 description: Stage 2 headless role. Enrich exactly one ticket in place with acceptance criteria, edge cases, refined touches; never expand scope. Call report_status(state="done") and exit.
 ---
 

@@ -1,11 +1,11 @@
 ---
-name: harness-worker
+name: charm-worker
 description: Stage 3 interactive role. Read .charm/COORDINATION.md first, call update_plan() before editing, stay within ticket touches, request_review() when done. Use when assigned a ticket to implement.
 ---
 
 # Worker (Stage 3)
 
-You are a **worker agent** implementing one ticket on a shared git tree alongside other workers. The harness enforces hard scope rules (`touches`), but you are responsible for the soft layer: keeping everyone aware of what you're doing.
+You are a **worker agent** implementing one ticket on a shared git tree alongside other workers. The charm enforces hard scope rules (`touches`), but you are responsible for the soft layer: keeping everyone aware of what you're doing.
 
 ## Mandatory protocol
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
 import { Command } from "commander";
-import { harnessPaths } from "../paths.ts";
+import { charmPaths } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
 import { AgentRegistry } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
@@ -28,19 +28,19 @@ type DaemonOpts = { root: string; session: string };
 async function main() {
   const program = new Command();
   program
-    .name("harnessd")
+    .name("charmd")
     .option("--root <path>", "project root", process.cwd())
-    .option("--session <name>", "tmux session name", "harness")
+    .option("--session <name>", "tmux session name", "charm")
     .parse(process.argv);
   const opts = program.opts<DaemonOpts>();
 
-  const paths = harnessPaths(opts.root);
-  mkdirSync(paths.harnessDir, { recursive: true });
+  const paths = charmPaths(opts.root);
+  mkdirSync(paths.charmDir, { recursive: true });
   mkdirSync(paths.logsDir, { recursive: true });
 
   if (existsSync(paths.pidFile)) {
     const stale = Number(Bun.file(paths.pidFile).text());
-    console.error(`[harnessd] pidfile exists (pid=${stale}); refusing to start. rm ${paths.pidFile} if stale.`);
+    console.error(`[charmd] pidfile exists (pid=${stale}); refusing to start. rm ${paths.pidFile} if stale.`);
     process.exit(2);
   }
   writeFileSync(paths.pidFile, String(process.pid));
@@ -54,7 +54,7 @@ async function main() {
 
   const tmuxAvailable = Tmux.available();
   if (!tmuxAvailable) {
-    console.error("[harnessd] WARNING: tmux not on PATH; spawning panes will fail.");
+    console.error("[charmd] WARNING: tmux not on PATH; spawning panes will fail.");
   }
 
   const inFlight = (): InFlight[] =>
@@ -71,7 +71,7 @@ async function main() {
   // agent pane registered by `cli.ts start` before any sub-agents.
   let consolePaneId: string | null = null;
   const agentPaneIds: string[] = [];
-  const WINDOW = "harness";
+  const WINDOW = "charm";
 
   function relayout() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
@@ -97,7 +97,7 @@ async function main() {
       });
       tmux.applyLayout(WINDOW, layout);
     } catch (e) {
-      console.error("[harnessd] relayout failed:", e);
+      console.error("[charmd] relayout failed:", e);
     }
   }
 
@@ -306,10 +306,10 @@ async function main() {
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  console.log(`[harnessd] listening on ${paths.socket} (session=${opts.session}, root=${paths.root})`);
+  console.log(`[charmd] listening on ${paths.socket} (session=${opts.session}, root=${paths.root})`);
 }
 
 main().catch((e) => {
-  console.error("[harnessd] fatal:", e);
+  console.error("[charmd] fatal:", e);
   process.exit(1);
 });

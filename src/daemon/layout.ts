@@ -1,4 +1,4 @@
-// Builds a tmux custom-layout string for the harness window.
+// Builds a tmux custom-layout string for the charm window.
 //
 // Window shape:
 //   [ console column | agent region ]

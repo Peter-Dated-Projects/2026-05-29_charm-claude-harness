@@ -1,9 +1,9 @@
 import { openSync, closeSync, writeFileSync, readFileSync, existsSync, renameSync, fsyncSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import type { Agent } from "../schema.ts";
-import type { HarnessPaths } from "../paths.ts";
+import type { CharmPaths } from "../paths.ts";
 
-const HEADER = "# COORDINATION.md\n\n_Updated automatically by harnessd. Do not edit by hand._\n\n";
+const HEADER = "# COORDINATION.md\n\n_Updated automatically by charmd. Do not edit by hand._\n\n";
 const BEGIN = "<!-- BEGIN AGENT ";
 const END = "<!-- END AGENT ";
 
@@ -11,7 +11,7 @@ type Entry = { agent: Agent; updated_at: number };
 
 export class CoordinationWriter {
   private lockPath: string;
-  constructor(private paths: HarnessPaths) {
+  constructor(private paths: CharmPaths) {
     this.lockPath = paths.coordinationMd + ".lock";
   }
 

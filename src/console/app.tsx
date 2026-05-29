@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import chokidar from "chokidar";
 import { Command } from "commander";
-import { harnessPaths, type HarnessPaths } from "../paths.ts";
+import { charmPaths, type CharmPaths } from "../paths.ts";
 import { rpcCall } from "../daemon/rpc.ts";
 import type { ApprovalGate, Agent, TicketFrontmatter } from "../schema.ts";
 
@@ -16,7 +16,7 @@ type Tab = "artifacts" | "approvals" | "agents";
 const program = new Command();
 program.option("-r, --root <path>", "project root", process.cwd()).parse(process.argv);
 const ROOT = resolve(program.opts<{ root: string }>().root);
-const PATHS = harnessPaths(ROOT);
+const PATHS = charmPaths(ROOT);
 
 type Status = {
   tickets: TicketFrontmatter[];
@@ -41,7 +41,7 @@ function useStatus(intervalMs = 1500): Status {
   return status;
 }
 
-function useFileTree(paths: HarnessPaths): string[] {
+function useFileTree(paths: CharmPaths): string[] {
   const [files, setFiles] = useState<string[]>([]);
   useEffect(() => {
     const compute = () => {
@@ -272,8 +272,25 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
   const [idx, setIdx] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [killArm, setKillArm] = useState<string | null>(null);
+  const [pending, setPending] = useState<Record<string, "dismissing" | "killing">>({});
   const agents = status.agents;
   const selected = agents[Math.min(idx, agents.length - 1)];
+
+  // Drop "dismissing"/"killing" markers for agents that have left the
+  // registry. Until then the row stays red so the user sees instant feedback
+  // during the brief window between RPC success and the next status poll.
+  useEffect(() => {
+    setPending((p) => {
+      const liveIds = new Set(agents.map((a) => a.id));
+      let changed = false;
+      const next: Record<string, "dismissing" | "killing"> = {};
+      for (const [id, v] of Object.entries(p)) {
+        if (liveIds.has(id)) next[id] = v;
+        else changed = true;
+      }
+      return changed ? next : p;
+    });
+  }, [agents]);
   const canDismiss = selected && (selected.state === "done" || selected.state === "failed");
   const canKill = selected && (selected.state === "spawning" || selected.state === "running");
 
@@ -284,18 +301,29 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
     if (input === "d") {
       setKillArm(null);
       if (!selected) return;
+      if (pending[selected.id]) return;
       if (!canDismiss) {
         setMessage(`cannot dismiss ${selected.id}: state is ${selected.state}`);
         return;
       }
+      const targetId = selected.id;
+      setPending((p) => ({ ...p, [targetId]: "dismissing" }));
+      setMessage(`dismissing ${targetId}...`);
       try {
-        await rpcCall(PATHS.socket, "dismiss_agent", { agent_id: selected.id });
-        setMessage(`dismissed ${selected.id}`);
+        await rpcCall(PATHS.socket, "dismiss_agent", { agent_id: targetId });
+        setMessage(`dismissed ${targetId}`);
         setIdx((i) => Math.max(0, Math.min(i, agents.length - 2)));
-      } catch (e: any) { setMessage(e.message); }
+      } catch (e: any) {
+        setMessage(e.message);
+        // Only clear pending on error — on success, the cleanup effect drops
+        // it when the agent disappears from status, so the row stays red
+        // through the brief window before the next poll prunes it.
+        setPending((p) => { const n = { ...p }; delete n[targetId]; return n; });
+      }
     }
     if (input === "x") {
       if (!selected) return;
+      if (pending[selected.id]) return;
       if (!canKill) {
         setMessage(`cannot kill ${selected.id}: state is ${selected.state} (use [d] to dismiss)`);
         return;
@@ -305,12 +333,18 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
         setMessage(`press x again to kill ${selected.id}`);
         return;
       }
+      const targetId = selected.id;
+      setKillArm(null);
+      setPending((p) => ({ ...p, [targetId]: "killing" }));
+      setMessage(`killing ${targetId}...`);
       try {
-        await rpcCall(PATHS.socket, "kill_agent", { agent_id: selected.id });
-        setMessage(`killed ${selected.id}`);
-        setKillArm(null);
+        await rpcCall(PATHS.socket, "kill_agent", { agent_id: targetId });
+        setMessage(`killed ${targetId}`);
         setIdx((i) => Math.max(0, Math.min(i, agents.length - 2)));
-      } catch (e: any) { setMessage(e.message); setKillArm(null); }
+      } catch (e: any) {
+        setMessage(e.message);
+        setPending((p) => { const n = { ...p }; delete n[targetId]; return n; });
+      }
     }
   }, { isActive: inputActive });
 
@@ -321,12 +355,16 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
         <Text dimColor>no agents running</Text>
       ) : agents.map((a, i) => {
         const finished = a.state === "done" || a.state === "failed";
-        const color = i === idx ? "cyan" : finished ? (a.state === "done" ? "green" : "red") : undefined;
+        const action = pending[a.id];
+        const color = action
+          ? "red"
+          : finished ? (a.state === "done" ? "green" : "red") : i === idx ? "cyan" : undefined;
         const armed = killArm === a.id;
-        const badge = finished ? " [d to dismiss]" : armed ? " [x again to kill]" : "";
+        const stateLabel = action === "killing" ? "killing..." : action === "dismissing" ? "dismissing..." : a.state;
+        const badge = action ? "" : finished ? " [d to dismiss]" : armed ? " [x again to kill]" : "";
         return (
           <Text key={a.id} color={color} bold={i === idx} wrap="truncate-end">
-            {i === idx ? "▶ " : "  "}{a.role} {a.id} — {a.state}
+            {i === idx ? "▶ " : "  "}{a.role} {a.id} — {stateLabel}
             {a.ticket_id ? ` · ${a.ticket_id}` : ""}
             {a.pane_id ? ` · ${a.pane_id}` : ""}
             {badge}
