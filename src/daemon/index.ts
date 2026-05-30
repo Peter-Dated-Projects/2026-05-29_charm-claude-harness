@@ -54,26 +54,29 @@ function graphBinArgs(): string[] {
 /** How to open ONE graph viewer in a brand-new OS terminal window, fully outside
  *  tmux. Returns a spawnSync-style spec (the daemon runs it and returns).
  *
- *  The viewer runs as `CHARM_GRAPH_PIDFILE=<file> <graphbin>; exit` inside the new
- *  window: it self-registers its PID for `charm stop` to reap, and the trailing
+ *  The viewer runs as `CHARM_GRAPH_PIDFILE=<file> CHARM_KB_DIR=<dir> <graphbin>; exit`
+ *  inside the new window: it self-registers its PID for `charm stop` to reap,
+ *  renders + live-watches the knowledge base at CHARM_KB_DIR, and the trailing
  *  `exit` lets the window close once the viewer quits (subject to the terminal's
  *  "close on clean exit" setting).
  *
  *  Which terminal: an explicit CHARM_GRAPH_TERMINAL_CMD wins (a custom launcher;
- *  it receives CHARM_GRAPH_CMD + CHARM_GRAPH_PIDFILE in its env). Otherwise we open
- *  the same program charm itself is running in, read from TERM_PROGRAM (inherited
- *  by the daemon from `charm start`). iTerm and Apple Terminal each get their own
- *  AppleScript dialect; anything else (or a missing TERM_PROGRAM) falls back to
- *  Terminal.app, which exists on every Mac. */
-function graphLaunchSpec(pidFile: string): { cmd: string; args: string[]; env?: NodeJS.ProcessEnv } {
-  const inner = `CHARM_GRAPH_PIDFILE=${shq(pidFile)} ${graphBinArgs().map(shq).join(" ")}; exit`;
+ *  it receives CHARM_GRAPH_CMD + CHARM_GRAPH_PIDFILE + CHARM_KB_DIR in its env).
+ *  Otherwise we open the same program charm itself is running in, read from
+ *  TERM_PROGRAM (inherited by the daemon from `charm start`). iTerm and Apple
+ *  Terminal each get their own AppleScript dialect; anything else (or a missing
+ *  TERM_PROGRAM) falls back to Terminal.app, which exists on every Mac. */
+function graphLaunchSpec(pidFile: string, kbDir: string): { cmd: string; args: string[]; env?: NodeJS.ProcessEnv } {
+  const inner =
+    `CHARM_GRAPH_PIDFILE=${shq(pidFile)} CHARM_KB_DIR=${shq(kbDir)} ` +
+    `${graphBinArgs().map(shq).join(" ")}; exit`;
 
   const custom = process.env.CHARM_GRAPH_TERMINAL_CMD;
   if (custom) {
     return {
       cmd: "sh",
       args: ["-c", custom],
-      env: { ...process.env, CHARM_GRAPH_CMD: inner, CHARM_GRAPH_PIDFILE: pidFile },
+      env: { ...process.env, CHARM_GRAPH_CMD: inner, CHARM_GRAPH_PIDFILE: pidFile, CHARM_KB_DIR: kbDir },
     };
   }
 
@@ -464,7 +467,7 @@ async function main() {
         // opens an independent window (any number can run at once); the viewer
         // self-registers its PID in paths.graphPids on startup and removes it on
         // exit, so `charm stop` / daemon teardown can reap every window.
-        const spec = graphLaunchSpec(paths.graphPids);
+        const spec = graphLaunchSpec(paths.graphPids, paths.kbDir);
         const r = spawnSync(spec.cmd, spec.args, { stdio: "ignore", env: spec.env });
         if (r.error) throw new Error(`failed to open graph viewer: ${r.error.message}`);
         if (r.status !== 0) throw new Error(`failed to open graph viewer (exit ${r.status})`);

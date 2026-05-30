@@ -17,6 +17,9 @@
  */
 
 import { appendGraphViewerPid, removeGraphViewerPid } from "../graph-viewers.ts";
+import { readdirSync, readFileSync, existsSync, watch, type FSWatcher } from "node:fs";
+import { join, relative, dirname, resolve } from "node:path";
+import matter from "gray-matter";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -111,6 +114,89 @@ function dummyGraph(): { nodes: Node[]; edges: Edge[] } {
   link("coordination", "rpc");
   link("mcp-shim", "T-006");
 
+  return { nodes, edges };
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge-base graph
+// ---------------------------------------------------------------------------
+
+// Maps a note's `root` (from frontmatter, or its top-level KB directory) to a
+// stable color group. Notes outside these roots (INDEX.md, CONTRIBUTING.md)
+// share the leftover group.
+const KB_ROOTS = ["architecture", "decisions", "conventions", "gotchas", "domain"];
+
+function listMarkdown(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (d: string) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name.endsWith(".md")) out.push(p);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+/** A note's id is its KB-relative path without the .md extension — exactly the
+ *  form used in frontmatter `related:` (e.g. "architecture/spawn-model"). */
+function noteId(kbDir: string, file: string): string {
+  return relative(kbDir, file).replace(/\.md$/, "").split("\\").join("/");
+}
+
+/** Build the graph from the knowledge base on disk: one node per .md note, with
+ *  edges from frontmatter `related:` paths and from ordinary markdown links in
+ *  the body. Returns null if the KB is missing or has no notes (caller falls
+ *  back to the demo graph). Per-node x/y are seeded randomly; the live-rebuild
+ *  path copies surviving nodes' positions over so the layout doesn't teleport. */
+function buildGraphFromKb(kbDir: string): { nodes: Node[]; edges: Edge[] } | null {
+  const files = listMarkdown(kbDir);
+  if (files.length === 0) return null;
+
+  const ids = new Set(files.map((f) => noteId(kbDir, f)));
+  const nodes: Node[] = [];
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  const addEdge = (a: string, b: string) => {
+    if (a === b || !ids.has(a) || !ids.has(b)) return; // skip self + dangling links
+    const key = a < b ? `${a}\n${b}` : `${b}\n${a}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    edges.push({ source: a, target: b });
+  };
+
+  for (const file of files) {
+    const id = noteId(kbDir, file);
+    let raw: string;
+    try { raw = readFileSync(file, "utf8"); } catch { continue; }
+
+    let data: Record<string, unknown> = {};
+    let body = raw;
+    try { const fm = matter(raw); data = fm.data ?? {}; body = fm.content ?? raw; } catch { /* malformed frontmatter: treat whole file as body */ }
+
+    const root = typeof data.root === "string" ? data.root : id.split("/")[0]!;
+    const groupIdx = KB_ROOTS.indexOf(root);
+    const group = groupIdx >= 0 ? groupIdx : KB_ROOTS.length;
+    // `_index` notes are directory hubs: label them by their directory instead.
+    const base = id.split("/").pop()!;
+    const label = base === "_index" ? (id.split("/").slice(-2)[0] ?? base) : (typeof data.id === "string" ? data.id : base);
+    nodes.push({ id, label, group, x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 4, vx: 0, vy: 0 });
+
+    // Frontmatter `related:` — KB-relative paths (tolerate a stray .md).
+    const related = Array.isArray(data.related) ? data.related : [];
+    for (const r of related) if (typeof r === "string") addEdge(id, r.replace(/\.md$/, ""));
+
+    // Body markdown links to other notes: [text](relative/path.md[#anchor]).
+    const noteDir = dirname(file);
+    for (const m of body.matchAll(/\]\(([^)\s]+?\.md)(?:#[^)]*)?\)/g)) {
+      const target = m[1]!;
+      if (/^[a-z]+:\/\//i.test(target)) continue; // external URL
+      addEdge(id, noteId(kbDir, resolve(noteDir, target)));
+    }
+  }
   return { nodes, edges };
 }
 
@@ -315,9 +401,48 @@ function main(): void {
   const pidFile = process.env.CHARM_GRAPH_PIDFILE;
   if (pidFile) appendGraphViewerPid(pidFile, process.pid);
 
+  // Live knowledge-base view. The daemon passes the KB directory via CHARM_KB_DIR;
+  // we render its notes-and-links graph and re-read it whenever a file changes, so
+  // editing the KB updates the open viewer. Without CHARM_KB_DIR (e.g. run by
+  // hand) we keep the demo graph above. `live` drives the status-line hint.
+  const kbDir = process.env.CHARM_KB_DIR;
+  const live = !!(kbDir && existsSync(kbDir));
+  let kbWatcher: FSWatcher | null = null;
+  let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Rebuild from disk, carrying surviving nodes' positions/velocities across so
+  // the layout eases to the new shape instead of teleporting; new notes get their
+  // random seed and settle in. Empty/again-unreadable KB: keep the current graph.
+  const applyKb = () => {
+    if (!kbDir) return;
+    const g = buildGraphFromKb(kbDir);
+    if (!g || g.nodes.length === 0) return;
+    for (const n of g.nodes) {
+      const prev = byId.get(n.id);
+      if (prev) { n.x = prev.x; n.y = prev.y; n.vx = prev.vx; n.vy = prev.vy; }
+    }
+    nodes = g.nodes;
+    edges = g.edges;
+    byId = new Map(nodes.map((n) => [n.id, n] as const));
+  };
+
+  if (live) {
+    applyKb(); // replace the demo graph with the real KB on startup
+    try {
+      // fs.watch with recursive is native on macOS; debounce bursts (editors emit
+      // several events per save) into a single rebuild.
+      kbWatcher = watch(kbDir!, { recursive: true }, () => {
+        if (rebuildTimer) clearTimeout(rebuildTimer);
+        rebuildTimer = setTimeout(applyKb, 150);
+      });
+    } catch { /* watch unsupported here: fall back to the startup snapshot */ }
+  }
+
   const cleanup = () => {
     clearInterval(timer);
     out.off("resize", onResize);
+    if (rebuildTimer) clearTimeout(rebuildTimer);
+    kbWatcher?.close();
     out.write("\x1b[0m\x1b[?25h\x1b[?1049l"); // reset, show cursor, leave alt screen
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
@@ -325,12 +450,18 @@ function main(): void {
   };
   const quit = () => { cleanup(); process.exit(0); };
 
+  // Re-seed the layout: re-randomize positions of the CURRENT graph (KB or demo)
+  // and let physics resettle, rather than reverting to the demo graph.
+  const reseed = () => {
+    for (const n of nodes) { n.x = (Math.random() - 0.5) * 4; n.y = (Math.random() - 0.5) * 4; n.vx = 0; n.vy = 0; }
+  };
+
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on("data", (buf: Buffer) => {
     const k = buf.toString();
     if (k === "q" || k === "\x1b" || k === "\x03") quit();
-    else if (k === "r") { ({ nodes, edges } = dummyGraph()); byId = new Map(nodes.map((n) => [n.id, n] as const)); }
+    else if (k === "r") reseed();
     else if (k === " ") paused = !paused;
   });
   process.on("SIGINT", quit);
@@ -353,7 +484,7 @@ function main(): void {
     const status =
       `\x1b[${rows + 1};1H\x1b[0m\x1b[2K` +
       `\x1b[38;5;245m ${nodes.length} nodes · ${edges.length} edges · ${fps.toFixed(0)} fps` +
-      `${paused ? " · PAUSED" : ""} · [q]uit [r]eseed [space]pause\x1b[0m`;
+      `${live ? " · live KB" : " · demo"}${paused ? " · PAUSED" : ""} · [q]uit [r]eseed [space]pause\x1b[0m`;
     out.write(body + status);
   };
 
@@ -372,4 +503,8 @@ function main(): void {
   draw();
 }
 
-main();
+// Only take over the terminal when run directly; importing the module (e.g. for
+// tests of buildGraphFromKb) must not launch the viewer.
+if (import.meta.main) main();
+
+export { buildGraphFromKb };
