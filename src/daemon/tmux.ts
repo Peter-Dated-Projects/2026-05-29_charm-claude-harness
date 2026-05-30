@@ -128,6 +128,14 @@ export class Tmux {
     return Number.isFinite(n) ? n : null;
   }
 
+  /** Current width of a pane in cells. Returns null if the pane no longer exists. */
+  paneWidth(paneId: string): number | null {
+    const r = spawnSync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_width}"], { encoding: "utf8" });
+    if (r.status !== 0) return null;
+    const n = Number(r.stdout.trim());
+    return Number.isFinite(n) ? n : null;
+  }
+
   /** Apply a tmux custom layout string (incl. checksum prefix) to the named window. */
   applyLayout(window: string, layout: string): void {
     const r = spawnSync(

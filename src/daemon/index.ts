@@ -85,9 +85,15 @@ async function main() {
         if (idx !== null) agentIdxs.push(idx);
       }
       if (agentIdxs.length === 0) return;
-      // Console keeps the same 35% share it had under the old fixed split,
-      // floored at 40 cols so the Ink TUI stays readable on small terminals.
-      const consoleWidth = Math.max(40, Math.floor(win.w * 0.35));
+      // Preserve whatever width the console column currently has -- the user
+      // may have dragged the divider. Fall back to a 35% share only on the
+      // first layout, when the pane hasn't been sized yet. Floored at 40 cols
+      // so the Ink TUI stays readable, and capped so the agent grid keeps room.
+      const cur = tmux.paneWidth(consolePaneId);
+      const consoleWidth = Math.min(
+        Math.max(20, win.w - 20),
+        Math.max(40, cur ?? Math.floor(win.w * 0.35)),
+      );
       const layout = buildLayoutString({
         windowWidth: win.w,
         windowHeight: win.h,
