@@ -62,8 +62,8 @@ program
     // 1. Spawn charmd in background. CHARM_MODE tells the daemon which model to
     // give every sub-agent it spawns (workers, reviewers, testers).
     const logFile = join(paths.logsDir, "charmd.log");
-    const daemonEntry = resolveBinary("dev:daemon", "src/daemon/index.ts");
-    const child = spawn("bun", ["run", daemonEntry, "--root", paths.root, "--session", opts.session], {
+    const [daemonCmd, ...daemonPrefix] = resolveChild("daemon");
+    const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", opts.session], {
       stdio: ["ignore", "inherit", "inherit"],
       detached: true,
       env: { ...process.env, CHARM_MODE: mode },
@@ -103,8 +103,8 @@ program
       model: mainModel,
       plain,
     });
-    const consoleEntry = resolveBinary("dev:console", "src/console/app.tsx");
-    const consoleCmd = `bun run ${shellQuote(consoleEntry)} --root ${shellQuote(paths.root)}`;
+    const consoleArgv = resolveChild("console");
+    const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)}`;
 
     const consolePane = tmux.spawnInWindow("charm", consoleCmd, paths.root);
     const mainPane = tmux.splitPane({ cmd: mainCmd, cwd: paths.root, direction: "h", size: "65%" });
@@ -120,9 +120,14 @@ program
     // Bind `:` (no prefix) to a tmux command-prompt that runs `charm ctl`.
     // Works from any pane — console or agent — so the user can quit/detach
     // the whole charm from wherever the cursor happens to be.
-    const cliEntry = fileURLToPath(import.meta.url);
+    // Re-invoke THIS cli for the `:` tmux command prompt. From source that's
+    // `bun <cli.ts> ctl …`; a compiled binary dispatches its own subcommands,
+    // so it's just `<binary> ctl …` (its embedded cli.ts path isn't on disk).
+    const selfArgv = isCompiled()
+      ? [process.execPath]
+      : [process.execPath, fileURLToPath(import.meta.url)];
     const ctlTemplate =
-      `${shellQuote(process.execPath)} ${shellQuote(cliEntry)} ctl ` +
+      `${selfArgv.map(shellQuote).join(" ")} ctl ` +
       `--root ${shellQuote(paths.root)} --session ${shellQuote(opts.session)} %1`;
     tmux.bindCommandPrompt(ctlTemplate);
 
@@ -287,16 +292,42 @@ function locateTemplateDir(name: string): string | null {
   const candidates = [
     join(here, "..", "templates", name),
     join(here, "..", "..", "templates", name),
+    // Installed standalone binary: `frieren.sh install` copies templates into a
+    // share/charm dir that sits a level above the binary's bin dir, e.g.
+    // ~/.local/bin/charm -> ~/.local/share/charm/templates.
+    join(dirname(process.execPath), "..", "share", "charm", "templates", name),
     join(process.cwd(), "templates", name),
   ];
   for (const c of candidates) if (existsSync(c)) return c;
   return null;
 }
 
-function resolveBinary(_devScript: string, fallback: string): string {
-  // For now, always run the TS source. Compiled-binary support comes from `bun build --compile`.
-  const here = typeof import.meta.url === "string" ? dirname(fileURLToPath(import.meta.url)) : process.cwd();
-  return resolve(here, "..", fallback);
+/** True when running as a `bun build --compile` standalone binary rather than
+ *  from TS source via `bun run`. In a compiled binary this module's own URL
+ *  resolves into Bun's embedded virtual filesystem, which isn't on the real
+ *  disk — so the source file we'd otherwise hand to `bun run` is absent. */
+function isCompiled(): boolean {
+  if (typeof import.meta.url !== "string") return false;
+  try {
+    return !existsSync(fileURLToPath(import.meta.url));
+  } catch {
+    return true;
+  }
+}
+
+/** argv used to launch one of charm's sibling processes (daemon or console).
+ *  From TS source we run the entrypoint via `bun run`; from a compiled binary
+ *  we exec the sibling binary that `frieren.sh install` placed next to us on
+ *  PATH — the repo's src/ files don't exist on disk inside the binary. */
+function resolveChild(kind: "daemon" | "console"): string[] {
+  if (!isCompiled()) {
+    const sourceRel = kind === "daemon" ? "src/daemon/index.ts" : "src/console/app.tsx";
+    const here = dirname(fileURLToPath(import.meta.url));
+    return ["bun", "run", resolve(here, "..", sourceRel)];
+  }
+  const binName = kind === "daemon" ? "charmd" : "charm-console";
+  const sibling = join(dirname(process.execPath), binName);
+  return [existsSync(sibling) ? sibling : binName];
 }
 
 async function waitForSocket(path: string, timeoutMs: number): Promise<void> {
