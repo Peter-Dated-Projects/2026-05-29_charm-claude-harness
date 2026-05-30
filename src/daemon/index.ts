@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Command } from "commander";
 import { charmPaths } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
@@ -72,6 +73,9 @@ async function main() {
   let consolePaneId: string | null = null;
   const agentPaneIds: string[] = [];
   const WINDOW = "charm";
+  // Pane id of the standalone graph-viewer window, if one is open. Tracked so a
+  // repeat open_graph call re-focuses the existing window instead of stacking.
+  let graphPaneId: string | null = null;
 
   function relayout() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
@@ -286,6 +290,26 @@ async function main() {
           cleanup();
         }, 50);
         return { ok: true };
+      }
+      case "open_graph": {
+        // Open the standalone force-directed graph viewer in its own tmux window.
+        // Currently renders a demo graph; wiring it to live ticket/agent state is
+        // a follow-up. The viewer is a separate process that owns its terminal with
+        // raw ANSI (no Ink), so it animates without React reconciliation cost.
+        if (!tmuxAvailable) throw new Error("tmux is not available; cannot open the graph viewer");
+        if (graphPaneId && tmux.paneIndex(graphPaneId) !== null) {
+          tmux.selectWindow(graphPaneId);
+          return { ok: true, reused: true, pane: graphPaneId };
+        }
+        // CHARM_GRAPH_BIN lets a compiled build point at the `charm-graph` binary;
+        // otherwise run the source under the same Bun runtime as the daemon.
+        const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+        const graphBin = process.env.CHARM_GRAPH_BIN;
+        const cmd = graphBin
+          ? `exec ${q(graphBin)}`
+          : `exec ${q(process.execPath)} run ${q(join(import.meta.dir, "../console/graph.ts"))}`;
+        graphPaneId = tmux.newWindow({ name: "graph", cmd, cwd: paths.root });
+        return { ok: true, reused: false, pane: graphPaneId };
       }
       case "request_review": {
         const input = RequestReviewInput.parse(params);

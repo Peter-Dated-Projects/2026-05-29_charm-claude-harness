@@ -58,6 +58,30 @@ export class Tmux {
     return r.stdout.trim();
   }
 
+  /**
+   * Create a new window in this session running `cmd`, and return its pane id.
+   * Used for standalone full-window views (e.g. the graph viewer) that should
+   * not disturb the agent-grid layout in the main window. By default the pane
+   * closes when the command exits (remain-on-exit off), overriding the
+   * session-level `remain-on-exit on` we set for crashing agents.
+   */
+  newWindow(opts: { name: string; cmd: string; cwd: string; remainOnExit?: boolean }): string {
+    const r = spawnSync(
+      "tmux",
+      ["new-window", "-t", this.session, "-n", opts.name, "-P", "-F", "#{pane_id}", "-c", opts.cwd, "sh", "-c", opts.cmd],
+      { encoding: "utf8" },
+    );
+    if (r.status !== 0) throw new Error(`tmux new-window failed: ${r.stderr}`);
+    const pane = r.stdout.trim();
+    spawnSync("tmux", ["set-option", "-p", "-t", pane, "remain-on-exit", opts.remainOnExit ? "on" : "off"]);
+    return pane;
+  }
+
+  /** Bring the window containing `target` (window or pane id) to the foreground. */
+  selectWindow(target: string): void {
+    spawnSync("tmux", ["select-window", "-t", target]);
+  }
+
   /** Start a command in the initial window's only pane (Stage 0 main agent). */
   spawnInWindow(window: string, cmd: string, cwd: string): string {
     const target = `${this.session}:${window}.0`;
