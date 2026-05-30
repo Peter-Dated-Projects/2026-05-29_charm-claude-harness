@@ -8,18 +8,21 @@
     "charm": "./src/cli.ts",
     "charmd": "./src/daemon/index.ts",
     "charm-mcp": "./src/mcp/server.ts",
-    "charm-console": "./src/console/app.tsx"
+    "charm-console": "./src/console/app.tsx",
+    "charm-graph": "./src/console/graph.ts"
   },
   "scripts": {
     "dev:cli": "bun run src/cli.ts",
     "dev:daemon": "bun run src/daemon/index.ts",
     "dev:mcp": "bun run src/mcp/server.ts",
     "dev:console": "bun run src/console/app.tsx",
-    "build": "bun run build:cli && bun run build:daemon && bun run build:mcp && bun run build:console",
+    "dev:graph": "bun run src/console/graph.ts",
+    "build": "bun run build:cli && bun run build:daemon && bun run build:mcp && bun run build:console && bun run build:graph",
     "build:cli": "mkdir -p dist && cd dist && bun build ../src/cli.ts --compile --outfile charm-claude",
     "build:daemon": "mkdir -p dist && cd dist && bun build ../src/daemon/index.ts --compile --outfile charmd",
     "build:mcp": "mkdir -p dist && cd dist && bun build ../src/mcp/server.ts --compile --outfile charm-mcp",
     "build:console": "mkdir -p dist && cd dist && bun build ../src/console/app.tsx --compile --outfile charm-console",
+    "build:graph": "mkdir -p dist && cd dist && bun build ../src/console/graph.ts --compile --outfile charm-graph",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

@@ -137,6 +137,19 @@ server.registerTool(
   async (args) => ok(await call("request_review", args)),
 );
 
+server.registerTool(
+  "open_graph",
+  {
+    description:
+      "Open the charm graph viewer: a standalone, animated force-directed view of the " +
+      "project graph (Obsidian-style nodes and edges) in its own tmux window. Call this " +
+      "when the user asks to see, open, or visualize the graph / map / dependency view. " +
+      "If a viewer is already open, it is brought to the foreground.",
+    inputSchema: {},
+  },
+  async () => ok(await call("open_graph")),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error("[charm-mcp] connected (agent=" + (AGENT_ID ?? "?") + ", socket=" + SOCKET + ")");
