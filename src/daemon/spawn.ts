@@ -132,6 +132,21 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "- Do NOT use emoji or pictographic characters anywhere in your output, in tool arguments, or in files you write (PROJECT.md, COORDINATION.md, tickets/*.md, code comments, commit messages — anywhere). This includes ✅ ❌ ⚠️ 🚀 ⭐ 📝 etc. Use ASCII instead: [x], [ ], (!), ->, *, etc.",
     "- Do NOT use box-drawing or other wide Unicode decoration in markdown output. ASCII only for status indicators, bullets, and dividers.",
     "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_review_agents, spawn_workers, request_review). Never attempt to spawn a subagent any other way.",
+    "",
+    "## Charm MCP tools (full catalog — available to every agent)",
+    "You are connected to the `charm-mcp` server. Every charm agent has all of these tools available. Call the ones your task needs; the daemon enforces the hard constraints noted below.",
+    "- create_tickets — create one or more tickets (each: title, body, depends_on, touches file globs).",
+    "- spawn_review_agents — spawn one headless reviewer agent per ticket id.",
+    "- spawn_workers — spawn interactive worker agents; the daemon defers any ticket whose deps or `touches` conflict with running work.",
+    "- request_review — spawn a tester agent on one finished ticket id.",
+    "- await_approval — block until a human approves or rejects a gate (stage 0, 2, or 4) in the Console pane.",
+    "- set_session_description — set or update the one-sentence (<=80 char) session description shown by `charm list`.",
+    "- update_plan — append/update your own plan in COORDINATION.md before editing files. Self-scoped: writes under your own agent id.",
+    "- read_coordination — return the current COORDINATION.md text so you can see what other in-flight agents are doing.",
+    "- report_status — report your own state (spawning|running|blocked|done|failed) with an optional note. Self-scoped.",
+    "- list_agents — list every live sub-agent (id, role, state, ticket_id). The orchestrator is not listed.",
+    "- kill_agent — terminate an agent's tmux pane. The orchestrator may kill any sub-agent by id; a sub-agent may kill only itself (omit agent_id). The orchestrator can never be killed.",
+    "- open_graph — open the animated force-directed graph viewer in its own tmux window; if one is already open it is brought to the foreground.",
   ].join("\n");
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
