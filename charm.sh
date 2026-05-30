@@ -13,7 +13,16 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve REPO_DIR through any symlink chain so the wrapper works when invoked
+# via a symlink on PATH (e.g. ~/.local/bin/charm -> this file). macOS ships BSD
+# readlink without -f, so walk the chain manually.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 SESSION="${CHARM_SESSION:-charm}"
 
 need() {
@@ -49,6 +58,17 @@ case "${1:-}" in
   stop)
     ROOT="${2:-$PWD}"
     PIDFILE="${ROOT}/.charm/charmd.pid"
+    # Close standalone graph viewers first, by tracked PID. Done before killing
+    # the daemon so they're reaped even if the daemon is already gone -- and so
+    # it still works if viewers ever run outside the tmux session.
+    VIEWERS="${ROOT}/.charm/graph-viewers.pids"
+    if [[ -f "$VIEWERS" ]]; then
+      while IFS= read -r vpid; do
+        [[ -n "$vpid" ]] || continue
+        kill "$vpid" 2>/dev/null && echo "closed graph viewer pid=$vpid" || true
+      done < "$VIEWERS"
+      rm -f "$VIEWERS"
+    fi
     if [[ -f "$PIDFILE" ]]; then
       PID="$(cat "$PIDFILE")"
       kill "$PID" 2>/dev/null && echo "killed charmd pid=$PID" || true

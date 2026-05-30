@@ -105,7 +105,8 @@ cmd_build() {
                 "src/cli.ts:charm-claude:" \
                 "src/daemon/index.ts:charmd:" \
                 "src/mcp/server.ts:charm-mcp:" \
-                "src/console/app.tsx:charm-console:"; do
+                "src/console/app.tsx:charm-console:" \
+                "src/console/graph.ts:charm-graph:"; do
                 local entry name extra
                 entry="${spec%%:*}"; spec="${spec#*:}"
                 name="${spec%%:*}"; extra="${spec#*:}"
@@ -113,7 +114,7 @@ cmd_build() {
                 bun build "$entry" --compile --target=bun-darwin-x64   --outfile "dist/x64/$name"   $extra
             done
             mkdir -p dist/universal
-            for name in charm-claude charmd charm-mcp charm-console; do
+            for name in charm-claude charmd charm-mcp charm-console charm-graph; do
                 lipo -create -output "dist/universal/$name" "dist/arm64/$name" "dist/x64/$name"
             done
             echo "==> Universal binaries in dist/universal/"
@@ -153,11 +154,12 @@ cmd_clean() {
 }
 
 # Names of the binaries installed onto PATH. `charm` is the CLI (built from
-# src/cli.ts as charm-claude); the other three are spawned by name at runtime —
+# src/cli.ts as charm-claude); the others are spawned by name at runtime —
 # charmd/charm-console by the CLI relative to its own path (resolveChild in
-# src/cli.ts), charm-mcp by every claude process via .charm/charm.json. They
-# must all sit in the same directory.
-INSTALL_BINS=(charmd charm-console charm-mcp)   # plus `charm` (from charm-claude)
+# src/cli.ts), charm-mcp by every claude process via .charm/charm.json, and
+# charm-graph by the daemon relative to its own path (graphLaunchCmd in
+# src/daemon/index.ts). They must all sit in the same directory.
+INSTALL_BINS=(charmd charm-console charm-mcp charm-graph)   # plus `charm` (from charm-claude)
 
 cmd_install() {
     # Build standalone binaries and install them onto PATH so `charm` works

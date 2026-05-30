@@ -138,13 +138,44 @@ server.registerTool(
 );
 
 server.registerTool(
+  "list_agents",
+  {
+    description:
+      "List every live sub-agent the daemon is tracking (id, role, state, ticket_id). " +
+      "Use this before kill_agent to see exactly which agents exist and their ids. " +
+      "The orchestrator (main agent) is not listed and cannot be killed.",
+    inputSchema: {},
+  },
+  async () => ok(await call("list_agents")),
+);
+
+server.registerTool(
+  "kill_agent",
+  {
+    description:
+      "Terminate an agent: kill its tmux pane and drop it from the registry. If it was " +
+      "mid-ticket, that ticket is marked failed so it can be reassigned.\n" +
+      "- Orchestrator (main agent): may kill ANY sub-agent (reviewer/worker/tester) by id.\n" +
+      "- Sub-agent: may kill ONLY ITSELF — omit agent_id (or pass your own id) to abort your " +
+      "own ticket when you are stuck and cannot make progress.\n" +
+      "The orchestrator can never be killed by anyone. Call list_agents first to get valid ids.",
+    inputSchema: { agent_id: z.string().nullable().default(null) },
+  },
+  async (args) => {
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
+    return ok(await call("kill_agent", { caller_id: AGENT_ID, agent_id: args.agent_id }));
+  },
+);
+
+server.registerTool(
   "open_graph",
   {
     description:
       "Open the charm graph viewer: a standalone, animated force-directed view of the " +
-      "project graph (Obsidian-style nodes and edges) in its own tmux window. Call this " +
-      "when the user asks to see, open, or visualize the graph / map / dependency view. " +
-      "If a viewer is already open, it is brought to the foreground.",
+      "project graph (Obsidian-style nodes and edges) in a brand-new terminal window on " +
+      "the user's computer, separate from the charm tmux session. Call this when the user " +
+      "asks to see, open, or visualize the graph / map / dependency view. Each call opens " +
+      "an independent window; closing it (q/Esc) or `charm stop` shuts it down.",
     inputSchema: {},
   },
   async () => ok(await call("open_graph")),

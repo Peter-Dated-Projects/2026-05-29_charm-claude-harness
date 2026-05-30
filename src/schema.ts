@@ -114,6 +114,18 @@ export const RequestReviewInput = z.object({
 });
 export type RequestReviewInput = z.infer<typeof RequestReviewInput>;
 
+// kill_agent authorization is driven by caller_id:
+//  - absent  -> the human operator (Console pane); may kill any sub-agent.
+//  - present -> folded in by the MCP shim from CHARM_AGENT_ID. The orchestrator
+//    (main) may kill any sub-agent; a sub-agent may only kill itself.
+// A null/absent agent_id means "kill myself" (only meaningful for an agent caller).
+// The orchestrator id is always protected — see MAIN_AGENT_ID in daemon/spawn.ts.
+export const KillAgentInput = z.object({
+  caller_id: z.string().optional(),
+  agent_id: z.string().nullable().default(null),
+});
+export type KillAgentInput = z.infer<typeof KillAgentInput>;
+
 // One-sentence human-readable summary of this session, shown by `charm list`.
 // 80-char cap is enforced here (not just in the prompt) so a chatty agent
 // can't blow up the listing layout.

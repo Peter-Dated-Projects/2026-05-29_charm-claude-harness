@@ -16,6 +16,8 @@
  * Keys:  q / Esc / Ctrl-C  quit      r  re-seed layout      space  pause physics
  */
 
+import { appendGraphViewerPid, removeGraphViewerPid } from "../graph-viewers.ts";
+
 // ---------------------------------------------------------------------------
 // Tunables
 // ---------------------------------------------------------------------------
@@ -307,12 +309,19 @@ function main(): void {
   const out = process.stdout;
   out.write("\x1b[?1049h\x1b[?25l\x1b[2J"); // alt screen, hide cursor, clear
 
+  // Self-register so `charm stop` can reap this window even though it lives in a
+  // separate OS terminal the daemon never sees. The daemon passes the tracking
+  // file path via CHARM_GRAPH_PIDFILE; absent it (e.g. run by hand) we just skip.
+  const pidFile = process.env.CHARM_GRAPH_PIDFILE;
+  if (pidFile) appendGraphViewerPid(pidFile, process.pid);
+
   const cleanup = () => {
     clearInterval(timer);
     out.off("resize", onResize);
     out.write("\x1b[0m\x1b[?25h\x1b[?1049l"); // reset, show cursor, leave alt screen
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
+    if (pidFile) removeGraphViewerPid(pidFile, process.pid);
   };
   const quit = () => { cleanup(); process.exit(0); };
 

@@ -99,6 +99,24 @@ export class Tmux {
     spawnSync("tmux", ["kill-pane", "-t", paneId]);
   }
 
+  /**
+   * Type a line of text into a specific pane and submit it (Enter). Targeting is
+   * by pane id, so this is independent of which pane currently holds focus — the
+   * user's cursor never moves and their keystrokes to any other pane are
+   * untouched. Used to wake the orchestrator when a sub-agent changes state.
+   *
+   * `-l` sends the text literally (no tmux key-name interpretation), so a stray
+   * word like "Enter" or "C-c" in the message can't be read as a keypress. We do
+   * NOT clear the pane's input line first: if a human happens to be typing into
+   * this exact pane, our text appends rather than destroying their in-progress
+   * input. Send the literal text and the Enter as two calls — a trailing "Enter"
+   * inside an `-l` payload would be typed verbatim, not submitted.
+   */
+  sendText(paneId: string, text: string): void {
+    spawnSync("tmux", ["send-keys", "-t", paneId, "-l", text]);
+    spawnSync("tmux", ["send-keys", "-t", paneId, "Enter"]);
+  }
+
   selectPane(paneId: string): void {
     spawnSync("tmux", ["select-pane", "-t", paneId]);
   }

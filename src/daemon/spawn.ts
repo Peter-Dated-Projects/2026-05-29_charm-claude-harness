@@ -3,6 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import type { CharmPaths } from "../paths.ts";
 import type { AgentRole } from "../schema.ts";
 
+/** The orchestrator always runs under this fixed agent id. It is spawned directly by
+ *  `charm start` (not through the registry's auto-incrementing sub-agent sequence), so
+ *  no reviewer/worker/tester can ever collide with it. The kill path treats this id as
+ *  protected: no caller — not the orchestrator itself, not a sub-agent, not the human
+ *  operator — may terminate it via kill_agent. */
+export const MAIN_AGENT_ID = "main-001";
+
 export type SpawnSpec = {
   role: AgentRole;
   ticket_id: string | null;
@@ -51,9 +58,13 @@ export function isMode(v: string | undefined | null): v is CharmMode {
 /** Default model per agent role, used only when no mode and no per-role override
  *  is set. Override per-spawn by setting `spec.model` explicitly, globally via the
  *  CHARM_MODEL_<ROLE> env vars (e.g. CHARM_MODEL_WORKER=opus-4.7), or for the whole
- *  fleet via the charm mode (CHARM_MODE=research|development). */
+ *  fleet via the charm mode (CHARM_MODE=research|development).
+ *
+ *  The main agent runs both Stage 0 (discovery) and Stage 1 (planning) — the most
+ *  reasoning-intensive work in the workflow. It defaults to Opus. Sub-agents
+ *  (reviewers, workers, testers) follow the fleet mode; their default is Sonnet. */
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
-  main: "sonnet-4.6",
+  main: "opus-4.8",
   reviewer: "sonnet-4.6",
   worker: "sonnet-4.6",
   tester: "sonnet-4.6",
@@ -71,18 +82,43 @@ export function defaultModelForRole(role: AgentRole): string {
   return resolveModel(DEFAULT_MODEL_BY_ROLE[role]);
 }
 
-/** Thinking-token budgets. Claude Code reads MAX_THINKING_TOKENS from the
- *  environment. "high" is our default; drop to "medium"/"low" via CHARM_THINKING
- *  for lighter reasoning. */
+/** Thinking-token budgets passed as MAX_THINKING_TOKENS to each claude process.
+ *
+ *  "max" is reserved for the main agent (discovery + planning): the graph
+ *  decomposition problem benefits from the largest available reasoning budget.
+ *  Sub-agents default to "high". Override globally with CHARM_THINKING or
+ *  per-role with CHARM_THINKING_<ROLE> (e.g. CHARM_THINKING_WORKER=medium). */
 export const THINKING_BUDGETS: Record<string, number> = {
   off: 0,
   low: 4000,
   medium: 10000,
   high: 32000,
+  max: 64000,
 };
 
+/** Per-role thinking defaults. main gets "max"; everything else gets "high". */
+export const DEFAULT_THINKING_BY_ROLE: Record<AgentRole, string> = {
+  main: "max",
+  reviewer: "high",
+  worker: "high",
+  tester: "high",
+};
+
+/** Global thinking floor from CHARM_THINKING (applies to roles that don't have a
+ *  per-role override). "high" if not set. */
 export function defaultThinkingTokens(): number {
   const level = (process.env.CHARM_THINKING ?? "high").toLowerCase();
+  return THINKING_BUDGETS[level] ?? THINKING_BUDGETS.high!;
+}
+
+/** Resolve thinking-token budget for a specific role. Precedence:
+ *    1. CHARM_THINKING_<ROLE> env override (e.g. CHARM_THINKING_MAIN=high)
+ *    2. DEFAULT_THINKING_BY_ROLE (main=max, others=high)
+ *  The global CHARM_THINKING env var is NOT consulted here — use CHARM_THINKING_<ROLE>
+ *  to tune individual roles without affecting the fleet default. */
+export function defaultThinkingForRole(role: AgentRole): number {
+  const override = (process.env[`CHARM_THINKING_${role.toUpperCase()}`] ?? "").toLowerCase();
+  const level = override || DEFAULT_THINKING_BY_ROLE[role] || "high";
   return THINKING_BUDGETS[level] ?? THINKING_BUDGETS.high!;
 }
 
@@ -174,7 +210,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // no goal): omit the positional so Claude opens waiting for user input.
   if (spec.prompt) flags.push(shellQuote(spec.prompt));
   // export agent id, then exec claude
-  const thinking = defaultThinkingTokens();
+  const thinking = defaultThinkingForRole(spec.role);
   return [
     `export CHARM_AGENT_ID=${shellQuote(agent_id)}`,
     `export CHARM_SOCKET=${shellQuote(paths.socket)}`,

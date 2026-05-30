@@ -19,6 +19,9 @@ export function charmPaths(root: string) {
     mcpConfig: join(charmDir, "charm.json"),
     pidFile: join(charmDir, "charmd.pid"),
     metaJson: join(charmDir, "meta.json"),
+    // PIDs of standalone graph-viewer processes spawned by open_graph, one per
+    // line. Persisted so `charm stop` can reap them even if the daemon is gone.
+    graphPids: join(charmDir, "graph-viewers.pids"),
   } as const;
 }
 

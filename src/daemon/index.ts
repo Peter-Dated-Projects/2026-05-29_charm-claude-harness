@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { charmPaths } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
@@ -11,7 +12,8 @@ import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, MAIN_AGENT_ID, type SpawnSpec } from "./spawn.ts";
+import { killGraphViewers } from "../graph-viewers.ts";
 import {
   CreateTicketsInput,
   SpawnReviewersInput,
@@ -21,10 +23,87 @@ import {
   ReportStatusInput,
   RequestReviewInput,
   SetSessionDescriptionInput,
+  KillAgentInput,
   SessionMeta,
+  type AgentRole,
 } from "../schema.ts";
 
 type DaemonOpts = { root: string; session: string };
+
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** argv that runs the graph viewer. Resolution precedence:
+ *    1. CHARM_GRAPH_BIN  -- explicit override (path to a charm-graph binary)
+ *    2. compiled daemon  -- the `charm-graph` binary installed alongside charmd
+ *    3. from TS source   -- `<bun> run src/console/graph.ts`
+ *  A compiled binary's own module URL lives under Bun's embedded "$bunfs" root
+ *  (not on disk) and process.execPath is the daemon binary rather than bun, so
+ *  the source-style `<bun> run <file>` form only works when running from source. */
+function graphBinArgs(): string[] {
+  const override = process.env.CHARM_GRAPH_BIN;
+  if (override) return [override];
+  const url = typeof import.meta.url === "string" ? import.meta.url : "";
+  const compiled = url.includes("/$bunfs/") || url.includes("/~BUN/");
+  if (compiled) {
+    const sibling = join(dirname(process.execPath), "charm-graph");
+    return [existsSync(sibling) ? sibling : "charm-graph"];
+  }
+  return [process.execPath, "run", join(import.meta.dir, "../console/graph.ts")];
+}
+
+/** How to open ONE graph viewer in a brand-new OS terminal window, fully outside
+ *  tmux. Returns a spawnSync-style spec (the daemon runs it and returns).
+ *
+ *  The viewer runs as `CHARM_GRAPH_PIDFILE=<file> <graphbin>; exit` inside the new
+ *  window: it self-registers its PID for `charm stop` to reap, and the trailing
+ *  `exit` lets the window close once the viewer quits (subject to the terminal's
+ *  "close on clean exit" setting).
+ *
+ *  Which terminal: an explicit CHARM_GRAPH_TERMINAL_CMD wins (a custom launcher;
+ *  it receives CHARM_GRAPH_CMD + CHARM_GRAPH_PIDFILE in its env). Otherwise we open
+ *  the same program charm itself is running in, read from TERM_PROGRAM (inherited
+ *  by the daemon from `charm start`). iTerm and Apple Terminal each get their own
+ *  AppleScript dialect; anything else (or a missing TERM_PROGRAM) falls back to
+ *  Terminal.app, which exists on every Mac. */
+function graphLaunchSpec(pidFile: string): { cmd: string; args: string[]; env?: NodeJS.ProcessEnv } {
+  const inner = `CHARM_GRAPH_PIDFILE=${shq(pidFile)} ${graphBinArgs().map(shq).join(" ")}; exit`;
+
+  const custom = process.env.CHARM_GRAPH_TERMINAL_CMD;
+  if (custom) {
+    return {
+      cmd: "sh",
+      args: ["-c", custom],
+      env: { ...process.env, CHARM_GRAPH_CMD: inner, CHARM_GRAPH_PIDFILE: pidFile },
+    };
+  }
+
+  if (process.platform !== "darwin") {
+    throw new Error(
+      "opening a separate terminal window is only built in for macOS; " +
+        "set CHARM_GRAPH_TERMINAL_CMD to a launcher (it gets $CHARM_GRAPH_CMD).",
+    );
+  }
+
+  // Escape for embedding inside an AppleScript double-quoted string literal.
+  const asStr = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const termProgram = process.env.TERM_PROGRAM ?? "";
+
+  if (termProgram === "iTerm.app") {
+    // iTerm: make a new window from the default profile, then run the command in it.
+    const script =
+      `tell application "iTerm"\n` +
+      `  set w to (create window with default profile)\n` +
+      `  tell current session of w to write text ${asStr(inner)}\n` +
+      `  activate\n` +
+      `end tell`;
+    return { cmd: "osascript", args: ["-e", script] };
+  }
+
+  // Apple Terminal (TERM_PROGRAM=Apple_Terminal) and the safe default for anything
+  // else: `do script` with no target opens a fresh window and runs the command.
+  const script = `tell application "Terminal"\n  do script ${asStr(inner)}\n  activate\nend tell`;
+  return { cmd: "osascript", args: ["-e", script] };
+}
 
 async function main() {
   const program = new Command();
@@ -72,10 +151,10 @@ async function main() {
   // agent pane registered by `cli.ts start` before any sub-agents.
   let consolePaneId: string | null = null;
   const agentPaneIds: string[] = [];
+  // Pane id of the orchestrator (main agent), set on register_panes. The daemon
+  // wakes this pane when a sub-agent finishes so the orchestrator can reap it.
+  let orchestratorPaneId: string | null = null;
   const WINDOW = "charm";
-  // Pane id of the standalone graph-viewer window, if one is open. Tracked so a
-  // repeat open_graph call re-focuses the existing window instead of stacking.
-  let graphPaneId: string | null = null;
 
   function relayout() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
@@ -123,6 +202,59 @@ async function main() {
     return agent.id;
   }
 
+  /** Kill an agent's pane and drop it from the registry, coordination doc, and
+   *  pane grid, then relayout. Shared by dismiss_agent (done/failed cleanup) and
+   *  kill_agent (forced termination). No-op if the agent is already gone. */
+  function tearDownAgent(agent_id: string) {
+    const a = registry.get(agent_id);
+    if (!a) return;
+    if (a.pane_id) {
+      try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
+      const i = agentPaneIds.indexOf(a.pane_id);
+      if (i >= 0) agentPaneIds.splice(i, 1);
+    }
+    registry.remove(agent_id);
+    coord.remove(agent_id);
+    relayout();
+  }
+
+  /** Resolve the role of a kill_agent caller. The human operator (Console pane)
+   *  sends no caller_id and is treated as a privileged operator. An agent caller
+   *  is identified by CHARM_AGENT_ID: the orchestrator's fixed id resolves to
+   *  "main"; any other id is looked up in the registry. */
+  function resolveCaller(caller_id: string | undefined): "operator" | AgentRole {
+    if (caller_id === undefined) return "operator";
+    if (caller_id === MAIN_AGENT_ID) return "main";
+    const a = registry.get(caller_id);
+    if (!a) throw new Error(`unknown caller agent: ${caller_id}`);
+    return a.role;
+  }
+
+  // Wake the orchestrator when sub-agents change state, so it can reap finished
+  // panes and advance the workflow. Bursts are coalesced into a single wake: if
+  // five workers finish at once the orchestrator (on Opus) takes one turn, not
+  // five. Events accumulate for a short window, then flush as one injected line.
+  let pingPending: string[] = [];
+  let pingTimer: ReturnType<typeof setTimeout> | null = null;
+  function pingOrchestrator(event: string) {
+    if (!tmuxAvailable || !orchestratorPaneId) return;
+    pingPending.push(event);
+    if (pingTimer) return; // already armed — coalesce into the pending flush
+    pingTimer = setTimeout(() => {
+      const events = pingPending;
+      pingPending = [];
+      pingTimer = null;
+      // The pane may have vanished (orchestrator exited) during the window.
+      if (!orchestratorPaneId || tmux.paneIndex(orchestratorPaneId) === null) return;
+      // One line only: literal newlines typed into the pane would submit early.
+      const line =
+        `[charm] ${events.join("; ")}. Check list_agents(): reap done/failed sub-agents ` +
+        `with kill_agent, address any blocked ones, and advance the workflow per your orchestrator instructions.`;
+      try { tmux.sendText(orchestratorPaneId, line); }
+      catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
+    }, 1200);
+  }
+
   const server = startRpcServer(paths.socket, async (method, params) => {
     switch (method) {
       case "ping":
@@ -152,6 +284,10 @@ async function main() {
         consolePaneId = console_pane_id;
         agentPaneIds.length = 0;
         agentPaneIds.push(...agent_pane_ids);
+        // The first agent pane is the orchestrator (main); cli.ts registers it
+        // before any sub-agents. It's the pane the daemon wakes on sub-agent
+        // state changes.
+        orchestratorPaneId = agent_pane_ids[0] ?? null;
         relayout();
         return { ok: true };
       }
@@ -225,6 +361,11 @@ async function main() {
         } else if (input.state === "failed" && a.ticket_id) {
           store.update(a.ticket_id, { status: "failed", stage: "failed" });
         }
+        // Wake the orchestrator on a sub-agent's done/failed/blocked so it can
+        // reap the pane and advance. Never ping for the main agent itself.
+        if (a.role !== "main" && (input.state === "done" || input.state === "failed" || input.state === "blocked")) {
+          pingOrchestrator(`${a.id} (${a.role}) -> ${input.state}${a.ticket_id ? ` on ${a.ticket_id}` : ""}`);
+        }
         return { ok: true };
       }
       case "dismiss_agent": {
@@ -234,33 +375,59 @@ async function main() {
         if (a.state !== "done" && a.state !== "failed") {
           throw new Error(`agent ${agent_id} is ${a.state}; only done/failed can be dismissed`);
         }
-        if (a.pane_id) {
-          try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
-          const i = agentPaneIds.indexOf(a.pane_id);
-          if (i >= 0) agentPaneIds.splice(i, 1);
-        }
-        registry.remove(agent_id);
-        coord.remove(agent_id);
-        relayout();
+        tearDownAgent(agent_id);
         return { ok: true };
       }
       case "kill_agent": {
-        const { agent_id } = params as { agent_id: string };
-        const a = registry.get(agent_id);
-        if (!a) throw new Error(`unknown agent: ${agent_id}`);
-        if (a.pane_id) {
-          try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
-          const i = agentPaneIds.indexOf(a.pane_id);
-          if (i >= 0) agentPaneIds.splice(i, 1);
+        const input = KillAgentInput.parse(params);
+        const callerRole = resolveCaller(input.caller_id);
+        // A null/absent agent_id means "kill myself". That only resolves to a
+        // concrete target for an agent caller; the human operator must name one.
+        const targetId = input.agent_id ?? input.caller_id;
+        if (!targetId) throw new Error("agent_id is required");
+
+        // The orchestrator is protected: it is never a valid kill target, for any
+        // caller. Guard on the id directly (it is not in the registry) so this holds
+        // even before the target lookup.
+        if (targetId === MAIN_AGENT_ID) {
+          throw new Error("refusing to kill the orchestrator (main agent)");
         }
-        if (a.ticket_id && (a.state === "spawning" || a.state === "running")) {
-          try { store.update(a.ticket_id, { status: "failed", stage: "failed" }); } catch { /* ignore */ }
+        const target = registry.get(targetId);
+        if (!target) throw new Error(`unknown agent: ${targetId}`);
+
+        const isSelf = targetId === input.caller_id;
+        // Authorization: the human operator and the orchestrator may kill any
+        // sub-agent; a sub-agent may only kill itself.
+        if (callerRole !== "operator" && callerRole !== "main" && !isSelf) {
+          throw new Error(
+            `agent ${input.caller_id} (${callerRole}) may only kill itself; ` +
+            `killing ${targetId} requires the orchestrator`,
+          );
         }
-        registry.remove(agent_id);
-        coord.remove(agent_id);
-        relayout();
-        return { ok: true };
+
+        // Aborting an in-flight ticket: mark it failed so it surfaces and can be
+        // reassigned, rather than leaving it orphaned in "running".
+        if (target.ticket_id && (target.state === "spawning" || target.state === "running")) {
+          try { store.update(target.ticket_id, { status: "failed", stage: "failed" }); } catch { /* ignore */ }
+        }
+
+        if (isSelf) {
+          // The caller is tearing down its own pane, which also kills the claude
+          // process that issued this RPC. Defer one tick so the reply flushes
+          // before the pane (and its MCP shim) dies — mirrors `shutdown`.
+          setTimeout(() => tearDownAgent(targetId), 50);
+        } else {
+          tearDownAgent(targetId);
+        }
+        return { ok: true, killed: targetId };
       }
+      case "list_agents":
+        return registry.list().map((a) => ({
+          id: a.id,
+          role: a.role,
+          state: a.state,
+          ticket_id: a.ticket_id,
+        }));
       case "set_session_description": {
         const input = SetSessionDescriptionInput.parse(params);
         const now = Date.now();
@@ -292,24 +459,16 @@ async function main() {
         return { ok: true };
       }
       case "open_graph": {
-        // Open the standalone force-directed graph viewer in its own tmux window.
-        // Currently renders a demo graph; wiring it to live ticket/agent state is
-        // a follow-up. The viewer is a separate process that owns its terminal with
-        // raw ANSI (no Ink), so it animates without React reconciliation cost.
-        if (!tmuxAvailable) throw new Error("tmux is not available; cannot open the graph viewer");
-        if (graphPaneId && tmux.paneIndex(graphPaneId) !== null) {
-          tmux.selectWindow(graphPaneId);
-          return { ok: true, reused: true, pane: graphPaneId };
-        }
-        // CHARM_GRAPH_BIN lets a compiled build point at the `charm-graph` binary;
-        // otherwise run the source under the same Bun runtime as the daemon.
-        const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-        const graphBin = process.env.CHARM_GRAPH_BIN;
-        const cmd = graphBin
-          ? `exec ${q(graphBin)}`
-          : `exec ${q(process.execPath)} run ${q(join(import.meta.dir, "../console/graph.ts"))}`;
-        graphPaneId = tmux.newWindow({ name: "graph", cmd, cwd: paths.root });
-        return { ok: true, reused: false, pane: graphPaneId };
+        // Open the standalone force-directed graph viewer in a brand-new OS
+        // terminal window, fully outside tmux and the charm session. Each call
+        // opens an independent window (any number can run at once); the viewer
+        // self-registers its PID in paths.graphPids on startup and removes it on
+        // exit, so `charm stop` / daemon teardown can reap every window.
+        const spec = graphLaunchSpec(paths.graphPids);
+        const r = spawnSync(spec.cmd, spec.args, { stdio: "ignore", env: spec.env });
+        if (r.error) throw new Error(`failed to open graph viewer: ${r.error.message}`);
+        if (r.status !== 0) throw new Error(`failed to open graph viewer (exit ${r.status})`);
+        return { ok: true };
       }
       case "request_review": {
         const input = RequestReviewInput.parse(params);
@@ -328,6 +487,9 @@ async function main() {
 
   const cleanup = () => {
     try { server.stop(); } catch { /* ignore */ }
+    // Reap any standalone graph viewers we spawned before we exit, so they don't
+    // linger as orphans (covers SIGINT/SIGTERM and the shutdown RPC alike).
+    try { killGraphViewers(paths.graphPids); } catch { /* ignore */ }
     try { unlinkSync(paths.socket); } catch { /* ignore */ }
     try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
     store.close();

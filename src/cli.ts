@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { charmPaths } from "./paths.ts";
 import { rpcCall } from "./daemon/rpc.ts";
 import { Tmux } from "./daemon/tmux.ts";
+import { killGraphViewers } from "./graph-viewers.ts";
 import { fileURLToPath } from "node:url";
 
 const program = new Command();
@@ -89,7 +90,7 @@ program
     tmux.newSession("charm", paths.root);
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
-    const { buildClaudeCommand, resolveModel, MODE_MODEL } = await import("./daemon/spawn.ts");
+    const { buildClaudeCommand, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
     let mainModel: string;
     try {
       // The mode picks the fleet's model; -m/--model is an advanced override of
@@ -100,7 +101,7 @@ program
       process.exit(2);
     }
     console.log(`[charm] mode: ${mode} | main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
-    const mainCmd = buildClaudeCommand(paths, "main-001", {
+    const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
       prompt: plain ? "" : `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
@@ -141,6 +142,35 @@ program
 
     if (opts.attach !== false) tmux.attach();
     else console.log(`tmux session '${opts.session}' ready. attach with: tmux attach -t ${opts.session}`);
+  });
+
+program
+  .command("stop")
+  .description("stop the charm: close all graph viewers, kill the daemon, and tear down the tmux session")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session", "charm")
+  .action((opts) => {
+    const paths = charmPaths(resolve(opts.root));
+    // 1. Close standalone graph viewers first, by tracked PID. Done here (not
+    // left to the daemon) so viewers still get reaped when the daemon is already
+    // gone — and, in future, when viewers run outside the tmux session entirely.
+    const killed = killGraphViewers(paths.graphPids);
+    if (killed.length) console.log(`[charm] closed ${killed.length} graph viewer(s): ${killed.join(", ")}`);
+    // 2. Kill the daemon (its signal handler also runs cleanup, harmlessly
+    // re-reaping viewers and removing the socket/pidfile).
+    if (existsSync(paths.pidFile)) {
+      const pid = Number(readFileSync(paths.pidFile, "utf8").trim());
+      if (pid) {
+        try { process.kill(pid); console.log(`[charm] killed daemon pid=${pid}`); }
+        catch { console.log(`[charm] daemon pid=${pid} not running`); }
+      }
+    }
+    // 3. Tear down the tmux session (closes console, agent, and graph windows).
+    const tmux = new Tmux(opts.session);
+    if (tmux.hasSession()) {
+      tmux.killSession();
+      console.log(`[charm] killed tmux session '${opts.session}'`);
+    }
   });
 
 program
@@ -308,16 +338,20 @@ function locateTemplateDir(name: string): string | null {
 }
 
 /** True when running as a `bun build --compile` standalone binary rather than
- *  from TS source via `bun run`. In a compiled binary this module's own URL
- *  resolves into Bun's embedded virtual filesystem, which isn't on the real
- *  disk — so the source file we'd otherwise hand to `bun run` is absent. */
+ *  from TS source via `bun run`. A compiled binary loads its entry module from
+ *  Bun's embedded virtual filesystem, whose paths live under a "$bunfs" root
+ *  (e.g. file:///$bunfs/root/charm). From TS source import.meta.url is a real
+ *  file:// path on disk.
+ *
+ *  We key off that "$bunfs" marker rather than probing the path with existsSync:
+ *  Bun reports the embedded path as existing (existsSync returns true in BOTH
+ *  source and compiled runs), so an existence check can't tell them apart and
+ *  would always report "source" — sending the compiled binary down the
+ *  `bun run src/...` path against a virtual-fs path bun can't load. */
 function isCompiled(): boolean {
-  if (typeof import.meta.url !== "string") return false;
-  try {
-    return !existsSync(fileURLToPath(import.meta.url));
-  } catch {
-    return true;
-  }
+  const url = typeof import.meta.url === "string" ? import.meta.url : "";
+  // macOS/Linux use "/$bunfs/"; Windows standalone binaries use "B:/~BUN/".
+  return url.includes("/$bunfs/") || url.includes("/~BUN/");
 }
 
 /** argv used to launch one of charm's sibling processes (daemon or console).
