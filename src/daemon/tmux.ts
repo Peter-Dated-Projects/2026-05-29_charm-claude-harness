@@ -1,4 +1,4 @@
-import { spawnSync, spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 export class Tmux {
   constructor(public session: string) {}
@@ -97,7 +97,14 @@ export class Tmux {
   }
 
   attach(): void {
-    spawn("tmux", ["attach-session", "-t", this.session], { stdio: "inherit" });
+    // Block until the user detaches. A non-blocking spawn() returns immediately
+    // and lets the parent process race ahead / linger as the client's parent,
+    // which leaves the tmux client without clean ownership of the terminal --
+    // the shell then tears it down and tmux reports "[server exited
+    // unexpectedly]" even though the session is fine. The shell wrapper
+    // (charm.sh) prefers exec'ing tmux directly; this is the fallback for
+    // anyone invoking the CLI without it.
+    spawnSync("tmux", ["attach-session", "-t", this.session], { stdio: "inherit" });
   }
 
   /** Window dimensions in cells. */

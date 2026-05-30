@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, cpSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, cpSync, openSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { charmPaths } from "./paths.ts";
@@ -62,9 +62,14 @@ program
     // 1. Spawn charmd in background. CHARM_MODE tells the daemon which model to
     // give every sub-agent it spawns (workers, reviewers, testers).
     const logFile = join(paths.logsDir, "charmd.log");
+    // Point the daemon's stdout/stderr at its log file rather than inheriting
+    // this CLI's TTY. The daemon outlives `start`, so an inherited TTY would
+    // (a) keep the parent's stdio fds open after we exit and (b) let stray
+    // daemon writes corrupt the tmux session once the terminal is handed off.
+    const logFd = openSync(logFile, "a");
     const [daemonCmd, ...daemonPrefix] = resolveChild("daemon");
     const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", opts.session], {
-      stdio: ["ignore", "inherit", "inherit"],
+      stdio: ["ignore", logFd, logFd],
       detached: true,
       env: { ...process.env, CHARM_MODE: mode },
     });
