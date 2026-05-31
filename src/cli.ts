@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, cpSync, openSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { charmPaths } from "./paths.ts";
+import { charmPaths, defaultSessionName, type CharmPaths } from "./paths.ts";
 import { rpcCall } from "./daemon/rpc.ts";
 import { Tmux } from "./daemon/tmux.ts";
 import { killGraphViewers } from "./graph-viewers.ts";
@@ -27,6 +27,7 @@ program
     console.log(`  prompts:  ${paths.promptsDir}/`);
     console.log(`  tickets:  ${paths.ticketsDir}/`);
     console.log(`  kb:       ${paths.kbDir}/  (durable, git-tracked)`);
+    console.log(`  skills:   ${paths.skillsDir}/  (operator skills + index)`);
     console.log(`  config:   ${paths.mcpConfig}`);
   });
 
@@ -34,7 +35,7 @@ program
   .command("start [goal...]")
   .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session", "charm")
+  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .option("--research", "research mode: run every agent on Sonnet", false)
   .option("--development", "development mode: run every agent on Opus", false)
   .option("--dev", "alias for --development", false)
@@ -45,6 +46,9 @@ program
   .option("--no-attach", "do not auto-attach to the tmux session")
   .action(async (goalParts: string[], opts) => {
     const paths = charmPaths(resolve(opts.root));
+    // Detect a first run BEFORE scaffolding creates .charm/, so we know whether
+    // to offer the one-time .gitignore setup below.
+    const firstRun = !existsSync(paths.charmDir);
     // Reuse an existing .charm/ if present, otherwise scaffold a fresh one.
     scaffoldCharmDir(paths, { force: false });
     if (!Tmux.available()) {
@@ -52,8 +56,18 @@ program
       process.exit(2);
     }
 
+    // Resolve and persist the tmux session name for this directory. Persisting it
+    // lets `stop`/`attach`/`ctl` (and charm.sh) recover the exact name without
+    // re-deriving — and the per-directory default is what lets multiple charms
+    // run side by side without colliding on tmux's global session namespace.
+    const session = resolveSession(paths, opts.session);
+    writeFileSync(paths.sessionFile, session + "\n");
+
     const goal = (goalParts ?? []).join(" ").trim();
     const plain = goal.length === 0;
+
+    // On the very first run in this dir, offer to wire up .gitignore.
+    if (firstRun) await maybeConfigureGitignore(paths);
 
     // 0. Resolve the charm mode (research -> Sonnet fleet, development -> Opus fleet).
     // From flags if given; otherwise an in-terminal prompt (or research as the
@@ -69,7 +83,7 @@ program
     // daemon writes corrupt the tmux session once the terminal is handed off.
     const logFd = openSync(logFile, "a");
     const [daemonCmd, ...daemonPrefix] = resolveChild("daemon");
-    const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", opts.session], {
+    const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", session], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
       env: { ...process.env, CHARM_MODE: mode },
@@ -82,9 +96,9 @@ program
     await rpcCall(paths.socket, "ping");
 
     // 3. Open tmux layout: window with main pane + console pane
-    const tmux = new Tmux(opts.session);
+    const tmux = new Tmux(session);
     if (tmux.hasSession()) {
-      console.error(`[charm] tmux session '${opts.session}' already exists. Use --session or kill it.`);
+      console.error(`[charm] tmux session '${session}' already exists. Use --session or kill it.`);
       process.exit(2);
     }
     tmux.newSession("charm", paths.root);
@@ -134,23 +148,24 @@ program
       : [process.execPath, fileURLToPath(import.meta.url)];
     const ctlTemplate =
       `${selfArgv.map(shellQuote).join(" ")} ctl ` +
-      `--root ${shellQuote(paths.root)} --session ${shellQuote(opts.session)} %1`;
+      `--root ${shellQuote(paths.root)} --session ${shellQuote(session)} %1`;
     tmux.bindCommandPrompt(ctlTemplate);
 
     // Focus the main agent pane so keystrokes go to Claude, not the console.
-    tmux.selectPane(`${opts.session}:charm.1`);
+    tmux.selectPane(`${session}:charm.1`);
 
     if (opts.attach !== false) tmux.attach();
-    else console.log(`tmux session '${opts.session}' ready. attach with: tmux attach -t ${opts.session}`);
+    else console.log(`tmux session '${session}' ready. attach with: tmux attach -t ${session}`);
   });
 
 program
   .command("stop")
   .description("stop the charm: close all graph viewers, kill the daemon, and tear down the tmux session")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session", "charm")
+  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .action((opts) => {
     const paths = charmPaths(resolve(opts.root));
+    const session = resolveSession(paths, opts.session);
     // 1. Close standalone graph viewers first, by tracked PID. Done here (not
     // left to the daemon) so viewers still get reaped when the daemon is already
     // gone — and, in future, when viewers run outside the tmux session entirely.
@@ -166,21 +181,24 @@ program
       }
     }
     // 3. Tear down the tmux session (closes console, agent, and graph windows).
-    const tmux = new Tmux(opts.session);
+    const tmux = new Tmux(session);
     if (tmux.hasSession()) {
       tmux.killSession();
-      console.log(`[charm] killed tmux session '${opts.session}'`);
+      console.log(`[charm] killed tmux session '${session}'`);
     }
   });
 
 program
   .command("attach")
   .description("attach to the tmux session for the charm")
-  .option("-s, --session <name>", "tmux session", "charm")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .action((opts) => {
-    const tmux = new Tmux(opts.session);
+    const paths = charmPaths(resolve(opts.root));
+    const session = resolveSession(paths, opts.session);
+    const tmux = new Tmux(session);
     if (!tmux.hasSession()) {
-      console.error(`no tmux session '${opts.session}'`);
+      console.error(`no tmux session '${session}'`);
       process.exit(2);
     }
     tmux.attach();
@@ -220,13 +238,79 @@ program
   });
 
 program
+  .command("restart")
+  .description("reset the ticket backlog: kill ticketed agents, wipe ticket files + the db index, reset COORDINATION.md (daemon, KB, and session stay up)")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .action(async (opts) => {
+    const paths = charmPaths(resolve(opts.root));
+    // 1. Kill every agent currently assigned a ticket (operator caller = no
+    //    caller_id). Done first so no agent reports done/failed against a ticket
+    //    we are about to delete — report_status throws "unknown ticket" otherwise.
+    try {
+      const { agents = [] } = await rpcCall<{ agents: { id: string; ticket_id: string | null; role: string }[] }>(
+        paths.socket,
+        "status",
+      );
+      const ticketed = agents.filter((a) => a.ticket_id && a.role !== "main");
+      for (const a of ticketed) {
+        await rpcCall(paths.socket, "kill_agent", { agent_id: a.id });
+        console.log(`killed ${a.id} (was on ${a.ticket_id})`);
+      }
+      console.log(ticketed.length ? `killed ${ticketed.length} ticketed agent(s)` : "no ticketed agents to kill");
+    } catch (e: any) {
+      console.log(`daemon unreachable (${e.message}) — skipping agent kill, continuing wipe`);
+    }
+    // 2. Delete the ticket markdown files — the source of truth.
+    let removed = 0;
+    if (existsSync(paths.ticketsDir)) {
+      for (const f of readdirSync(paths.ticketsDir)) {
+        if (f.endsWith(".md")) { rmSync(join(paths.ticketsDir, f)); removed++; }
+      }
+    }
+    console.log(`removed ${removed} ticket file(s)`);
+    // 3. Clear the derived index so nextId() resets to T-001 (it reads MAX(id)).
+    if (existsSync(paths.db)) {
+      const { Database } = await import("bun:sqlite");
+      const db = new Database(paths.db);
+      db.exec("DELETE FROM tickets");
+      db.close();
+      console.log("cleared tickets table in db.sqlite");
+    }
+    // 4. Reset COORDINATION.md, dropping any orphaned agent blocks.
+    writeFileSync(paths.coordinationMd, "# COORDINATION.md\n\n_Daemon will populate this as agents check in._\n");
+    console.log("reset COORDINATION.md");
+  });
+
+program
+  .command("reset-kb")
+  .description("DESTRUCTIVE: wipe .charm/kb/ and restore the pristine template scaffold (the durable knowledge base)")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .action((opts) => {
+    const paths = charmPaths(resolve(opts.root));
+    // Confirm the template exists BEFORE destroying the live copy, so a missing
+    // template can't leave the project with no kb at all. The destructive
+    // confirmation gate is the charm-reset-kb skill's responsibility (it runs
+    // before invoking this); this command itself is non-interactive so it never
+    // hangs an unattended agent pane.
+    const tmpl = locateTemplateDir("kb");
+    if (!tmpl) {
+      console.error("[charm] kb template not found; refusing to reset (would leave no kb).");
+      process.exit(2);
+    }
+    rmSync(paths.kbDir, { recursive: true, force: true });
+    cpSync(tmpl, paths.kbDir, { recursive: true });
+    console.log(`[charm] reset ${paths.kbDir} to template`);
+  });
+
+program
   .command("ctl <cmd>")
   .description("internal: handle a vim-style command (`:q`, `:a`) from the tmux key binding")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session", "charm")
+  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .action(async (cmd: string, opts) => {
     const paths = charmPaths(resolve(opts.root));
-    const tmux = new Tmux(opts.session);
+    const session = resolveSession(paths, opts.session);
+    const tmux = new Tmux(session);
     const c = cmd.trim().toLowerCase();
     if (c === "q" || c === "quit") {
       try { await rpcCall(paths.socket, "shutdown"); }
@@ -234,17 +318,79 @@ program
       return;
     }
     if (c === "a" || c === "detach") {
-      spawn("tmux", ["detach-client", "-s", opts.session], { stdio: "ignore" });
+      spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
       return;
     }
     // Unknown: surface in tmux status line briefly.
     spawn("tmux", ["display-message", `unknown charm command: ${cmd}`], { stdio: "ignore" });
   });
 
+program
+  .command("session-name")
+  .description("internal: print the resolved tmux session name for a root (used by charm.sh)")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
+  .action((opts) => {
+    const paths = charmPaths(resolve(opts.root));
+    process.stdout.write(resolveSession(paths, opts.session) + "\n");
+  });
+
 program.parseAsync(process.argv).catch((e) => {
   console.error(e);
   process.exit(1);
 });
+
+/** Resolve the tmux session name for a project root. Precedence:
+ *    1. an explicit --session flag
+ *    2. the $CHARM_SESSION env override
+ *    3. the name a prior `start` persisted to .charm/session
+ *    4. a stable default derived from the root path (so two directories never
+ *       collide on tmux's global session namespace)
+ *  This is the single source of truth for the name — `start` writes it, every
+ *  other command (and the bash wrapper, via the `session-name` subcommand) reads
+ *  it back through here so they all agree on which session belongs to this dir. */
+function resolveSession(paths: CharmPaths, explicit?: string): string {
+  if (explicit) return explicit;
+  const env = process.env.CHARM_SESSION;
+  if (env) return env;
+  if (existsSync(paths.sessionFile)) {
+    const s = readFileSync(paths.sessionFile, "utf8").trim();
+    if (s) return s;
+  }
+  return defaultSessionName(paths.root);
+}
+
+/** On the first `start` in a directory, offer to add charm's run-state ignore
+ *  rules to the project's .gitignore. The rules ignore the ephemeral run state
+ *  (socket, db, tickets, logs, the resolved session name, …) while keeping the
+ *  durable, git-tracked knowledge base at .charm/kb/. Opt-in and skipped silently
+ *  when stdin isn't a TTY, when a .charm rule already exists, or when declined. */
+async function maybeConfigureGitignore(paths: CharmPaths): Promise<void> {
+  if (!process.stdin.isTTY) return;
+  const gitignorePath = join(paths.root, ".gitignore");
+  const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+  // Already configured (any .charm or !.charm line present)? Leave it alone.
+  if (/^\s*!?\.charm(\/|\b)/m.test(existing)) return;
+
+  const { confirm } = await import("./cli/confirm-prompt.tsx");
+  const ok = await confirm(
+    "Add charm's run state to .gitignore?",
+    "Ignores ephemeral run state (.charm/sock, db.sqlite, tickets, logs, …) " +
+      "while keeping the durable knowledge base (.charm/kb/) tracked.",
+  );
+  if (!ok) return;
+
+  const block =
+    "# Charm run state is ephemeral and ignored, EXCEPT the durable knowledge base.\n" +
+    "# `.charm/*` ignores the run-state children; `!.charm/kb/` re-includes the KB.\n" +
+    ".charm/*\n" +
+    "!.charm/kb/\n";
+  // Separate cleanly from any existing content: ensure a trailing newline, then a
+  // blank line before our block when the file already had text.
+  const prefix = existing.length === 0 ? "" : (existing.endsWith("\n") ? "\n" : "\n\n");
+  appendFileSync(gitignorePath, prefix + block);
+  console.log(`[charm] added charm ignore rules to ${gitignorePath}`);
+}
 
 type StartOpts = { research?: boolean; development?: boolean; dev?: boolean };
 
@@ -300,6 +446,16 @@ function scaffoldCharmDir(
       mkdirSync(paths.kbDir, { recursive: true });
       console.warn("[charm] kb templates not found; created empty .charm/kb/");
     }
+  }
+
+  // Seed the operator skills (restart, reset-kb) + their router index so the
+  // main agent can discover and follow them on demand. Like prompts, these are
+  // tooling (not user data): copy missing files, overwrite only with --force.
+  const skillTemplates = locateTemplateDir("skills");
+  if (skillTemplates) {
+    cpSync(skillTemplates, paths.skillsDir, { recursive: true, force, errorOnExist: false });
+  } else {
+    console.warn("[charm] skill templates not found; skipping skills scaffold");
   }
 
   const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";

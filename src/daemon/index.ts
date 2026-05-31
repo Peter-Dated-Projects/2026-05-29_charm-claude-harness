@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "
 import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
-import { charmPaths } from "../paths.ts";
+import { charmPaths, defaultSessionName } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
 import { AgentRegistry } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
@@ -113,9 +113,13 @@ async function main() {
   program
     .name("charmd")
     .option("--root <path>", "project root", process.cwd())
-    .option("--session <name>", "tmux session name", "charm")
+    .option("--session <name>", "tmux session name (default: derived from --root)")
     .parse(process.argv);
   const opts = program.opts<DaemonOpts>();
+  // cli.ts always passes an explicit --session; derive a per-directory default
+  // only for the rare case of running charmd directly, so it never falls back to
+  // a hardcoded "charm" that would collide with another directory's session.
+  const session = opts.session ?? defaultSessionName(opts.root);
 
   const paths = charmPaths(opts.root);
   mkdirSync(paths.charmDir, { recursive: true });
@@ -132,7 +136,7 @@ async function main() {
   store.reindexAll();
   const registry = new AgentRegistry();
   const coord = new CoordinationWriter(paths);
-  const tmux = new Tmux(opts.session);
+  const tmux = new Tmux(session);
   const approvals = new ApprovalQueue();
 
   const tmuxAvailable = Tmux.available();
@@ -501,7 +505,7 @@ async function main() {
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  console.log(`[charmd] listening on ${paths.socket} (session=${opts.session}, root=${paths.root})`);
+  console.log(`[charmd] listening on ${paths.socket} (session=${session}, root=${paths.root})`);
 }
 
 main().catch((e) => {

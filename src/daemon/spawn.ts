@@ -184,10 +184,23 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "- kill_agent — terminate an agent's tmux pane. The orchestrator may kill any sub-agent by id; a sub-agent may kill only itself (omit agent_id). The orchestrator can never be killed.",
     "- open_graph — open the animated force-directed graph viewer in its own tmux window; if one is already open it is brought to the foreground.",
   ].join("\n");
+  // Operator skills router — injected only for the main agent (orchestrator).
+  // Restart/reset-kb are operator actions; a worker or reviewer must never run
+  // them. The router lists trigger -> SKILL.md; the agent reads the full file on
+  // demand. Sub-agents (and plain windows) never see this section.
+  const skillsIndex = join(paths.skillsDir, "INDEX.md");
+  const CHARM_SKILLS =
+    spec.role === "main" && !spec.plain && existsSync(skillsIndex)
+      ? "\n## Charm operator skills (read on demand)\n" +
+        "When the user asks you to perform one of the operator actions below, FIRST read the listed SKILL.md " +
+        "(path relative to the project root) and follow it exactly — including any confirmation gates — before acting.\n\n" +
+        readFileSync(skillsIndex, "utf8").trim() +
+        "\n"
+      : "";
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
-  const systemPrompt = rolePrompt + CHARM_RULES + modelLine;
+  const systemPrompt = rolePrompt + CHARM_RULES + CHARM_SKILLS + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   if (spec.model) flags.push("--model", shellQuote(spec.model));

@@ -10,6 +10,9 @@
 #   ./charm.sh approve <gate_id> [--reject]
 #   ./charm.sh attach
 #   ./charm.sh stop          (kills daemon + tmux session)
+#
+# Multiple charms can run at once in different directories: each gets its own
+# tmux session name derived from its path (override with --session).
 
 set -euo pipefail
 
@@ -23,7 +26,6 @@ while [[ -L "$SOURCE" ]]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-SESSION="${CHARM_SESSION:-charm}"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }
@@ -32,17 +34,46 @@ need() {
 need bun
 need tmux
 
-# Pull the tmux session name out of an arg list (-s/--session NAME or
-# --session=NAME), defaulting to "charm". Lets the wrapper attach to the right
-# session after bun finishes setting it up.
+# Pull an explicit tmux session name out of an arg list (-s/--session NAME or
+# --session=NAME). Empty when none was passed, so resolve_session can fall back
+# to the per-directory default.
 parse_session() {
-  local prev="" a session="charm"
+  local prev="" a session=""
   for a in "$@"; do
     case "$prev" in -s|--session) session="$a" ;; esac
     case "$a" in --session=*) session="${a#*=}" ;; esac
     prev="$a"
   done
   printf '%s' "$session"
+}
+
+# Pull the project root out of an arg list (-r/--root PATH or --root=PATH),
+# defaulting to $PWD to match cli.ts's process.cwd() default.
+parse_root() {
+  local prev="" a root="$PWD"
+  for a in "$@"; do
+    case "$prev" in -r|--root) root="$a" ;; esac
+    case "$a" in --root=*) root="${a#*=}" ;; esac
+    prev="$a"
+  done
+  printf '%s' "$root"
+}
+
+# Resolve the tmux session name for a directory so the wrapper attaches to /
+# tears down the right one. cli.ts owns the derivation; here we just read its
+# result. Precedence: an explicit --session ($2) wins, then $CHARM_SESSION, then
+# the name `start` persisted to <root>/.charm/session; if that's missing, ask the
+# CLI to derive it. Keeping one source of truth avoids duplicating the hash here.
+resolve_session() {
+  local root="$1" explicit="${2:-}"
+  if [[ -n "$explicit" ]]; then printf '%s' "$explicit"; return; fi
+  if [[ -n "${CHARM_SESSION:-}" ]]; then printf '%s' "$CHARM_SESSION"; return; fi
+  local f="$root/.charm/session"
+  if [[ -f "$f" ]]; then
+    local s; s="$(<"$f")"; s="${s//[$'\t\r\n ']/}"
+    if [[ -n "$s" ]]; then printf '%s' "$s"; return; fi
+  fi
+  bun run "${REPO_DIR}/src/cli.ts" session-name --root "$root"
 }
 
 # Make `charm-mcp` resolvable for spawned claude processes without a global install.
@@ -52,11 +83,13 @@ fi
 
 case "${1:-}" in
   "" | -h | --help | help)
-    sed -n '4,13p' "$0"
+    sed -n '4,15p' "$0"
     exit 0
     ;;
   stop)
-    ROOT="${2:-$PWD}"
+    shift
+    ROOT="$(parse_root "$@")"
+    SESSION_NAME="$(resolve_session "$ROOT" "$(parse_session "$@")")"
     PIDFILE="${ROOT}/.charm/charmd.pid"
     # Close standalone graph viewers first, by tracked PID. Done before killing
     # the daemon so they're reaped even if the daemon is already gone -- and so
@@ -74,11 +107,10 @@ case "${1:-}" in
       kill "$PID" 2>/dev/null && echo "killed charmd pid=$PID" || true
       rm -f "$PIDFILE"
     fi
-    tmux kill-session -t "$SESSION" 2>/dev/null && echo "killed tmux session '$SESSION'" || true
+    tmux kill-session -t "$SESSION_NAME" 2>/dev/null && echo "killed tmux session '$SESSION_NAME'" || true
     ;;
   start)
     shift
-    SESSION_NAME="$(parse_session "$@")"
     NO_ATTACH=0
     for a in "$@"; do [[ "$a" == "--no-attach" ]] && NO_ATTACH=1; done
     # bun brings up the daemon, tmux session, and panes, then exits WITHOUT
@@ -91,11 +123,14 @@ case "${1:-}" in
     # process, exactly like a hand-typed `tmux attach`.
     bun run "${REPO_DIR}/src/cli.ts" start "$@" --no-attach || exit $?
     [[ "$NO_ATTACH" -eq 1 ]] && exit 0
+    # Resolve AFTER bun: `start` has now written <root>/.charm/session, so
+    # resolve_session reads the exact name it chose for this directory.
+    SESSION_NAME="$(resolve_session "$(parse_root "$@")" "$(parse_session "$@")")"
     exec tmux attach-session -t "$SESSION_NAME"
     ;;
   attach)
     shift
-    SESSION_NAME="$(parse_session "$@")"
+    SESSION_NAME="$(resolve_session "$(parse_root "$@")" "$(parse_session "$@")")"
     exec tmux attach-session -t "$SESSION_NAME"
     ;;
   *)
