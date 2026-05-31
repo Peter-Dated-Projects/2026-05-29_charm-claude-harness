@@ -152,12 +152,27 @@ export function resolveModel(input: string): string {
 /** Build the shell command that the tmux pane will run.
  *  CHARM_AGENT_ID is exported so the MCP shim can identify the agent. */
 export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: SpawnSpec): string {
-  const promptFile = join(paths.promptsDir, `${spec.role}.md`);
-  const rolePrompt = spec.plain
-    ? ""
-    : existsSync(promptFile)
-      ? readFileSync(promptFile, "utf8")
-      : `You are a ${spec.role}.`;
+  // Resolve the role's system prompt. Every role but `main` loads a single
+  // `<role>.md`. The orchestrator (`main`) has no `main.md`: it runs Stage 0
+  // (discovery) then Stage 1 (planning) in one session, so its prompt IS those
+  // two stage files concatenated. Assembling them here is what makes discovery.md
+  // and planner.md live — without this, `main.md` is missing and the orchestrator
+  // falls back to a useless one-line stub.
+  let rolePrompt: string;
+  if (spec.plain) {
+    rolePrompt = "";
+  } else if (spec.role === "main") {
+    const stages = ["discovery.md", "planner.md"]
+      .map((f) => join(paths.promptsDir, f))
+      .filter((p) => existsSync(p))
+      .map((p) => readFileSync(p, "utf8").trim());
+    rolePrompt = stages.length
+      ? stages.join("\n\n---\n\n")
+      : "You are the orchestrator (main agent) running the charm discovery -> planning -> fan-out workflow.";
+  } else {
+    const promptFile = join(paths.promptsDir, `${spec.role}.md`);
+    rolePrompt = existsSync(promptFile) ? readFileSync(promptFile, "utf8") : `You are a ${spec.role}.`;
+  }
   // The charm renders agent-produced markdown (PROJECT.md, COORDINATION.md,
   // tickets/*.md) inside an Ink TUI. Terminal emoji rendering inflates row
   // height inconsistently across fonts/terminals, which breaks the layout —
