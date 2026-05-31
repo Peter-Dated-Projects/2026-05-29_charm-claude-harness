@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__charm__await_approval",
+      "mcp__charm__create_tickets",
+      "mcp__charm__kill_agent",
+      "mcp__charm__list_agents",
+      "mcp__charm__open_graph",
+      "mcp__charm__read_coordination",
+      "mcp__charm__report_status",
+      "mcp__charm__request_review",
+      "mcp__charm__set_session_description",
+      "mcp__charm__spawn_review_agents",
+      "mcp__charm__spawn_workers",
+      "mcp__charm__update_plan"
+    ]
+  }
+}
