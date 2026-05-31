@@ -37,7 +37,6 @@ export const Agent = z.object({
   pid: z.number().nullable(),
   state: AgentState,
   started_at: z.number(),
-  plan: z.string().optional(),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -125,6 +124,20 @@ export const KillAgentInput = z.object({
   agent_id: z.string().nullable().default(null),
 });
 export type KillAgentInput = z.infer<typeof KillAgentInput>;
+
+// continue_agent resumes a blocked sub-agent by typing a message into its pane
+// and flipping it back to running. Only a blocked agent is a valid target — a
+// running agent is actively working, so messaging its pane would corrupt the
+// turn. Authorization mirrors
+// kill_agent: caller_id absent -> human operator; present -> the orchestrator
+// (main). Only those two may continue an agent — a sub-agent cannot drive
+// another. The target must be named explicitly (no "continue myself").
+export const ContinueAgentInput = z.object({
+  caller_id: z.string().optional(),
+  agent_id: z.string(),
+  message: z.string().min(1),
+});
+export type ContinueAgentInput = z.infer<typeof ContinueAgentInput>;
 
 // One-sentence human-readable summary of this session, shown by `charm list`.
 // 80-char cap is enforced here (not just in the prompt) so a chatty agent

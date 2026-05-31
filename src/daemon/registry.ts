@@ -28,16 +28,13 @@ export class AgentRegistry {
     return a;
   }
 
-  setState(id: string, state: AgentState, note?: string): Agent {
+  // Status notes are recorded in the ticket's activity log
+  // (TicketStore.appendLog) by the daemon, not on the agent record, so the
+  // in-memory record stays lean. The note param is kept for call-site
+  // compatibility and intentionally unused here.
+  setState(id: string, state: AgentState, _note?: string): Agent {
     const a = this.require(id);
     a.state = state;
-    if (note) a.plan = (a.plan ?? "") + (a.plan ? "\n\n" : "") + `[${state}] ${note}`;
-    return a;
-  }
-
-  setPlan(id: string, plan: string): Agent {
-    const a = this.require(id);
-    a.plan = plan;
     return a;
   }
 

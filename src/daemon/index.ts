@@ -24,6 +24,7 @@ import {
   RequestReviewInput,
   SetSessionDescriptionInput,
   KillAgentInput,
+  ContinueAgentInput,
   SessionMeta,
   type AgentRole,
 } from "../schema.ts";
@@ -153,6 +154,24 @@ async function main() {
         return { ticket_id: a.ticket_id!, touches: t?.frontmatter.touches ?? [] };
       });
 
+  // Recompute COORDINATION.md from current state: one row per live (non-main)
+  // agent that holds a ticket, showing the ticket, its title, the agent, and the
+  // agent's state. The index is fully derived, so we just rebuild and rewrite it
+  // on every assignment/state change — it stays small no matter how long the run.
+  const refreshCoordination = () => {
+    const rows = registry
+      .list()
+      .filter((a) => a.role !== "main" && a.ticket_id)
+      .map((a) => ({
+        ticket_id: a.ticket_id!,
+        about: store.read(a.ticket_id!)?.frontmatter.title ?? "(unknown ticket)",
+        agent_id: a.id,
+        state: a.state,
+      }))
+      .sort((x, y) => x.ticket_id.localeCompare(y.ticket_id) || x.agent_id.localeCompare(y.agent_id));
+    coord.write(rows);
+  };
+
   // Pane layout state. consolePaneId is the Ink TUI pane (pinned left column);
   // agentPaneIds is every Claude pane in spawn order, starting with the "main"
   // agent pane registered by `cli.ts start` before any sub-agents.
@@ -203,7 +222,7 @@ async function main() {
     const cmd = buildClaudeCommand(paths, agent.id, resolved);
     const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
     registry.attach(agent.id, { pane_id: pane });
-    coord.upsert(registry.get(agent.id)!);
+    refreshCoordination();
     agentPaneIds.push(pane);
     relayout();
     return agent.id;
@@ -221,7 +240,7 @@ async function main() {
       if (i >= 0) agentPaneIds.splice(i, 1);
     }
     registry.remove(agent_id);
-    coord.remove(agent_id);
+    refreshCoordination();
     relayout();
   }
 
@@ -255,8 +274,10 @@ async function main() {
       if (!orchestratorPaneId || tmux.paneIndex(orchestratorPaneId) === null) return;
       // One line only: literal newlines typed into the pane would submit early.
       const line =
-        `[charm] ${events.join("; ")}. Check list_agents(): reap done/failed sub-agents ` +
-        `with kill_agent, address any blocked ones, and advance the workflow per your orchestrator instructions.`;
+        `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
+        `blocked agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
+        `one either resolve what it was waiting on and resume it with continue_agent or abandon it with kill_agent, ` +
+        `then advance the workflow per your orchestrator instructions.`;
       try { tmux.sendText(orchestratorPaneId, line); }
       catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
     }, 1200);
@@ -295,6 +316,7 @@ async function main() {
         // before any sub-agents. It's the pane the daemon wakes on sub-agent
         // state changes.
         orchestratorPaneId = agent_pane_ids[0] ?? null;
+        refreshCoordination();
         relayout();
         return { ok: true };
       }
@@ -333,7 +355,7 @@ async function main() {
           ids.push(spawnAgent({
             role: "worker",
             ticket_id: tid,
-            prompt: `Implement ticket T-${tid.slice(2)}. First read .charm/tickets/${tid}.md and .charm/COORDINATION.md, then call update_plan() with your plan, then implement.`,
+            prompt: `Implement ticket T-${tid.slice(2)}. First read .charm/tickets/${tid}.md (your ticket, incl. its activity log) and .charm/COORDINATION.md (the index of what other agents are working on), then call update_plan() with your plan, then implement.`,
             interactive: true,
           }));
           store.update(tid, { status: "running", stage: "in_progress" });
@@ -353,8 +375,12 @@ async function main() {
       }
       case "update_plan": {
         const input = UpdatePlanInput.parse(params);
-        const a = registry.setPlan(input.agent_id, input.plan);
-        coord.upsert(a, input.plan);
+        const a = registry.get(input.agent_id);
+        if (!a) throw new Error(`unknown agent: ${input.agent_id}`);
+        // The plan lives only in the ticket's activity log, not on the in-memory
+        // agent record or COORDINATION.md.
+        if (a.ticket_id) store.appendLog(a.ticket_id, { agent: a.id, kind: "plan", text: input.plan });
+        refreshCoordination();
         return { ok: true };
       }
       case "read_coordination":
@@ -362,12 +388,16 @@ async function main() {
       case "report_status": {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
-        coord.upsert(a);
         if (input.state === "done" && a.ticket_id) {
           store.update(a.ticket_id, { status: "complete", stage: "done" });
         } else if (input.state === "failed" && a.ticket_id) {
           store.update(a.ticket_id, { status: "failed", stage: "failed" });
         }
+        // Record the status transition (and any note) in the ticket's activity
+        // log. Done after the frontmatter update above so the log entry reflects
+        // the new status. COORDINATION.md only shows the live state, not the note.
+        if (a.ticket_id) store.appendLog(a.ticket_id, { agent: a.id, kind: input.state, text: input.note });
+        refreshCoordination();
         // Wake the orchestrator on a sub-agent's done/failed/blocked so it can
         // reap the pane and advance. Never ping for the main agent itself.
         if (a.role !== "main" && (input.state === "done" || input.state === "failed" || input.state === "blocked")) {
@@ -427,6 +457,48 @@ async function main() {
           tearDownAgent(targetId);
         }
         return { ok: true, killed: targetId };
+      }
+      case "continue_agent": {
+        const input = ContinueAgentInput.parse(params);
+        const callerRole = resolveCaller(input.caller_id);
+        // Only the human operator and the orchestrator may resume an agent. A
+        // sub-agent cannot drive another sub-agent.
+        if (callerRole !== "operator" && callerRole !== "main") {
+          throw new Error(
+            `agent ${input.caller_id} (${callerRole}) may not continue other agents; that requires the orchestrator`,
+          );
+        }
+        // The orchestrator drives the workflow itself — it is never a target.
+        if (input.agent_id === MAIN_AGENT_ID) {
+          throw new Error("refusing to continue the orchestrator (main agent)");
+        }
+        const target = registry.get(input.agent_id);
+        if (!target) throw new Error(`unknown agent: ${input.agent_id}`);
+        // Only a blocked agent can be continued. `running` is the normal
+        // actively-working state (set on attach), so typing into that pane would
+        // inject mid-turn and corrupt the agent's work. done/failed are terminal
+        // (spawn a fresh agent instead); spawning hasn't taken its first turn yet,
+        // so there's nothing to resume.
+        if (target.state !== "blocked") {
+          throw new Error(
+            `agent ${target.id} is ${target.state}; only a blocked agent can be continued`,
+          );
+        }
+        if (!target.pane_id) throw new Error(`agent ${target.id} has no pane to message`);
+        if (!tmuxAvailable || tmux.paneIndex(target.pane_id) === null) {
+          throw new Error(`agent ${target.id}'s pane is gone — it may have exited; kill_agent and respawn instead`);
+        }
+        // Wake the blocked agent with the orchestrator's guidance (one line — a
+        // literal newline would submit early), then optimistically flip it back
+        // to running. The agent corrects this via its own report_status as it
+        // proceeds, re-blocks, or finishes.
+        tmux.sendText(target.pane_id, `[charm] Orchestrator: ${input.message}`);
+        const a = registry.setState(target.id, "running");
+        // Record the orchestrator's unblock message in the ticket's activity log
+        // so the resume (and its guidance) is part of the ticket's history.
+        if (a.ticket_id) store.appendLog(a.ticket_id, { agent: "orchestrator", kind: `continue -> ${a.id}`, text: input.message });
+        refreshCoordination();
+        return { ok: true, continued: target.id };
       }
       case "list_agents":
         return registry.list().map((a) => ({

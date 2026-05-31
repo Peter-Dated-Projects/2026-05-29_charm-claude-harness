@@ -83,7 +83,7 @@ server.registerTool(
 server.registerTool(
   "update_plan",
   {
-    description: "Worker-only: append/update this agent's plan in COORDINATION.md before editing files.",
+    description: "Worker-only: record your current plan before editing files. The daemon appends it to your ticket's activity log (.charm/tickets/<id>.md), not COORDINATION.md.",
     inputSchema: { plan: z.string() },
   },
   async (args) => {
@@ -95,7 +95,10 @@ server.registerTool(
 server.registerTool(
   "read_coordination",
   {
-    description: "Return the current COORDINATION.md text so an agent can see what other in-flight agents are doing.",
+    description:
+      "Return the live coordination index: one row per active ticket with its one-line summary, the assigned " +
+      "agent, and that agent's state. For a ticket's full plan, status history, and orchestrator messages, read " +
+      "its file at .charm/tickets/<id>.md.",
     inputSchema: {},
   },
   async () => ok(await call("read_coordination")),
@@ -164,6 +167,28 @@ server.registerTool(
   async (args) => {
     if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
     return ok(await call("kill_agent", { caller_id: AGENT_ID, agent_id: args.agent_id }));
+  },
+);
+
+server.registerTool(
+  "continue_agent",
+  {
+    description:
+      "Resume a blocked sub-agent. Sends `message` (your guidance / the unblock info) into the " +
+      "agent's pane to wake it, and flips it back to running.\n" +
+      "- Use when an agent reported `blocked` and you have resolved what it was waiting on " +
+      "(a dependency landed, a decision was made, info it needed). Read the ticket file " +
+      "(.charm/tickets/<id>.md) for the agent's blocked note and activity log so your message addresses it.\n" +
+      "- Orchestrator-only; the target must be a live sub-agent currently in the `blocked` state — call " +
+      "list_agents first for valid ids. To abandon a stuck agent instead of resuming it, use kill_agent.",
+    inputSchema: {
+      agent_id: z.string(),
+      message: z.string().min(1),
+    },
+  },
+  async (args) => {
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
+    return ok(await call("continue_agent", { caller_id: AGENT_ID, ...args }));
   },
 );
 

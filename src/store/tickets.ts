@@ -5,6 +5,30 @@ import { Database } from "bun:sqlite";
 import { TicketFrontmatter, type Ticket } from "../schema.ts";
 import type { CharmPaths } from "../paths.ts";
 
+// Markers delimiting the daemon-managed activity log inside a ticket body. Plans,
+// status changes, and orchestrator messages are appended here as timestamped
+// lines; everything outside the markers (the human/agent-authored ticket
+// description) is never touched. This is what lets COORDINATION.md stay a slim
+// index — the verbose per-ticket history lives in the ticket file itself.
+const LOG_BEGIN = "<!-- CHARM:LOG -->";
+const LOG_END = "<!-- /CHARM:LOG -->";
+
+/** Insert `line` just before the END marker of the managed log region, creating
+ *  the region at the end of the body if it doesn't exist yet. Pure string op so
+ *  it round-trips through gray-matter unchanged. */
+function appendToLogRegion(body: string, line: string): string {
+  const end = body.indexOf(LOG_END);
+  const begin = body.indexOf(LOG_BEGIN);
+  if (begin >= 0 && end > begin) {
+    const before = body.slice(0, end).replace(/\s*$/, "\n");
+    const after = body.slice(end);
+    return `${before}${line}\n${after}`;
+  }
+  const base = body.replace(/\s*$/, "");
+  const region = `${LOG_BEGIN}\n## Activity\n\n${line}\n${LOG_END}\n`;
+  return base ? `${base}\n\n${region}` : region;
+}
+
 export class TicketStore {
   private db: Database;
 
@@ -75,6 +99,20 @@ export class TicketStore {
     writeFileSync(t.path, text);
     this.indexOne({ frontmatter: fm, body, path: t.path });
     return { frontmatter: fm, body, path: t.path };
+  }
+
+  /** Append a timestamped entry to the ticket's managed activity log. This is
+   *  where per-ticket working state lives now (plans, status transitions,
+   *  orchestrator messages) — keeping COORDINATION.md a slim index. The agent
+   *  who acted, the kind of entry, and an optional free-text note are recorded.
+   *  Throws on an unknown ticket. */
+  appendLog(id: string, entry: { agent: string; kind: string; text?: string }): Ticket {
+    const t = this.read(id);
+    if (!t) throw new Error(`unknown ticket ${id}`);
+    const ts = new Date().toISOString();
+    const note = entry.text?.trim() ? `: ${entry.text.trim().replace(/\s+/g, " ")}` : "";
+    const line = `- ${ts}  \`${entry.agent}\`  ${entry.kind}${note}`;
+    return this.update(id, { body: appendToLogRegion(t.body, line) });
   }
 
   list(): Ticket[] {

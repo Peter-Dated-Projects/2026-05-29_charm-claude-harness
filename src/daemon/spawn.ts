@@ -177,11 +177,12 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "- request_review — spawn a tester agent on one finished ticket id.",
     "- await_approval — block until a human approves or rejects a gate (stage 0, 2, or 4) in the Console pane.",
     "- set_session_description — set or update the one-sentence (<=80 char) session description shown by `charm list`.",
-    "- update_plan — append/update your own plan in COORDINATION.md before editing files. Self-scoped: writes under your own agent id.",
-    "- read_coordination — return the current COORDINATION.md text so you can see what other in-flight agents are doing.",
+    "- update_plan — record your current plan before editing files. The daemon appends it to your ticket's activity log (.charm/tickets/<id>.md). Self-scoped to your ticket.",
+    "- read_coordination — return the live coordination index: which tickets are active, their one-line summary, the assigned agent, and its state. For a ticket's full plan/status/message history, read its file directly.",
     "- report_status — report your own state (spawning|running|blocked|done|failed) with an optional note. Self-scoped.",
     "- list_agents — list every live sub-agent (id, role, state, ticket_id). The orchestrator is not listed.",
     "- kill_agent — terminate an agent's tmux pane. The orchestrator may kill any sub-agent by id; a sub-agent may kill only itself (omit agent_id). The orchestrator can never be killed.",
+    "- continue_agent — orchestrator-only: resume a blocked sub-agent by sending it a message (your guidance or the unblock info) and flipping it back to running. Use this once you've resolved what a blocked agent was waiting on, instead of killing and respawning it.",
     "- open_graph — open the animated force-directed graph viewer in its own tmux window; if one is already open it is brought to the foreground.",
   ].join("\n");
   // Operator skills router — injected only for the main agent (orchestrator).
