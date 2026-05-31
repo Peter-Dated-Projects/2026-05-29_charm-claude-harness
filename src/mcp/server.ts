@@ -116,7 +116,7 @@ server.registerTool(
       ".charm/tickets/<id>.md.",
     inputSchema: {
       statuses: z
-        .array(z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]))
+        .array(z.enum(["pending", "ready", "running", "blocked", "complete", "failed", "cancelled"]))
         .optional(),
     },
   },
@@ -135,6 +135,27 @@ server.registerTool(
   async (args) => {
     if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
     return ok(await call("report_status", { agent_id: AGENT_ID, ...args }));
+  },
+);
+
+server.registerTool(
+  "set_ticket_status",
+  {
+    description:
+      "Drive your OWN ticket's lifecycle. Set `status` (running while you work; complete when done; failed if you " +
+      "hit a wall; blocked while waiting) and/or `stage` (e.g. in_progress -> review -> testing) as you progress. " +
+      "Self-scoped: always applies to the ticket you were spawned on, never another's. `cancelled` is not " +
+      "settable here — that's an operator call-off. The transition is recorded in your ticket's activity log " +
+      "(.charm/tickets/<id>.md) and reflected on the coordination board.",
+    inputSchema: {
+      status: z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]).optional(),
+      stage: z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]).optional(),
+      note: z.string().optional(),
+    },
+  },
+  async (args) => {
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
+    return ok(await call("set_ticket_status", { agent_id: AGENT_ID, ...args }));
   },
 );
 
@@ -176,7 +197,9 @@ server.registerTool(
   {
     description:
       "Terminate an agent: kill its tmux pane and drop it from the registry. If it was " +
-      "mid-ticket, that ticket is marked failed so it can be reassigned.\n" +
+      "mid-ticket, the ticket's terminal status depends on who killed it: a sub-agent killing " +
+      "ITSELF marks the ticket `failed` (it couldn't finish); the orchestrator/operator killing " +
+      "another agent marks it `cancelled` (a deliberate call-off).\n" +
       "- Orchestrator (main agent): may kill ANY sub-agent (reviewer/worker/tester) by id.\n" +
       "- Sub-agent: may kill ONLY ITSELF — omit agent_id (or pass your own id) to abort your " +
       "own ticket when you are stuck and cannot make progress.\n" +
@@ -208,6 +231,25 @@ server.registerTool(
   async (args) => {
     if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
     return ok(await call("continue_agent", { caller_id: AGENT_ID, ...args }));
+  },
+);
+
+server.registerTool(
+  "cancel_ticket",
+  {
+    description:
+      "Call off a ticket that is no longer wanted: marks it `cancelled`, drops it from the coordination board, " +
+      "and tears down any agent working it. This is NOT how you handle a stuck agent you want to retry — for " +
+      "that, kill_agent marks the ticket `failed` so it stays on the board for reassignment. Use cancel_ticket " +
+      "only when the work itself should stop (descoped, superseded, no longer needed). Orchestrator/operator only.",
+    inputSchema: {
+      ticket_id: z.string(),
+      note: z.string().optional(),
+    },
+  },
+  async (args) => {
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
+    return ok(await call("cancel_ticket", { caller_id: AGENT_ID, ...args }));
   },
 );
 

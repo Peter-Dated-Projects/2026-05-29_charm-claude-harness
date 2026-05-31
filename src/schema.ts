@@ -3,14 +3,21 @@ import { z } from "zod";
 export const TicketStage = z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]);
 export type TicketStage = z.infer<typeof TicketStage>;
 
-export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]);
+export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "complete", "failed", "cancelled"]);
 export type TicketStatus = z.infer<typeof TicketStatus>;
 
-/** The statuses COORDINATION.md renders: every status except `complete`. Open and
- *  in-flight tickets obviously belong on the live board; `failed` stays too,
- *  because a failed ticket needs an operator's eyes (update the ticket, re-spawn a
- *  retry). Only a cleanly completed ticket leaves the board. */
+/** The statuses COORDINATION.md renders: every status except the two terminal
+ *  "done with it" ones, `complete` and `cancelled`. Open and in-flight tickets
+ *  obviously belong on the live board; `failed` stays too, because a failed ticket
+ *  needs an operator's eyes (update the ticket, re-spawn a retry). Only a cleanly
+ *  completed ticket, or one the operator deliberately called off, leaves the board. */
 export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "failed"];
+
+/** Statuses a worker may set on its own ticket via set_ticket_status. `cancelled`
+ *  is intentionally excluded: cancelling is a deliberate operator/orchestrator
+ *  call-off (it flows from kill_agent), not something a worker decides about its
+ *  own work — a worker that hits a wall reports `failed`, not `cancelled`. */
+export const WORKER_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "complete", "failed"];
 
 export const TicketFrontmatter = z.object({
   id: z.string().regex(/^T-\d{3,}$/),
@@ -114,6 +121,24 @@ export const ReportStatusInput = z.object({
 });
 export type ReportStatusInput = z.infer<typeof ReportStatusInput>;
 
+// set_ticket_status lets a worker drive its own ticket's lifecycle directly:
+// status (running while working, complete/failed when terminal) and/or stage
+// (e.g. in_progress -> review -> testing). Self-scoped — the daemon applies it to
+// the caller's assigned ticket; an agent cannot move another's ticket. At least
+// one of status/stage must be present, or the call is a no-op worth rejecting.
+// `cancelled` is not worker-settable (see WORKER_SETTABLE_STATUSES).
+export const SetTicketStatusInput = z
+  .object({
+    agent_id: z.string(),
+    status: z.enum(WORKER_SETTABLE_STATUSES as [TicketStatus, ...TicketStatus[]]).optional(),
+    stage: TicketStage.optional(),
+    note: z.string().optional(),
+  })
+  .refine((v) => v.status !== undefined || v.stage !== undefined, {
+    message: "set_ticket_status requires at least one of status or stage",
+  });
+export type SetTicketStatusInput = z.infer<typeof SetTicketStatusInput>;
+
 export const RequestReviewInput = z.object({
   ticket_id: z.string(),
 });
@@ -144,6 +169,19 @@ export const ContinueAgentInput = z.object({
   message: z.string().min(1),
 });
 export type ContinueAgentInput = z.infer<typeof ContinueAgentInput>;
+
+// cancel_ticket is the deliberate "this ticket is no longer wanted" path. It is
+// intentionally separate from kill_agent: killing a stuck agent marks its ticket
+// `failed` so it stays on the board for retry, whereas cancelling marks it
+// `cancelled` and drops it off. caller_id authorization mirrors kill_agent:
+// absent -> human operator; present -> the orchestrator (main). Sub-agents cannot
+// cancel tickets.
+export const CancelTicketInput = z.object({
+  caller_id: z.string().optional(),
+  ticket_id: z.string(),
+  note: z.string().optional(),
+});
+export type CancelTicketInput = z.infer<typeof CancelTicketInput>;
 
 // One-sentence human-readable summary of this session, shown by `charm list`.
 // 80-char cap is enforced here (not just in the prompt) so a chatty agent

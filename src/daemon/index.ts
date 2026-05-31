@@ -21,9 +21,11 @@ import {
   AwaitApprovalInput,
   UpdatePlanInput,
   ReportStatusInput,
+  SetTicketStatusInput,
   RequestReviewInput,
   SetSessionDescriptionInput,
   KillAgentInput,
+  CancelTicketInput,
   ContinueAgentInput,
   SessionMeta,
   COORDINATION_STATUSES,
@@ -419,6 +421,26 @@ async function main() {
         }
         return { ok: true };
       }
+      case "set_ticket_status": {
+        // Worker-driven ticket lifecycle: the calling agent sets its OWN ticket's
+        // status and/or stage. Self-scoped via agent_id (folded in by the MCP shim),
+        // so an agent can never move another's ticket. `cancelled` is not settable
+        // here (enforced by the input schema) — that's an operator call-off, not a
+        // worker decision. Like report_status, the transition is mirrored into the
+        // ticket's activity log, and COORDINATION.md is rebuilt.
+        const input = SetTicketStatusInput.parse(params);
+        const a = registry.get(input.agent_id);
+        if (!a) throw new Error(`unknown agent: ${input.agent_id}`);
+        if (!a.ticket_id) throw new Error(`agent ${input.agent_id} holds no ticket`);
+        const patch: { status?: string; stage?: string } = {};
+        if (input.status) patch.status = input.status;
+        if (input.stage) patch.stage = input.stage;
+        store.update(a.ticket_id, patch);
+        const kind = input.status ? `status=${input.status}` : `stage=${input.stage}`;
+        store.appendLog(a.ticket_id, { agent: a.id, kind, text: input.note });
+        refreshCoordination();
+        return { ok: true };
+      }
       case "dismiss_agent": {
         const { agent_id } = params as { agent_id: string };
         const a = registry.get(agent_id);
@@ -461,8 +483,11 @@ async function main() {
         // operator/orchestrator killing someone else's pane is a deliberate call-off
         // -> `cancelled`. Both surface differently in the log and on the board
         // (failed stays for a retry, cancelled drops off).
-        // Aborting an in-flight ticket: mark it failed so it surfaces and can be
-        // reassigned, rather than leaving it orphaned in "running".
+        // Aborting an in-flight ticket marks it `failed` (not `cancelled`) so it
+        // stays on the board and surfaces for retry — killing a stuck/looping agent
+        // is a "kill and reassign" move, not a "call this off" one. Deliberate
+        // cancellation (the ticket is no longer wanted) is a separate, explicit path
+        // — see cancel_ticket — precisely so it can't be confused with a retry kill.
         if (target.ticket_id && (target.state === "spawning" || target.state === "running")) {
           try { store.update(target.ticket_id, { status: "failed", stage: "failed" }); } catch { /* ignore */ }
         }
@@ -476,6 +501,40 @@ async function main() {
           tearDownAgent(targetId);
         }
         return { ok: true, killed: targetId };
+      }
+      case "cancel_ticket": {
+        // Deliberate call-off: this ticket is no longer wanted. Distinct from
+        // kill_agent (which fails a ticket for retry) — cancelling marks it
+        // `cancelled`, drops it off the board, and tears down any agent on it.
+        // Operator/orchestrator only; a sub-agent can't cancel work.
+        const input = CancelTicketInput.parse(params);
+        const callerRole = resolveCaller(input.caller_id);
+        if (callerRole !== "operator" && callerRole !== "main") {
+          throw new Error(
+            `agent ${input.caller_id} (${callerRole}) may not cancel tickets; that requires the orchestrator`,
+          );
+        }
+        const t = store.read(input.ticket_id);
+        if (!t) throw new Error(`unknown ticket: ${input.ticket_id}`);
+        if (t.frontmatter.status === "complete") {
+          throw new Error(`ticket ${input.ticket_id} is already complete; nothing to cancel`);
+        }
+        store.update(input.ticket_id, { status: "cancelled" });
+        store.appendLog(input.ticket_id, {
+          agent: input.caller_id ?? "operator",
+          kind: "cancelled",
+          text: input.note,
+        });
+        // Stop any agent currently on this ticket — its work is moot now.
+        const onTicket = registry.list().find((a) => a.role !== "main" && a.ticket_id === input.ticket_id);
+        if (onTicket) tearDownAgent(onTicket.id);
+        refreshCoordination();
+        // A human operator cancelling from the console is news to the orchestrator;
+        // a cancel the orchestrator issued itself is not.
+        if (callerRole === "operator") {
+          pingOrchestrator(`${input.ticket_id} cancelled by operator${input.note ? `: ${input.note}` : ""}`);
+        }
+        return { ok: true, cancelled: input.ticket_id };
       }
       case "continue_agent": {
         const input = ContinueAgentInput.parse(params);

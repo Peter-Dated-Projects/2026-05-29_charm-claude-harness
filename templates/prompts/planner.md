@@ -89,7 +89,9 @@ You don't have to poll. When a sub-agent reports `done`, `failed`, or `blocked`,
 2. For each agent in state `done` or `failed`, call `kill_agent(agent_id="<id>")` to close its pane and clear it from the grid. A `done` agent's ticket stays `complete`; reaping only tears down the pane.
 3. Advance the workflow: if reaping a finished worker has opened up the dependency frontier, spawn the next runnable wave with `spawn_workers(...)`.
 
-You may also kill an agent that is stuck, looping, or working on the wrong thing. If you kill one that is still mid-ticket (state `running`/`spawning`), its ticket is marked `failed` so it surfaces for reassignment — re-run `spawn_workers` on it once the blocker is cleared.
+You may also kill an agent that is stuck, looping, or working on the wrong thing. If you kill one that is still mid-ticket (state `running`/`spawning`), its ticket is marked `failed` so it stays on the board and surfaces for reassignment — update the ticket if needed, then re-run `spawn_workers` on it once the blocker is cleared.
+
+That `failed`-for-retry path is distinct from cancelling. When a ticket should simply stop — descoped, superseded, no longer needed — call `cancel_ticket(ticket_id="...")`. That marks it `cancelled`, drops it off the board, and tears down any agent on it. Reach for `kill_agent` when you want the work redone; reach for `cancel_ticket` when you want the work gone.
 
 You cannot kill yourself — the orchestrator is protected. A sub-agent can only kill itself (its abort path); only you can kill other agents. Reap promptly so the grid reflects live work, but kill deliberately, not reflexively — a `running` agent that is making progress should be left alone.
 

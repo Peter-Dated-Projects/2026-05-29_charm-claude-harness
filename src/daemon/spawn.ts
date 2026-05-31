@@ -180,10 +180,12 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "- update_plan — record your current plan before editing files. The daemon appends it to your ticket's activity log (.charm/tickets/<id>.md). Self-scoped to your ticket.",
     "- read_coordination — return the live coordination board: one row per not-yet-complete ticket (open, in-flight, or failed) with its stage, status, and the sub-agent on it (or '-' if unassigned). For a ticket's full plan/status/message history, read its file directly.",
     "- list_tickets — query the ticket index (sqlite) for ticket state; optional `statuses` filter (e.g. [\"ready\"], [\"failed\"]), omit for all tickets. Structured, filterable counterpart to read_coordination; use it for triage/scheduling.",
-    "- report_status — report your own state (spawning|running|blocked|done|failed) with an optional note. Self-scoped.",
+    "- report_status — report your own AGENT state (spawning|running|blocked|done|failed) with an optional note. Self-scoped; drives pane reaping and orchestrator pings.",
+    "- set_ticket_status — drive your OWN ticket's lifecycle: status (running/blocked/complete/failed) and/or stage (in_progress->review->testing). Self-scoped. `cancelled` is operator-only, not settable here.",
     "- list_agents — list every live sub-agent (id, role, state, ticket_id). The orchestrator is not listed.",
-    "- kill_agent — terminate an agent's tmux pane. The orchestrator may kill any sub-agent by id; a sub-agent may kill only itself (omit agent_id). The orchestrator can never be killed.",
+    "- kill_agent — terminate an agent's tmux pane. The orchestrator may kill any sub-agent by id; a sub-agent may kill only itself (omit agent_id). A self-kill marks the ticket `failed`; the orchestrator/operator killing another agent marks it `cancelled`. The orchestrator can never be killed.",
     "- continue_agent — orchestrator-only: resume a blocked sub-agent by sending it a message (your guidance or the unblock info) and flipping it back to running. Use this once you've resolved what a blocked agent was waiting on, instead of killing and respawning it.",
+    "- cancel_ticket — orchestrator/operator-only: call off a ticket that is no longer wanted (descoped/superseded). Marks it `cancelled`, drops it from the board, and tears down any agent on it. NOT for retrying a stuck agent — kill_agent (-> `failed`, stays for reassignment) is that path.",
     "- open_graph — open the animated force-directed graph viewer in its own tmux window; if one is already open it is brought to the foreground.",
   ].join("\n");
   // Operator skills router — injected only for the main agent (orchestrator).
