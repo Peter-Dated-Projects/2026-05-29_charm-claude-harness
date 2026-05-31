@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 
 import { join, basename } from "node:path";
 import matter from "gray-matter";
 import { Database } from "bun:sqlite";
-import { TicketFrontmatter, type Ticket } from "../schema.ts";
+import { TicketFrontmatter, type Ticket, type TicketStatus, type TicketStage } from "../schema.ts";
 import type { CharmPaths } from "../paths.ts";
 
 // Markers delimiting the daemon-managed activity log inside a ticket body. Plans,
@@ -12,6 +12,31 @@ import type { CharmPaths } from "../paths.ts";
 // index — the verbose per-ticket history lives in the ticket file itself.
 const LOG_BEGIN = "<!-- CHARM:LOG -->";
 const LOG_END = "<!-- /CHARM:LOG -->";
+
+/** A ticket as stored in the sqlite index — lighter than a full Ticket (no body).
+ *  Returned by queryIndex; this is what callers query when they want ticket state
+ *  without paying to read and parse every .md file. */
+export type IndexedTicket = {
+  id: string;
+  title: string;
+  status: TicketStatus;
+  stage: TicketStage;
+  depends_on: string[];
+  touches: string[];
+  updated_at: number;
+};
+
+/** Raw row shape as it comes back from sqlite (JSON columns still encoded). */
+type IndexRow = {
+  id: string;
+  title: string;
+  status: string;
+  stage: string;
+  depends_on: string;
+  touches: string;
+  path: string;
+  updated_at: number;
+};
 
 /** Insert `line` just before the END marker of the managed log region, creating
  *  the region at the end of the body if it doesn't exist yet. Pure string op so
@@ -113,6 +138,29 @@ export class TicketStore {
     const note = entry.text?.trim() ? `: ${entry.text.trim().replace(/\s+/g, " ")}` : "";
     const line = `- ${ts}  \`${entry.agent}\`  ${entry.kind}${note}`;
     return this.update(id, { body: appendToLogRegion(t.body, line) });
+  }
+
+  /** Query the sqlite index, optionally filtered to a set of statuses, ordered by
+   *  id. Reads the index (not the .md files), returning a lightweight row per
+   *  ticket — no body. This is the queryable, status-filterable view that backs
+   *  both COORDINATION.md and the list_tickets MCP tool, keeping the
+   *  files -> sqlite -> COORDINATION.md derivation chain intact. Every create and
+   *  update reindexes synchronously, so the index is never stale on read. */
+  queryIndex(opts?: { statuses?: string[] }): IndexedTicket[] {
+    const statuses = opts?.statuses ?? [];
+    const sql = statuses.length
+      ? `SELECT * FROM tickets WHERE status IN (${statuses.map(() => "?").join(",")}) ORDER BY id`
+      : "SELECT * FROM tickets ORDER BY id";
+    const rows = this.db.query(sql).all(...statuses) as IndexRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      status: r.status as TicketStatus,
+      stage: r.stage as TicketStage,
+      depends_on: JSON.parse(r.depends_on) as string[],
+      touches: JSON.parse(r.touches) as string[],
+      updated_at: r.updated_at,
+    }));
   }
 
   list(): Ticket[] {

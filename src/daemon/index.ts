@@ -26,6 +26,7 @@ import {
   KillAgentInput,
   ContinueAgentInput,
   SessionMeta,
+  COORDINATION_STATUSES,
   type AgentRole,
 } from "../schema.ts";
 
@@ -154,21 +155,29 @@ async function main() {
         return { ticket_id: a.ticket_id!, touches: t?.frontmatter.touches ?? [] };
       });
 
-  // Recompute COORDINATION.md from current state: one row per live (non-main)
-  // agent that holds a ticket, showing the ticket, its title, the agent, and the
-  // agent's state. The index is fully derived, so we just rebuild and rewrite it
-  // on every assignment/state change — it stays small no matter how long the run.
+  // Recompute COORDINATION.md from current state: one row per live ticket (every
+  // status except `complete`), driven off the sqlite index — NOT the agent
+  // registry. This is the board's whole point: an open-but-unassigned ticket and
+  // a failed-but-needs-attention ticket both belong on it, neither of which has a
+  // live agent. We join the registry only to annotate which sub-agent (if any) is
+  // currently on each ticket. Fully derived, rebuilt and rewritten on every
+  // change, so it stays small no matter how long the run.
   const refreshCoordination = () => {
-    const rows = registry
-      .list()
-      .filter((a) => a.role !== "main" && a.ticket_id)
-      .map((a) => ({
-        ticket_id: a.ticket_id!,
-        about: store.read(a.ticket_id!)?.frontmatter.title ?? "(unknown ticket)",
-        agent_id: a.id,
-        state: a.state,
-      }))
-      .sort((x, y) => x.ticket_id.localeCompare(y.ticket_id) || x.agent_id.localeCompare(y.agent_id));
+    const agentByTicket = new Map<string, { id: string; state: string }>();
+    for (const a of registry.list()) {
+      if (a.role !== "main" && a.ticket_id) agentByTicket.set(a.ticket_id, { id: a.id, state: a.state });
+    }
+    const rows = store.queryIndex({ statuses: COORDINATION_STATUSES }).map((t) => {
+      const agent = agentByTicket.get(t.id) ?? null;
+      return {
+        ticket_id: t.id,
+        about: t.title,
+        stage: t.stage,
+        status: t.status,
+        agent_id: agent?.id ?? null,
+        agent_state: agent?.state ?? null,
+      };
+    });
     coord.write(rows);
   };
 
@@ -293,8 +302,13 @@ async function main() {
           agents: registry.list(),
           pending_approvals: approvals.pending(),
         };
-      case "list_tickets":
-        return store.list().map((t) => t.frontmatter);
+      case "list_tickets": {
+        // Query the sqlite index, optionally filtered to a set of statuses. This
+        // is the agent-facing backlog view (exposed as the list_tickets MCP tool)
+        // and the queryable counterpart to COORDINATION.md's rendered board.
+        const p = (params ?? {}) as { statuses?: string[] };
+        return store.queryIndex({ statuses: p.statuses });
+      }
       case "approve_gate": {
         const { id, decision } = params as { id: string; decision: "approve" | "reject" };
         return { resolved: approvals.resolve(id, decision) };
@@ -442,6 +456,11 @@ async function main() {
           );
         }
 
+        // Aborting an in-flight ticket. The terminal status depends on WHO killed
+        // it: a worker tearing down its own pane couldn't finish -> `failed`; an
+        // operator/orchestrator killing someone else's pane is a deliberate call-off
+        // -> `cancelled`. Both surface differently in the log and on the board
+        // (failed stays for a retry, cancelled drops off).
         // Aborting an in-flight ticket: mark it failed so it surfaces and can be
         // reassigned, rather than leaving it orphaned in "running".
         if (target.ticket_id && (target.state === "spawning" || target.state === "running")) {

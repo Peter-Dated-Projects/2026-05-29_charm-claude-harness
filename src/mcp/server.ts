@@ -96,12 +96,31 @@ server.registerTool(
   "read_coordination",
   {
     description:
-      "Return the live coordination index: one row per active ticket with its one-line summary, the assigned " +
-      "agent, and that agent's state. For a ticket's full plan, status history, and orchestrator messages, read " +
-      "its file at .charm/tickets/<id>.md.",
+      "Return the live coordination board (the rendered COORDINATION.md): one row per ticket that is not yet " +
+      "complete — open, in-flight, or failed — with its stage, status, and the sub-agent on it (or '-' if " +
+      "unassigned). Completed tickets drop off. This is the human-glanceable board; for a structured, filterable " +
+      "query of ticket state use list_tickets, and for a ticket's full plan/history read .charm/tickets/<id>.md.",
     inputSchema: {},
   },
   async () => ok(await call("read_coordination")),
+);
+
+server.registerTool(
+  "list_tickets",
+  {
+    description:
+      "Query the ticket index (sqlite, the source-of-truth-derived index of every ticket). Returns id, title, " +
+      "status, stage, depends_on, and touches per ticket. Pass `statuses` to filter (e.g. [\"ready\"] for the " +
+      "runnable backlog, [\"failed\"] for tickets needing attention); omit it to get every ticket regardless of " +
+      "state. Use this for triage/scheduling decisions; for a ticket's full body and activity log read " +
+      ".charm/tickets/<id>.md.",
+    inputSchema: {
+      statuses: z
+        .array(z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]))
+        .optional(),
+    },
+  },
+  async (args) => ok(await call("list_tickets", args)),
 );
 
 server.registerTool(

@@ -6,6 +6,12 @@ export type TicketStage = z.infer<typeof TicketStage>;
 export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]);
 export type TicketStatus = z.infer<typeof TicketStatus>;
 
+/** The statuses COORDINATION.md renders: every status except `complete`. Open and
+ *  in-flight tickets obviously belong on the live board; `failed` stays too,
+ *  because a failed ticket needs an operator's eyes (update the ticket, re-spawn a
+ *  retry). Only a cleanly completed ticket leaves the board. */
+export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "failed"];
+
 export const TicketFrontmatter = z.object({
   id: z.string().regex(/^T-\d{3,}$/),
   title: z.string().min(1),
