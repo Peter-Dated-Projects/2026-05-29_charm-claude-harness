@@ -17,8 +17,9 @@
  */
 
 import { appendGraphViewerPid, removeGraphViewerPid } from "../graph-viewers.ts";
-import { readdirSync, readFileSync, existsSync, watch, type FSWatcher } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, watch, type FSWatcher } from "node:fs";
 import { join, relative, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import matter from "gray-matter";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,13 @@ const REST_LEN = 2.6; // desired edge length (layout units)
 const GRAVITY = 0.012; // weak pull to center so islands don't drift off
 const DAMP = 0.82; // velocity damping per substep (1 = none)
 
+// 3D camera. The layout is a real 3D cloud; the camera spins around the vertical
+// axis at ROT_RAD_PER_SEC and looks down by a fixed TILT so the turntable reads
+// as depth instead of edge-on. Perspective projection + back-to-front draw +
+// glyph-size-by-depth supply the depth cues a flat braille canvas otherwise lacks.
+const ROT_RAD_PER_SEC = (2 * Math.PI) / 180; // 2 degrees per second
+const TILT = 0.38; // fixed downward pitch (~22 deg)
+
 // 256-color palette, one hue per node group.
 const GROUP_COLORS = [39, 213, 220, 84, 203, 141, 45, 208];
 const EDGE_COLOR = 238; // dim gray
@@ -50,8 +58,10 @@ interface Node {
   group: number;
   x: number;
   y: number;
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
 }
 
 interface Edge {
@@ -79,8 +89,10 @@ function dummyGraph(): { nodes: Node[]; edges: Edge[] } {
         // seed in a small jittered cloud near origin
         x: (Math.random() - 0.5) * 4,
         y: (Math.random() - 0.5) * 4,
+        z: (Math.random() - 0.5) * 4,
         vx: 0,
         vy: 0,
+        vz: 0,
       });
     }
     group++;
@@ -183,7 +195,7 @@ function buildGraphFromKb(kbDir: string): { nodes: Node[]; edges: Edge[] } | nul
     // `_index` notes are directory hubs: label them by their directory instead.
     const base = id.split("/").pop()!;
     const label = base === "_index" ? (id.split("/").slice(-2)[0] ?? base) : (typeof data.id === "string" ? data.id : base);
-    nodes.push({ id, label, group, x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 4, vx: 0, vy: 0 });
+    nodes.push({ id, label, group, x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 4, z: (Math.random() - 0.5) * 4, vx: 0, vy: 0, vz: 0 });
 
     // Frontmatter `related:` — KB-relative paths (tolerate a stray .md).
     const related = Array.isArray(data.related) ? data.related : [];
@@ -269,44 +281,49 @@ class Frame {
 // ---------------------------------------------------------------------------
 
 function step(nodes: Node[], edges: Edge[], byId: Map<string, Node>): void {
-  // repulsion (all pairs)
+  // repulsion (all pairs), in 3D
   for (let i = 0; i < nodes.length; i++) {
     const a = nodes[i]!;
     for (let j = i + 1; j < nodes.length; j++) {
       const b = nodes[j]!;
       let dx = a.x - b.x;
       let dy = a.y - b.y;
-      let d2 = dx * dx + dy * dy;
-      if (d2 < 0.01) { d2 = 0.01; dx = Math.random() - 0.5; dy = Math.random() - 0.5; }
+      let dz = a.z - b.z;
+      let d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < 0.01) { d2 = 0.01; dx = Math.random() - 0.5; dy = Math.random() - 0.5; dz = Math.random() - 0.5; }
       const d = Math.sqrt(d2);
       const f = REPULSION / d2;
-      const ux = dx / d, uy = dy / d;
-      a.vx += ux * f; a.vy += uy * f;
-      b.vx -= ux * f; b.vy -= uy * f;
+      const ux = dx / d, uy = dy / d, uz = dz / d;
+      a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
+      b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
     }
   }
 
-  // springs (edges)
+  // springs (edges), in 3D
   for (const e of edges) {
     const a = byId.get(e.source)!;
     const b = byId.get(e.target)!;
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const dz = b.z - a.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
     const f = SPRING * (d - REST_LEN);
-    const ux = dx / d, uy = dy / d;
-    a.vx += ux * f; a.vy += uy * f;
-    b.vx -= ux * f; b.vy -= uy * f;
+    const ux = dx / d, uy = dy / d, uz = dz / d;
+    a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
+    b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
   }
 
-  // gravity + integrate
+  // gravity + integrate (3D)
   for (const n of nodes) {
     n.vx -= n.x * GRAVITY;
     n.vy -= n.y * GRAVITY;
+    n.vz -= n.z * GRAVITY;
     n.vx *= DAMP;
     n.vy *= DAMP;
+    n.vz *= DAMP;
     n.x += n.vx * DT;
     n.y += n.vy * DT;
+    n.z += n.vz * DT;
   }
 }
 
@@ -314,42 +331,74 @@ function step(nodes: Node[], edges: Edge[], byId: Map<string, Node>): void {
 // Render
 // ---------------------------------------------------------------------------
 
-function render(nodes: Node[], edges: Edge[], byId: Map<string, Node>, cols: number, rows: number): string {
+function render(nodes: Node[], edges: Edge[], cols: number, rows: number, angle: number): string {
   const f = new Frame(cols, rows);
   const margin = 6;
 
-  // fit layout bounding box into the dot canvas
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  // Project every node into camera space: spin about the vertical axis by
+  // `angle`, then tilt down by a fixed TILT. camZ is depth (larger = nearer).
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const cosT = Math.cos(TILT), sinT = Math.sin(TILT);
+  const camX: number[] = [], camY: number[] = [], camZ: number[] = [];
+  let zAbsMax = 0;
   for (const n of nodes) {
-    if (n.x < minX) minX = n.x;
-    if (n.x > maxX) maxX = n.x;
-    if (n.y < minY) minY = n.y;
-    if (n.y > maxY) maxY = n.y;
+    const x1 = n.x * cosA + n.z * sinA;   // rotate about Y
+    const z1 = -n.x * sinA + n.z * cosA;
+    const y2 = n.y * cosT - z1 * sinT;    // tilt about X
+    const z2 = n.y * sinT + z1 * cosT;
+    camX.push(x1); camY.push(y2); camZ.push(z2);
+    if (Math.abs(z2) > zAbsMax) zAbsMax = Math.abs(z2);
+  }
+
+  // Perspective: divide by (CAM - camZ). CAM sits beyond the cloud so the
+  // denominator stays positive; nearer nodes (larger camZ) project larger.
+  const CAM = zAbsMax * 2.5 + 3;
+  const sx: number[] = [], sy: number[] = [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < nodes.length; i++) {
+    const denom = CAM - camZ[i]!;
+    const px = camX[i]! / denom, py = camY[i]! / denom;
+    sx.push(px); sy.push(py);
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
   }
   const spanX = maxX - minX || 1;
   const spanY = maxY - minY || 1;
   const scale = Math.min((f.dotW - margin * 2) / spanX, (f.dotH - margin * 2) / spanY);
   const ox = (f.dotW - spanX * scale) / 2;
   const oy = (f.dotH - spanY * scale) / 2;
-  const dotX = (n: Node) => ox + (n.x - minX) * scale;
-  const dotY = (n: Node) => oy + (n.y - minY) * scale;
+  const dotX = (i: number) => ox + (sx[i]! - minX) * scale;
+  const dotY = (i: number) => oy + (sy[i]! - minY) * scale;
+
+  const idx = new Map<string, number>();
+  nodes.forEach((n, i) => idx.set(n.id, i));
 
   // edges first (under nodes)
   for (const e of edges) {
-    const a = byId.get(e.source)!;
-    const b = byId.get(e.target)!;
-    f.line(dotX(a), dotY(a), dotX(b), dotY(b));
+    const ai = idx.get(e.source), bi = idx.get(e.target);
+    if (ai === undefined || bi === undefined) continue;
+    f.line(dotX(ai), dotY(ai), dotX(bi), dotY(bi));
   }
 
-  // nodes + labels on top
-  for (const n of nodes) {
-    const cx = Math.round(dotX(n) / 2);
-    const cy = Math.round(dotY(n) / 4);
+  // Depth normalization (0 = farthest, 1 = nearest) for glyph size + labels.
+  let dMin = Infinity, dMax = -Infinity;
+  for (const z of camZ) { if (z < dMin) dMin = z; if (z > dMax) dMax = z; }
+  const dSpan = dMax - dMin || 1;
+
+  // Draw nodes back-to-front so nearer nodes occlude farther ones (the stamp
+  // grid overwrites). Glyph size encodes depth; labels only on the front half
+  // so the back of the cloud doesn't clutter the view as it rotates away.
+  const order = nodes.map((_, i) => i).sort((a, b) => camZ[a]! - camZ[b]!);
+  for (const i of order) {
+    const n = nodes[i]!;
+    const cx = Math.round(dotX(i) / 2);
+    const cy = Math.round(dotY(i) / 4);
     const color = GROUP_COLORS[n.group % GROUP_COLORS.length]!;
-    f.stamp(cx, cy, "●", color); // ●
-    // label to the right if it fits
-    for (let k = 0; k < n.label.length; k++) {
-      f.stamp(cx + 2 + k, cy, n.label[k]!, LABEL_COLOR);
+    const t = (camZ[i]! - dMin) / dSpan;
+    const glyph = t > 0.66 ? "●" : t > 0.33 ? "•" : "·";
+    f.stamp(cx, cy, glyph, color);
+    if (t >= 0.5) {
+      for (let k = 0; k < n.label.length; k++) f.stamp(cx + 2 + k, cy, n.label[k]!, LABEL_COLOR);
     }
   }
 
@@ -381,6 +430,39 @@ function render(nodes: Node[], edges: Edge[], byId: Map<string, Node>, cols: num
   }
   out += "\x1b[0m";
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Persisted viewer preferences
+// ---------------------------------------------------------------------------
+
+// User-global (not per-project) so a rotation preference set in one project's
+// viewer carries to the next. Stored under the XDG config dir.
+function prefPath(): string {
+  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  return join(base, "charm", "graph-viewer.json");
+}
+
+/** Load the saved "rotate" preference; default on (true) for a first-ever run. */
+function loadRotatePref(): boolean {
+  try {
+    const p = prefPath();
+    if (!existsSync(p)) return true;
+    const data = JSON.parse(readFileSync(p, "utf8"));
+    return typeof data.rotate === "boolean" ? data.rotate : true;
+  } catch {
+    return true;
+  }
+}
+
+function saveRotatePref(rotate: boolean): void {
+  try {
+    const p = prefPath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({ rotate }, null, 2) + "\n");
+  } catch {
+    /* best-effort: a viewer that can't persist still works for the session */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +501,7 @@ function main(): void {
     if (!g || g.nodes.length === 0) return;
     for (const n of g.nodes) {
       const prev = byId.get(n.id);
-      if (prev) { n.x = prev.x; n.y = prev.y; n.vx = prev.vx; n.vy = prev.vy; }
+      if (prev) { n.x = prev.x; n.y = prev.y; n.z = prev.z; n.vx = prev.vx; n.vy = prev.vy; n.vz = prev.vz; }
     }
     nodes = g.nodes;
     edges = g.edges;
@@ -453,14 +535,25 @@ function main(): void {
   // Re-seed the layout: re-randomize positions of the CURRENT graph (KB or demo)
   // and let physics resettle, rather than reverting to the demo graph.
   const reseed = () => {
-    for (const n of nodes) { n.x = (Math.random() - 0.5) * 4; n.y = (Math.random() - 0.5) * 4; n.vx = 0; n.vy = 0; }
+    for (const n of nodes) {
+      n.x = (Math.random() - 0.5) * 4; n.y = (Math.random() - 0.5) * 4; n.z = (Math.random() - 0.5) * 4;
+      n.vx = 0; n.vy = 0; n.vz = 0;
+    }
   };
+
+  // 3D camera spin. `rotating` persists across sessions (Tab toggles it); `angle`
+  // accumulates from real elapsed time so the speed is exactly 2 deg/sec
+  // regardless of frame rate. Toggling off freezes the current orientation.
+  let rotating = loadRotatePref();
+  let angle = 0;
+  let lastFrameT = performance.now();
 
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on("data", (buf: Buffer) => {
     const k = buf.toString();
     if (k === "q" || k === "\x1b" || k === "\x03") quit();
+    else if (k === "\t") { rotating = !rotating; saveRotatePref(rotating); }
     else if (k === "r") reseed();
     else if (k === " ") paused = !paused;
   });
@@ -478,13 +571,16 @@ function main(): void {
 
     frames++;
     const now = performance.now();
+    const dt = (now - lastFrameT) / 1000; lastFrameT = now;
+    if (rotating) angle = (angle + ROT_RAD_PER_SEC * dt) % (Math.PI * 2);
     if (now - lastFpsT >= 1000) { fps = (frames * 1000) / (now - lastFpsT); frames = 0; lastFpsT = now; }
 
-    const body = render(nodes, edges, byId, cols, rows);
+    const body = render(nodes, edges, cols, rows, angle);
     const status =
       `\x1b[${rows + 1};1H\x1b[0m\x1b[2K` +
       `\x1b[38;5;245m ${nodes.length} nodes · ${edges.length} edges · ${fps.toFixed(0)} fps` +
-      `${live ? " · live KB" : " · demo"}${paused ? " · PAUSED" : ""} · [q]uit [r]eseed [space]pause\x1b[0m`;
+      `${live ? " · live KB" : " · demo"} · rot ${rotating ? "2°/s" : "off"}${paused ? " · PAUSED" : ""}` +
+      ` · [tab]rotate [q]uit [r]eseed [space]pause\x1b[0m`;
     out.write(body + status);
   };
 
@@ -507,4 +603,4 @@ function main(): void {
 // tests of buildGraphFromKb) must not launch the viewer.
 if (import.meta.main) main();
 
-export { buildGraphFromKb };
+export { buildGraphFromKb, render };
