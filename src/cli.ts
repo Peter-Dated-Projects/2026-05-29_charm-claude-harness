@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { charmPaths, defaultSessionName, type CharmPaths } from "./paths.ts";
@@ -201,6 +201,15 @@ program
           catch { console.log(`[charm] daemon pid=${pid} not running`); }
         }
       }
+      // Always reclaim the run-state files. A live daemon's signal handler also
+      // removes these, but doing it here unconditionally means a crashed daemon
+      // (dead pid) gets cleaned up too — otherwise the stale pidfile/ready marker
+      // would block (or mislead) the next `start`, leaving stop and start
+      // deadlocked against each other. The socket is a fs file only on POSIX; on
+      // Windows it's a named pipe (existsSync is false), so this is a safe no-op.
+      try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
+      try { unlinkSync(paths.ready); } catch { /* ignore */ }
+      try { if (existsSync(paths.socket)) unlinkSync(paths.socket); } catch { /* ignore */ }
     }
     if (!stopped) console.log("[charm] no running daemon found");
     // 3. Tear down the multiplexer session (closes console, agent, graph panes).

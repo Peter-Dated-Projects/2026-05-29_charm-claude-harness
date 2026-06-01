@@ -1,5 +1,28 @@
 import { join, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
+
+/**
+ * Resolve the daemon's Unix-socket path for a project root.
+ *
+ * Unix domain sockets are bounded by the kernel's `sockaddr_un.sun_path`:
+ * 104 bytes on macOS/BSD, 108 on Linux. A long project path can push the
+ * natural `<root>/.charm/sock` past that limit, and the daemon then dies on
+ * every start with an opaque `Failed to listen` (and leaves a stale pidfile
+ * behind, which then blocks subsequent starts). Keep the socket inside .charm
+ * when it fits — it's nicer for cleanup and reasoning about side-by-side runs —
+ * and otherwise fall back to a short, collision-free path in the system temp
+ * dir, keyed by a hash of the *absolute* root so the CLI and the daemon (two
+ * independently compiled binaries) deterministically agree on the same path.
+ */
+function resolveSocketPath(charmDir: string, root: string): string {
+  const inDir = join(charmDir, "sock");
+  // Stay well under the 104-byte macOS floor to leave margin for the kernel's
+  // accounting; falling back early is harmless, binding a too-long path is not.
+  if (Buffer.byteLength(inDir) <= 100) return inDir;
+  const hash = createHash("sha1").update(root).digest("hex").slice(0, 16);
+  return join(tmpdir(), `charm-${hash}.sock`);
+}
 
 export function charmPaths(root: string) {
   const charmDir = join(root, ".charm");
@@ -7,17 +30,19 @@ export function charmPaths(root: string) {
     root,
     charmDir,
     // The daemon RPC endpoint Bun.listen/connect binds to. On POSIX this is a
-    // Unix-domain socket *file* under .charm/; on Windows it is a named pipe,
-    // which lives in the kernel object namespace (NOT the filesystem) and is
-    // addressed by name. Bun accepts both through the same `unix:` option, so
-    // callers pass `socket` to rpc.ts unchanged — only existence/cleanup logic
-    // has to know the difference (see isPipe() in rpc.ts). The pipe name is
-    // derived from the root-path hash so two charms in different directories get
-    // distinct pipes, mirroring the per-directory socket file on POSIX.
+    // Unix-domain socket *file*; on Windows it is a named pipe, which lives in
+    // the kernel object namespace (NOT the filesystem) and is addressed by name.
+    // Bun accepts both through the same `unix:` option, so callers pass `socket`
+    // to rpc.ts unchanged — only existence/cleanup logic has to know the
+    // difference (see isPipe() in rpc.ts). On Windows the pipe name is derived
+    // from the root-path hash so two charms in different directories get distinct
+    // pipes. On POSIX, resolveSocketPath keeps the socket inside .charm when the
+    // path fits under the sun_path limit and otherwise falls back to a short
+    // tmpdir path (a long project root would otherwise break `listen`).
     socket:
       process.platform === "win32"
         ? `\\\\.\\pipe\\charm-${createHash("sha1").update(root).digest("hex").slice(0, 12)}`
-        : join(charmDir, "sock"),
+        : resolveSocketPath(charmDir, root),
     // Readiness marker the daemon writes once its RPC server is actually
     // listening, and removes on shutdown. On POSIX the socket file's existence
     // doubled as this signal, but a Windows named pipe has no filesystem entry
