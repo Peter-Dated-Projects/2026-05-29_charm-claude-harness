@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { spawn } from "node:child_process";
 import { charmPaths, defaultSessionName, type CharmPaths } from "./paths.ts";
 import { rpcCall } from "./daemon/rpc.ts";
@@ -582,20 +582,18 @@ function locateTemplateDir(name: string): string | null {
 }
 
 /** True when running as a `bun build --compile` standalone binary rather than
- *  from TS source via `bun run`. A compiled binary loads its entry module from
- *  Bun's embedded virtual filesystem, whose paths live under a "$bunfs" root
- *  (e.g. file:///$bunfs/root/charm). From TS source import.meta.url is a real
- *  file:// path on disk.
+ *  from TS source via `bun run`.
  *
- *  We key off that "$bunfs" marker rather than probing the path with existsSync:
- *  Bun reports the embedded path as existing (existsSync returns true in BOTH
- *  source and compiled runs), so an existence check can't tell them apart and
- *  would always report "source" — sending the compiled binary down the
+ *  Key off process.execPath, NOT import.meta.url. A compiled binary runs as the
+ *  app executable (charm-claude.exe); `bun run <file>` runs as bun itself. The
+ *  embedded-FS markers in import.meta.url are unreliable across platforms — on
+ *  Windows the compiled URL is `file:///B:/%7EBUN/root/charm-claude` (the `~` is
+ *  URL-encoded to %7E and the root is `B:/~BUN`, not `/$bunfs/`), so the old
+ *  marker check returned false and sent the compiled binary down the
  *  `bun run src/...` path against a virtual-fs path bun can't load. */
 function isCompiled(): boolean {
-  const url = typeof import.meta.url === "string" ? import.meta.url : "";
-  // macOS/Linux use "/$bunfs/"; Windows standalone binaries use "B:/~BUN/".
-  return url.includes("/$bunfs/") || url.includes("/~BUN/");
+  const exe = basename(process.execPath).toLowerCase();
+  return exe !== "bun" && exe !== "bun.exe" && exe !== "bun-debug" && exe !== "bun-debug.exe";
 }
 
 /** argv used to launch one of charm's sibling processes (daemon or console).

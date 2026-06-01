@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { charmPaths, defaultSessionName } from "../paths.ts";
@@ -45,8 +45,10 @@ const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 function graphBinArgs(): string[] {
   const override = process.env.CHARM_GRAPH_BIN;
   if (override) return [override];
-  const url = typeof import.meta.url === "string" ? import.meta.url : "";
-  const compiled = url.includes("/$bunfs/") || url.includes("/~BUN/");
+  // Compiled when this process runs as the app binary rather than `bun` (see
+  // isCompiled() in cli.ts — import.meta.url markers are unreliable on Windows).
+  const exe = basename(process.execPath).toLowerCase();
+  const compiled = exe !== "bun" && exe !== "bun.exe" && exe !== "bun-debug" && exe !== "bun-debug.exe";
   if (compiled) {
     // .exe suffix on Windows — see exeName() in cli.ts for the rationale.
     const binName = process.platform === "win32" ? "charm-graph.exe" : "charm-graph";
