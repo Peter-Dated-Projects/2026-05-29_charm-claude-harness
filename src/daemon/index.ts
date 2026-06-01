@@ -70,6 +70,17 @@ function graphBinArgs(): string[] {
  *  TERM_PROGRAM (inherited by the daemon from `charm start`). iTerm and Apple
  *  Terminal each get their own AppleScript dialect; anything else (or a missing
  *  TERM_PROGRAM) falls back to Terminal.app, which exists on every Mac. */
+/** True if a process with this pid currently exists. Signal 0 does the kernel's
+ *  permission/existence check without delivering a signal. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function graphLaunchSpec(pidFile: string, kbDir: string): { cmd: string; args: string[]; env?: NodeJS.ProcessEnv } {
   const inner =
     `CHARM_GRAPH_PIDFILE=${shq(pidFile)} CHARM_KB_DIR=${shq(kbDir)} ` +
@@ -130,9 +141,19 @@ async function main() {
   mkdirSync(paths.logsDir, { recursive: true });
 
   if (existsSync(paths.pidFile)) {
-    const stale = Number(Bun.file(paths.pidFile).text());
-    console.error(`[charmd] pidfile exists (pid=${stale}); refusing to start. rm ${paths.pidFile} if stale.`);
-    process.exit(2);
+    // NB: read synchronously. Bun.file().text() is async — `Number(Promise)`
+    // is always NaN, which previously made this guard refuse *every* start
+    // whenever any pidfile existed, even after a clean crash.
+    const recorded = Number(readFileSync(paths.pidFile, "utf8").trim());
+    if (Number.isInteger(recorded) && recorded > 0 && isProcessAlive(recorded)) {
+      console.error(`[charmd] already running (pid=${recorded}); refusing to start a second daemon.`);
+      process.exit(2);
+    }
+    // Stale pidfile (dead pid, or unparseable from a partial write). Reclaim it
+    // instead of wedging — otherwise a crash permanently blocks restart until
+    // someone hand-removes the file.
+    console.error(`[charmd] removing stale pidfile (pid=${recorded}) from a prior crash`);
+    try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
   }
   writeFileSync(paths.pidFile, String(process.pid));
 

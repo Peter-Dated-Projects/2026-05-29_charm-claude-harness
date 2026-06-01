@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { charmPaths, defaultSessionName, type CharmPaths } from "./paths.ts";
@@ -179,6 +179,12 @@ program
         try { process.kill(pid); console.log(`[charm] killed daemon pid=${pid}`); }
         catch { console.log(`[charm] daemon pid=${pid} not running`); }
       }
+      // Always reclaim the run-state files. A live daemon's signal handler also
+      // removes these, but doing it here unconditionally means a crashed daemon
+      // (dead pid) gets cleaned up too — otherwise the stale pidfile would block
+      // the next `start`, leaving stop and start deadlocked against each other.
+      try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
+      try { if (existsSync(paths.socket)) unlinkSync(paths.socket); } catch { /* ignore */ }
     }
     // 3. Tear down the tmux session (closes console, agent, and graph windows).
     const tmux = new Tmux(session);

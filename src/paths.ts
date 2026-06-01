@@ -1,12 +1,35 @@
 import { join, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
+
+/**
+ * Resolve the daemon's Unix-socket path for a project root.
+ *
+ * Unix domain sockets are bounded by the kernel's `sockaddr_un.sun_path`:
+ * 104 bytes on macOS/BSD, 108 on Linux. A long project path can push the
+ * natural `<root>/.charm/sock` past that limit, and the daemon then dies on
+ * every start with an opaque `Failed to listen` (and leaves a stale pidfile
+ * behind, which then blocks subsequent starts). Keep the socket inside .charm
+ * when it fits — it's nicer for cleanup and reasoning about side-by-side runs —
+ * and otherwise fall back to a short, collision-free path in the system temp
+ * dir, keyed by a hash of the *absolute* root so the CLI and the daemon (two
+ * independently compiled binaries) deterministically agree on the same path.
+ */
+function resolveSocketPath(charmDir: string, root: string): string {
+  const inDir = join(charmDir, "sock");
+  // Stay well under the 104-byte macOS floor to leave margin for the kernel's
+  // accounting; falling back early is harmless, binding a too-long path is not.
+  if (Buffer.byteLength(inDir) <= 100) return inDir;
+  const hash = createHash("sha1").update(root).digest("hex").slice(0, 16);
+  return join(tmpdir(), `charm-${hash}.sock`);
+}
 
 export function charmPaths(root: string) {
   const charmDir = join(root, ".charm");
   return {
     root,
     charmDir,
-    socket: join(charmDir, "sock"),
+    socket: resolveSocketPath(charmDir, root),
     db: join(charmDir, "db.sqlite"),
     promptsDir: join(charmDir, "prompts"),
     logsDir: join(charmDir, "logs"),
