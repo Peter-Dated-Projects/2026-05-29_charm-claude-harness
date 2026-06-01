@@ -12,7 +12,7 @@ import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, MAIN_AGENT_ID, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import {
   CreateTicketsInput,
@@ -135,6 +135,8 @@ async function main() {
     process.exit(2);
   }
   writeFileSync(paths.pidFile, String(process.pid));
+
+  ensureDirectoryTrusted(paths.root);
 
   const store = new TicketStore(paths);
   store.reindexAll();

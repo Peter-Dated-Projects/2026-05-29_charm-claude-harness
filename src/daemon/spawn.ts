@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { CharmPaths } from "../paths.ts";
 import type { AgentRole } from "../schema.ts";
 
@@ -253,6 +254,24 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     `export MAX_THINKING_TOKENS=${thinking}`,
     `exec claude ${flags.join(" ")}`,
   ].join(" && ");
+}
+
+/** Pre-approve a directory in ~/.claude.json so Claude Code skips the
+ *  "Do you trust this directory?" dialog for interactive sessions. */
+export function ensureDirectoryTrusted(dir: string): void {
+  const claudeJson = join(homedir(), ".claude.json");
+  let data: Record<string, any> = {};
+  try {
+    data = JSON.parse(readFileSync(claudeJson, "utf8"));
+  } catch {
+    // file missing or malformed — start fresh
+  }
+  if (!data.projects) data.projects = {};
+  const entry = data.projects[dir] ?? {};
+  if (entry.hasTrustDialogAccepted) return;
+  entry.hasTrustDialogAccepted = true;
+  data.projects[dir] = entry;
+  writeFileSync(claudeJson, JSON.stringify(data, null, 2) + "\n");
 }
 
 function shellQuote(s: string): string {
