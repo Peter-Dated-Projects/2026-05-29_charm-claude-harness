@@ -154,16 +154,20 @@ export function resolveModel(input: string): string {
  *  CHARM_AGENT_ID is exported so the MCP shim can identify the agent. */
 export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: SpawnSpec): string {
   // Resolve the role's system prompt. Every role but `main` loads a single
-  // `<role>.md`. The orchestrator (`main`) has no `main.md`: it runs Stage 0
-  // (discovery) then Stage 1 (planning) in one session, so its prompt IS those
-  // two stage files concatenated. Assembling them here is what makes discovery.md
-  // and planner.md live — without this, `main.md` is missing and the orchestrator
-  // falls back to a useless one-line stub.
+  // `<role>.md`. The orchestrator (`main`) has no `main.md`: it runs the staged
+  // pipeline in one session, so its prompt IS the orchestrator frame followed by
+  // the two stages it runs directly (discovery then planning), concatenated.
+  // orchestrator.md is the top-level frame — it states the full five-stage gated
+  // pipeline and the hard rule that nothing fans out before discovery + planning
+  // are approved; without it the agent reads two independent "you are Stage X"
+  // files and can skip straight to ticket fan-out. Assembling them here is what
+  // makes these files live — without this, `main.md` is missing and the
+  // orchestrator falls back to a useless one-line stub.
   let rolePrompt: string;
   if (spec.plain) {
     rolePrompt = "";
   } else if (spec.role === "main") {
-    const stages = ["discovery.md", "planner.md"]
+    const stages = ["orchestrator.md", "discovery.md", "planner.md"]
       .map((f) => join(paths.promptsDir, f))
       .filter((p) => existsSync(p))
       .map((p) => readFileSync(p, "utf8").trim());
