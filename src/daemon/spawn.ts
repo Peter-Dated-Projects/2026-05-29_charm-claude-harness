@@ -303,6 +303,21 @@ export function serializeLaunchForPwsh({ argv, env }: ClaudeLaunch): string {
   return [...sets, call].join("; ");
 }
 
+/** Serialize a launch as a standalone PowerShell *script* (one statement per
+ *  line). Written to a `.ps1` the pane runs via `& '<path>'`, NOT inlined on the
+ *  command line: an agent's `--append-system-prompt` carries double-quotes and
+ *  newlines that shatter psmux's `powershell -Command "<...>"` wrapping, but in a
+ *  script file those characters are inert — a single-quoted PowerShell string can
+ *  even span newlines, and only `'` needs escaping (pwshQuote doubles it).
+ *  Returned with a UTF-8 BOM prepended by the caller so Windows PowerShell 5.1
+ *  (which otherwise reads scripts in the ANSI codepage) keeps any non-ASCII
+ *  prompt text intact. */
+export function serializeLaunchToPs1({ argv, env }: ClaudeLaunch): string {
+  const lines = Object.entries(env).map(([k, v]) => `$env:${k} = ${pwshQuote(v)}`);
+  lines.push(`& ${argv.map(pwshQuote).join(" ")}`);
+  return lines.join("\r\n") + "\r\n";
+}
+
 /** Pre-approve a directory in ~/.claude.json so Claude Code skips the
  *  "Do you trust this directory?" dialog for interactive sessions. */
 export function ensureDirectoryTrusted(dir: string): void {

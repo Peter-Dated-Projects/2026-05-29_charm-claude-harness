@@ -1,5 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { serializeLaunchForShell, serializeLaunchForPwsh } from "./spawn.ts";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { serializeLaunchForShell, serializeLaunchToPs1 } from "./spawn.ts";
 import { buildLayoutString } from "./layout.ts";
 
 /**
@@ -231,12 +235,24 @@ class TmuxBackend implements Multiplexer {
 class PsmuxBackend implements Multiplexer {
   constructor(public readonly session: string, private readonly bin = "psmux") {}
 
-  /** The argv tail psmux runs in a pane: `-- <one PowerShell command string>`.
-   *  psmux hosts it as `powershell.exe -NoLogo -Command "<string>"`. A single
-   *  arg avoids psmux's space-join quote-stripping; the string is self-contained
-   *  PowerShell (env-sets + `& claude …`) valid in Windows PowerShell 5.1. */
+  /** The argv tail psmux runs in a pane: `-- & '<script.ps1>'`.
+   *  psmux hosts whatever follows `--` as `powershell.exe -NoLogo -Command
+   *  "<joined>"`. Inlining the launch there fails: an agent's
+   *  --append-system-prompt has double-quotes and newlines that break that
+   *  double-quote wrapping (PowerShell errors "string is missing the
+   *  terminator"). So we write the launch to a .ps1 and pass only `& '<path>'`
+   *  — one arg, single-quoted path (handles spaces), no double-quotes to clash
+   *  with psmux's wrapper. All the volatile content lives safely in the file. */
   private paneCmd(launch: LaunchSpec): string[] {
-    return ["--", serializeLaunchForPwsh(launch)];
+    // UTF-8 BOM so Windows PowerShell 5.1 doesn't garble non-ASCII prompt text.
+    const script = "\uFEFF" + serializeLaunchToPs1(launch);
+    const dir = join(tmpdir(), "charm-launch");
+    mkdirSync(dir, { recursive: true });
+    // Content-hashed name: identical launches reuse one file; different ones
+    // never collide. (No Date.now()/random needed — and none would help here.)
+    const path = join(dir, `${createHash("sha1").update(script).digest("hex").slice(0, 16)}.ps1`);
+    writeFileSync(path, script);
+    return ["--", `& '${path.replace(/'/g, "''")}'`];
   }
 
   newSession(window: string, cwd: string): void {
