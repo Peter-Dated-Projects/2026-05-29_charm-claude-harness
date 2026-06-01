@@ -20,6 +20,11 @@ export function charmPaths(root: string) {
     // knows which SKILL.md to follow when asked to perform an operator action.
     skillsDir: join(charmDir, "skills"),
     skillsIndex: join(charmDir, "skills", "INDEX.md"),
+    // The project's Claude Code settings. charm start merges its required MCP
+    // permissions into <root>/.claude/settings.json (never clobbering existing
+    // keys) so spawned agents trust the charm tools and any project MCP servers.
+    claudeDir: join(root, ".claude"),
+    claudeSettings: join(root, ".claude", "settings.json"),
     projectMd: join(charmDir, "PROJECT.md"),
     coordinationMd: join(charmDir, "COORDINATION.md"),
     mcpConfig: join(charmDir, "charm.json"),

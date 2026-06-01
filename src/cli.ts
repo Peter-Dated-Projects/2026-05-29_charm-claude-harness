@@ -474,6 +474,55 @@ function scaffoldCharmDir(
       "# COORDINATION.md\n\n_Daemon will populate this as agents check in._\n",
     );
   }
+
+  scaffoldClaudeSettings(paths);
+}
+
+/**
+ * Ensure <root>/.claude/settings.json grants the permissions charm's spawned
+ * agents need: the charm MCP tool allow-list.
+ *
+ * Merge semantics, never clobber: an existing settings.json is preserved key for
+ * key — we only union the template's allow entries into permissions.allow, and
+ * we leave everything else (including the user's formatting) untouched. The write
+ * is skipped entirely when the allow-list already contains every charm entry, so
+ * repeated `charm start`s don't reformat or churn a user-maintained file.
+ */
+function scaffoldClaudeSettings(paths: ReturnType<typeof charmPaths>) {
+  const tmplDir = locateTemplateDir("claude");
+  if (!tmplDir) {
+    console.warn("[charm] claude settings template not found; skipping .claude/settings.json");
+    return;
+  }
+  const template = JSON.parse(readFileSync(join(tmplDir, "settings.json"), "utf8"));
+  const wanted = template.permissions.allow as string[];
+
+  const fileExists = existsSync(paths.claudeSettings);
+  let existing: any = {};
+  if (fileExists) {
+    try {
+      existing = JSON.parse(readFileSync(paths.claudeSettings, "utf8"));
+    } catch {
+      console.warn(`[charm] ${paths.claudeSettings} is not valid JSON; leaving it untouched`);
+      return;
+    }
+    if (typeof existing !== "object" || existing === null || Array.isArray(existing)) existing = {};
+  }
+
+  const before = JSON.stringify(existing);
+
+  const isPlainObject = (v: any) => typeof v === "object" && v !== null && !Array.isArray(v);
+  const perms = isPlainObject(existing.permissions)
+    ? existing.permissions
+    : (existing.permissions = {});
+  const allow: string[] = Array.isArray(perms.allow) ? perms.allow : (perms.allow = []);
+  for (const entry of wanted) if (!allow.includes(entry)) allow.push(entry);
+
+  // Nothing to add (and the file already exists) — don't rewrite/reformat it.
+  if (fileExists && JSON.stringify(existing) === before) return;
+
+  mkdirSync(paths.claudeDir, { recursive: true });
+  writeFileSync(paths.claudeSettings, JSON.stringify(existing, null, 2) + "\n");
 }
 
 function locateTemplateDir(name: string): string | null {
