@@ -175,6 +175,14 @@ cmd_install() {
         prefix="${3:?--prefix requires a directory}"
     fi
 
+    # Kill every running charm process FIRST. Overwriting the binaries while old
+    # daemons/agents are live leaves them running stale code against the new
+    # on-disk binary — the version-skew that produces crash/restart churn and
+    # wedged sessions. Tear it all down before we touch anything on disk. Called
+    # with no args so it performs a real kill (not a dry run).
+    echo "==> Killing any running charm processes before install..."
+    cmd_kill
+
     # Build host-arch binaries first (also runs the bun + claude dependency checks).
     cmd_build build all
 
@@ -232,6 +240,138 @@ cmd_uninstall() {
     return 0
 }
 
+# Panic button: kill every charm process on this machine, across ALL sessions
+# and directories. Unlike `stop` (graceful, one session by name), this is the
+# sledgehammer for a wedged daemon or orphaned agents — it does not need a
+# session name and does not care which directory you are in.
+#
+# What it targets:
+#   - tmux sessions named charm / charm-*
+#   - the charm binaries: charmd, charm, charm-mcp, charm-console, charm-graph
+#   - dev-mode equivalents run from source via `bun run src/...`
+#   - charm-spawned `claude` agents — identified by the `.charm/charm.json`
+#     mcp-config in their argv, so your OTHER (non-charm) claude sessions,
+#     including the one you may be reading this from, are left untouched.
+# It then sweeps stale per-root pidfiles and tmpdir sockets so the next `start`
+# is not blocked by a leftover "refusing to start" pidfile.
+#
+# Usage: ./frieren.sh kill [--dry-run|-n]
+cmd_kill() {
+    local dry=0
+    case "${2:-}" in --dry-run | -n) dry=1 ;; esac
+    local self=$$ parent=$PPID
+    echo "==> Charm panic kill$([[ $dry == 1 ]] && echo ' (dry run — nothing will be killed)')..."
+
+    # 1. tmux sessions named charm / charm-*. Killing the session SIGHUPs its
+    #    panes (the interactive agents); the explicit process sweep below reaps
+    #    anything that detached or survived.
+    if command -v tmux >/dev/null 2>&1; then
+        local s
+        while IFS= read -r s; do
+            [[ -z "$s" ]] && continue
+            case "$s" in
+                charm | charm-*)
+                    if [[ $dry == 1 ]]; then
+                        echo "    [dry] tmux kill-session -t $s"
+                    else
+                        tmux kill-session -t "$s" 2>/dev/null \
+                            && echo "    killed tmux session: $s" || true
+                    fi
+                    ;;
+            esac
+        done < <(tmux ls -F '#{session_name}' 2>/dev/null || true)
+    fi
+
+    # 2. Capture the --root of every live daemon BEFORE killing, so we can clean
+    #    its pidfile afterward (a stale pidfile makes the next start refuse).
+    local roots
+    roots="$(ps -axo command= 2>/dev/null \
+        | grep -E '(^|/)charmd .*--root' \
+        | sed -E 's/.*--root[ =]+([^ ]+).*/\1/' \
+        | sort -u || true)"
+
+    # 3. Collect every charm PID. Patterns are deliberately specific:
+    #    - exact binary names (pgrep -x) so `charm` does not match `charmd`
+    #    - the charm.json marker for claude agents (spares other claude sessions)
+    #    - source paths for `bun run`-style dev processes
+    #    self and parent are excluded so this script cannot kill itself.
+    local pids
+    pids="$(
+        {
+            pgrep -x charmd 2>/dev/null || true
+            pgrep -x charm 2>/dev/null || true
+            pgrep -x charm-mcp 2>/dev/null || true
+            pgrep -x charm-console 2>/dev/null || true
+            pgrep -x charm-graph 2>/dev/null || true
+            pgrep -f '/\.charm/charm\.json' 2>/dev/null || true
+            pgrep -f 'bun .*src/(daemon/index|mcp/server|cli)\.ts' 2>/dev/null || true
+            pgrep -f 'bun .*src/console/(app\.tsx|graph\.ts)' 2>/dev/null || true
+        } | sort -un | grep -vxE "${self}|${parent}" || true
+    )"
+
+    if [[ -z "$pids" ]]; then
+        echo "    no charm processes found"
+    else
+        echo "    charm PIDs: $(echo "$pids" | tr '\n' ' ')"
+        if [[ $dry == 1 ]]; then
+            echo "    [dry] would SIGTERM, wait 1s, then SIGKILL any survivors"
+            ps -o pid=,command= -p $(echo "$pids" | tr '\n' ' ') 2>/dev/null \
+                | sed 's/^/        /' || true
+        else
+            # shellcheck disable=SC2086
+            kill -TERM $pids 2>/dev/null || true
+            sleep 1
+            local p alive=""
+            for p in $pids; do
+                kill -0 "$p" 2>/dev/null && alive="$alive $p"
+            done
+            if [[ -n "$alive" ]]; then
+                # shellcheck disable=SC2086
+                kill -KILL $alive 2>/dev/null || true
+                echo "    force-killed (SIGKILL):$alive"
+            fi
+            echo "    killed charm processes"
+        fi
+    fi
+
+    # 4. Sweep leftovers: per-root pidfiles + viewer pidlists, and the hashed
+    #    tmpdir sockets. Stale pidfiles are what make a fresh start refuse.
+    local r
+    for r in $roots; do
+        [[ -z "$r" ]] && continue
+        local f
+        for f in "$r/.charm/charmd.pid" "$r/.charm/graph-viewers.pids"; do
+            if [[ -f "$f" ]]; then
+                if [[ $dry == 1 ]]; then echo "    [dry] rm $f"
+                else rm -f "$f" && echo "    removed $f"; fi
+            fi
+        done
+    done
+    # The socket lives in the daemon's os.tmpdir() (charm-<hash>.sock). That can
+    # differ from this shell's $TMPDIR, so sweep every candidate temp dir: the
+    # current $TMPDIR, /tmp, and macOS's canonical per-user temp (DARWIN_USER_TEMP_DIR,
+    # the /var/folders/.../T path that os.tmpdir() resolves to under a normal login).
+    local tmpdirs=() seen_tmp=""
+    local cand
+    for cand in "${TMPDIR:-}" "/tmp" "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"; do
+        cand="${cand%/}"
+        [[ -z "$cand" || ! -d "$cand" ]] && continue
+        case "$seen_tmp" in *"|$cand|"*) continue ;; esac
+        seen_tmp="${seen_tmp}|$cand|"
+        tmpdirs+=("$cand")
+    done
+    local tmp sock
+    for tmp in "${tmpdirs[@]}"; do
+        for sock in "$tmp"/charm-*.sock; do
+            [[ -S "$sock" ]] || continue
+            if [[ $dry == 1 ]]; then echo "    [dry] rm $sock"
+            else rm -f "$sock" && echo "    removed stale socket $sock"; fi
+        done
+    done
+
+    echo "==> Done."
+}
+
 # --- Runtime delegation to ./charm.sh ------------------------------------
 # These commands manage a live charm session and forward straight through.
 
@@ -264,7 +404,9 @@ Runtime (delegates to ./charm.sh):
   start "<goal>"            Launch daemon + console for a goal
   status                    Show charm status
   attach                    Attach to the running tmux session
-  stop                      Kill daemon + tmux session
+  stop                      Kill daemon + tmux session (one session, by name)
+  kill [--dry-run|-n]       PANIC: kill ALL charm processes machine-wide
+                            (every session/dir; spares non-charm claude sessions)
   charm <args...>           Pass any other subcommand straight to charm.sh
 
   help                      Show this message
@@ -289,6 +431,7 @@ case "${1:-help}" in
     status)         cmd_status "$@" ;;
     attach)         cmd_attach "$@" ;;
     stop)           cmd_stop "$@" ;;
+    kill)           cmd_kill "$@" ;;
     charm)        cmd_charm "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
