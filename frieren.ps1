@@ -93,6 +93,20 @@ switch ($cmd) {
         # Templates live a level above bin, matching dirname(execPath)\..\share\charm.
         $sharedir = Join-Path (Split-Path $bindir -Parent) 'share\charm'
 
+        # Windows won't overwrite a running .exe. A daemon (charmd), console, MCP
+        # shim, or graph viewer left alive by a prior `charm start` holds these
+        # binaries open and Copy-Item fails with a sharing violation. Stop any
+        # charm process executing from THIS bindir first (matched by image path,
+        # so we never touch unrelated processes or this installer itself).
+        $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bindir, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($running.Count -gt 0) {
+            Write-Host "==> Stopping $($running.Count) running charm process(es) holding the old binaries (a prior session)..."
+            $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Milliseconds 600
+        }
+
         Write-Host "==> Installing binaries to $bindir ..."
         Copy-Item -Force (Join-Path $RepoDir 'dist\charm-claude.exe') (Join-Path $bindir 'charm.exe')
         foreach ($b in @('charmd', 'charm-console', 'charm-mcp', 'charm-graph')) {
