@@ -256,10 +256,32 @@ cmd_uninstall() {
 # is not blocked by a leftover "refusing to start" pidfile.
 #
 # Usage: ./frieren.sh kill [--dry-run|-n]
+# Print the PIDs of every charm-related process, one per line, excluding the
+# pipe-separated PID pattern in $1 (this script + its parent, so it can't kill
+# itself). Matching is by argv via pgrep, which is reliable on macOS where
+# reading another process's *environment* is restricted: the five charm
+# binaries by exact name, charm-spawned `claude` agents by their
+# `.charm/charm.json` mcp-config (so unrelated claude sessions are spared), and
+# the `bun run src/...` dev-mode equivalents.
+_charm_pids() {
+    local exclude="$1"
+    {
+        pgrep -x charmd 2>/dev/null || true
+        pgrep -x charm 2>/dev/null || true
+        pgrep -x charm-mcp 2>/dev/null || true
+        pgrep -x charm-console 2>/dev/null || true
+        pgrep -x charm-graph 2>/dev/null || true
+        pgrep -f '/\.charm/charm\.json' 2>/dev/null || true
+        pgrep -f 'bun .*src/(daemon/index|mcp/server|cli)\.ts' 2>/dev/null || true
+        pgrep -f 'bun .*src/console/(app\.tsx|graph\.ts)' 2>/dev/null || true
+    } | sort -un | grep -vxE "$exclude" || true
+}
+
 cmd_kill() {
     local dry=0
     case "${2:-}" in --dry-run | -n) dry=1 ;; esac
     local self=$$ parent=$PPID
+    local excl="${self}|${parent}"
     echo "==> Charm panic kill$([[ $dry == 1 ]] && echo ' (dry run — nothing will be killed)')..."
 
     # 1. tmux sessions named charm / charm-*. Killing the session SIGHUPs its
@@ -290,47 +312,49 @@ cmd_kill() {
         | sed -E 's/.*--root[ =]+([^ ]+).*/\1/' \
         | sort -u || true)"
 
-    # 3. Collect every charm PID. Patterns are deliberately specific:
-    #    - exact binary names (pgrep -x) so `charm` does not match `charmd`
-    #    - the charm.json marker for claude agents (spares other claude sessions)
-    #    - source paths for `bun run`-style dev processes
-    #    self and parent are excluded so this script cannot kill itself.
+    # 3. Kill every charm process. We loop until a re-scan comes back empty,
+    #    because tearing down the daemon or a tmux pane can leave a newly
+    #    orphaned child (e.g. a charm-mcp whose parent agent just died) that
+    #    wasn't in the first snapshot. Each round: SIGTERM, wait, SIGKILL
+    #    survivors, then re-scan. After the rounds we verify and report anything
+    #    that refused to die, so completeness is provable rather than assumed.
     local pids
-    pids="$(
-        {
-            pgrep -x charmd 2>/dev/null || true
-            pgrep -x charm 2>/dev/null || true
-            pgrep -x charm-mcp 2>/dev/null || true
-            pgrep -x charm-console 2>/dev/null || true
-            pgrep -x charm-graph 2>/dev/null || true
-            pgrep -f '/\.charm/charm\.json' 2>/dev/null || true
-            pgrep -f 'bun .*src/(daemon/index|mcp/server|cli)\.ts' 2>/dev/null || true
-            pgrep -f 'bun .*src/console/(app\.tsx|graph\.ts)' 2>/dev/null || true
-        } | sort -un | grep -vxE "${self}|${parent}" || true
-    )"
+    pids="$(_charm_pids "$excl")"
 
     if [[ -z "$pids" ]]; then
         echo "    no charm processes found"
-    else
+    elif [[ $dry == 1 ]]; then
         echo "    charm PIDs: $(echo "$pids" | tr '\n' ' ')"
-        if [[ $dry == 1 ]]; then
-            echo "    [dry] would SIGTERM, wait 1s, then SIGKILL any survivors"
-            ps -o pid=,command= -p $(echo "$pids" | tr '\n' ' ') 2>/dev/null \
-                | sed 's/^/        /' || true
-        else
+        echo "    [dry] would SIGTERM, wait, SIGKILL survivors, and repeat until a re-scan is clean"
+        # shellcheck disable=SC2046
+        ps -o pid=,command= -p $(echo "$pids" | tr '\n' ' ') 2>/dev/null \
+            | sed 's/^/        /' || true
+    else
+        local round p alive
+        for round in 1 2 3; do
+            [[ -z "$pids" ]] && break
+            echo "    round $round: SIGTERM $(echo "$pids" | tr '\n' ' ')"
             # shellcheck disable=SC2086
             kill -TERM $pids 2>/dev/null || true
             sleep 1
-            local p alive=""
+            alive=""
             for p in $pids; do
                 kill -0 "$p" 2>/dev/null && alive="$alive $p"
             done
             if [[ -n "$alive" ]]; then
                 # shellcheck disable=SC2086
                 kill -KILL $alive 2>/dev/null || true
-                echo "    force-killed (SIGKILL):$alive"
+                echo "    SIGKILL survivors:$alive"
             fi
-            echo "    killed charm processes"
+            pids="$(_charm_pids "$excl")"
+        done
+        if [[ -n "$pids" ]]; then
+            echo "    WARNING: charm processes survived all rounds: $(echo "$pids" | tr '\n' ' ')"
+            # shellcheck disable=SC2046
+            ps -o pid=,command= -p $(echo "$pids" | tr '\n' ' ') 2>/dev/null \
+                | sed 's/^/        /' || true
+        else
+            echo "    all charm processes ended"
         fi
     fi
 
