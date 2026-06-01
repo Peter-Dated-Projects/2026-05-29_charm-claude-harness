@@ -6,7 +6,25 @@ export function charmPaths(root: string) {
   return {
     root,
     charmDir,
-    socket: join(charmDir, "sock"),
+    // The daemon RPC endpoint Bun.listen/connect binds to. On POSIX this is a
+    // Unix-domain socket *file* under .charm/; on Windows it is a named pipe,
+    // which lives in the kernel object namespace (NOT the filesystem) and is
+    // addressed by name. Bun accepts both through the same `unix:` option, so
+    // callers pass `socket` to rpc.ts unchanged — only existence/cleanup logic
+    // has to know the difference (see isPipe() in rpc.ts). The pipe name is
+    // derived from the root-path hash so two charms in different directories get
+    // distinct pipes, mirroring the per-directory socket file on POSIX.
+    socket:
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\charm-${createHash("sha1").update(root).digest("hex").slice(0, 12)}`
+        : join(charmDir, "sock"),
+    // Readiness marker the daemon writes once its RPC server is actually
+    // listening, and removes on shutdown. On POSIX the socket file's existence
+    // doubled as this signal, but a Windows named pipe has no filesystem entry
+    // to stat — so we use an explicit marker file on BOTH platforms. The CLI
+    // polls this (waitForDaemon) instead of stat-ing the endpoint, and `status`
+    // uses it to distinguish "no daemon" from "daemon unreachable".
+    ready: join(charmDir, "ready"),
     db: join(charmDir, "db.sqlite"),
     promptsDir: join(charmDir, "prompts"),
     logsDir: join(charmDir, "logs"),

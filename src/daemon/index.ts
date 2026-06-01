@@ -8,11 +8,10 @@ import { TicketStore } from "../store/tickets.ts";
 import { AgentRegistry } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
 import { Solver, type InFlight } from "./solver.ts";
-import { Tmux } from "./tmux.ts";
-import { buildLayoutString } from "./layout.ts";
+import { createMultiplexer, multiplexerAvailable, type LaunchSpec } from "./multiplexer.ts";
 import { ApprovalQueue } from "./approvals.ts";
-import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, type SpawnSpec } from "./spawn.ts";
+import { startRpcServer, isPipe } from "./rpc.ts";
+import { buildClaudeLaunch, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import {
   CreateTicketsInput,
@@ -49,8 +48,10 @@ function graphBinArgs(): string[] {
   const url = typeof import.meta.url === "string" ? import.meta.url : "";
   const compiled = url.includes("/$bunfs/") || url.includes("/~BUN/");
   if (compiled) {
-    const sibling = join(dirname(process.execPath), "charm-graph");
-    return [existsSync(sibling) ? sibling : "charm-graph"];
+    // .exe suffix on Windows — see exeName() in cli.ts for the rationale.
+    const binName = process.platform === "win32" ? "charm-graph.exe" : "charm-graph";
+    const sibling = join(dirname(process.execPath), binName);
+    return [existsSync(sibling) ? sibling : binName];
   }
   return [process.execPath, "run", join(import.meta.dir, "../console/graph.ts")];
 }
@@ -129,10 +130,24 @@ async function main() {
   mkdirSync(paths.charmDir, { recursive: true });
   mkdirSync(paths.logsDir, { recursive: true });
 
+  // Refuse to start only if a *live* daemon already owns this directory. A
+  // lingering pidfile from a hard kill or crash (common on Windows, where
+  // process.kill can't run the graceful handler) names a dead pid — treat that
+  // as stale, clear it (and any stale ready marker), and continue. We read the
+  // pidfile synchronously: Bun.file().text() returns a Promise, so the old
+  // `Number(Bun.file(...).text())` was always NaN.
   if (existsSync(paths.pidFile)) {
-    const stale = Number(Bun.file(paths.pidFile).text());
-    console.error(`[charmd] pidfile exists (pid=${stale}); refusing to start. rm ${paths.pidFile} if stale.`);
-    process.exit(2);
+    const prev = Number(readFileSync(paths.pidFile, "utf8").trim());
+    let alive = false;
+    if (Number.isInteger(prev) && prev > 0) {
+      try { process.kill(prev, 0); alive = true; } catch { alive = false; }
+    }
+    if (alive) {
+      console.error(`[charmd] a daemon is already running for this directory (pid=${prev}); refusing to start.`);
+      process.exit(2);
+    }
+    console.error(`[charmd] removing stale pidfile (pid=${prev || "unparseable"}, not running).`);
+    try { unlinkSync(paths.ready); } catch { /* ignore */ }
   }
   writeFileSync(paths.pidFile, String(process.pid));
 
@@ -142,12 +157,12 @@ async function main() {
   store.reindexAll();
   const registry = new AgentRegistry();
   const coord = new CoordinationWriter(paths);
-  const tmux = new Tmux(session);
+  const mux = createMultiplexer(session);
   const approvals = new ApprovalQueue();
 
-  const tmuxAvailable = Tmux.available();
-  if (!tmuxAvailable) {
-    console.error("[charmd] WARNING: tmux not on PATH; spawning panes will fail.");
+  const muxAvailable = multiplexerAvailable();
+  if (!muxAvailable) {
+    console.error("[charmd] WARNING: no terminal multiplexer (tmux/psmux) on PATH; spawning panes will fail.");
   }
 
   const inFlight = (): InFlight[] =>
@@ -196,34 +211,12 @@ async function main() {
   const WINDOW = "charm";
 
   function relayout() {
-    if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
+    if (!muxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
     try {
-      const win = tmux.windowSize(WINDOW);
-      const cIdx = tmux.paneIndex(consolePaneId);
-      if (cIdx === null) return;
-      const agentIdxs: number[] = [];
-      for (const pid of agentPaneIds) {
-        const idx = tmux.paneIndex(pid);
-        if (idx !== null) agentIdxs.push(idx);
-      }
-      if (agentIdxs.length === 0) return;
-      // Preserve whatever width the console column currently has -- the user
-      // may have dragged the divider. Fall back to a 35% share only on the
-      // first layout, when the pane hasn't been sized yet. Floored at 40 cols
-      // so the Ink TUI stays readable, and capped so the agent grid keeps room.
-      const cur = tmux.paneWidth(consolePaneId);
-      const consoleWidth = Math.min(
-        Math.max(20, win.w - 20),
-        Math.max(40, cur ?? Math.floor(win.w * 0.35)),
-      );
-      const layout = buildLayoutString({
-        windowWidth: win.w,
-        windowHeight: win.h,
-        consolePaneIndex: cIdx,
-        agentPaneIndexes: agentIdxs,
-        consoleWidth,
-      });
-      tmux.applyLayout(WINDOW, layout);
+      // The backend owns the layout strategy: tmux applies a precise custom
+      // layout (console column + VS-Code agent grid); psmux approximates with a
+      // preset. The daemon just names the console pane and the agent panes.
+      mux.relayout({ window: WINDOW, consolePaneId, agentPaneIds });
     } catch (e) {
       console.error("[charmd] relayout failed:", e);
     }
@@ -232,8 +225,8 @@ async function main() {
   function spawnAgent(spec: SpawnSpec): string {
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
     const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
-    const cmd = buildClaudeCommand(paths, agent.id, resolved);
-    const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
+    const launch: LaunchSpec = { ...buildClaudeLaunch(paths, agent.id, resolved), cwd: paths.root };
+    const pane = mux.splitPane({ launch, direction: "h" });
     registry.attach(agent.id, { pane_id: pane });
     refreshCoordination();
     agentPaneIds.push(pane);
@@ -248,7 +241,7 @@ async function main() {
     const a = registry.get(agent_id);
     if (!a) return;
     if (a.pane_id) {
-      try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
+      try { mux.killPane(a.pane_id); } catch { /* ignore */ }
       const i = agentPaneIds.indexOf(a.pane_id);
       if (i >= 0) agentPaneIds.splice(i, 1);
     }
@@ -276,7 +269,7 @@ async function main() {
   let pingPending: string[] = [];
   let pingTimer: ReturnType<typeof setTimeout> | null = null;
   function pingOrchestrator(event: string) {
-    if (!tmuxAvailable || !orchestratorPaneId) return;
+    if (!muxAvailable || !orchestratorPaneId) return;
     pingPending.push(event);
     if (pingTimer) return; // already armed — coalesce into the pending flush
     pingTimer = setTimeout(() => {
@@ -284,14 +277,14 @@ async function main() {
       pingPending = [];
       pingTimer = null;
       // The pane may have vanished (orchestrator exited) during the window.
-      if (!orchestratorPaneId || tmux.paneIndex(orchestratorPaneId) === null) return;
+      if (!orchestratorPaneId || !mux.paneAlive(orchestratorPaneId)) return;
       // One line only: literal newlines typed into the pane would submit early.
       const line =
         `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
         `blocked agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
         `one either resolve what it was waiting on and resume it with continue_agent or abandon it with kill_agent, ` +
         `then advance the workflow per your orchestrator instructions.`;
-      try { tmux.sendText(orchestratorPaneId, line); }
+      try { mux.sendText(orchestratorPaneId, line); }
       catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
     }, 1200);
   }
@@ -565,14 +558,14 @@ async function main() {
           );
         }
         if (!target.pane_id) throw new Error(`agent ${target.id} has no pane to message`);
-        if (!tmuxAvailable || tmux.paneIndex(target.pane_id) === null) {
+        if (!muxAvailable || !mux.paneAlive(target.pane_id)) {
           throw new Error(`agent ${target.id}'s pane is gone — it may have exited; kill_agent and respawn instead`);
         }
         // Wake the blocked agent with the orchestrator's guidance (one line — a
         // literal newline would submit early), then optimistically flip it back
         // to running. The agent corrects this via its own report_status as it
         // proceeds, re-blocks, or finishes.
-        tmux.sendText(target.pane_id, `[charm] Orchestrator: ${input.message}`);
+        mux.sendText(target.pane_id, `[charm] Orchestrator: ${input.message}`);
         const a = registry.setState(target.id, "running");
         // Record the orchestrator's unblock message in the ticket's activity log
         // so the resume (and its guidance) is part of the ticket's history.
@@ -612,7 +605,7 @@ async function main() {
         // before the daemon disappears. Schedule cleanup on next tick so the
         // RPC reply gets flushed.
         setTimeout(() => {
-          try { tmux.killSession(); } catch { /* ignore */ }
+          try { mux.killSession(); } catch { /* ignore */ }
           cleanup();
         }, 50);
         return { ok: true };
@@ -649,7 +642,10 @@ async function main() {
     // Reap any standalone graph viewers we spawned before we exit, so they don't
     // linger as orphans (covers SIGINT/SIGTERM and the shutdown RPC alike).
     try { killGraphViewers(paths.graphPids); } catch { /* ignore */ }
-    try { unlinkSync(paths.socket); } catch { /* ignore */ }
+    // A Unix socket leaves a file to remove; a Windows named pipe does not (the
+    // OS frees it when server.stop() closes the handle) — never unlink a pipe.
+    if (!isPipe(paths.socket)) { try { unlinkSync(paths.socket); } catch { /* ignore */ } }
+    try { unlinkSync(paths.ready); } catch { /* ignore */ }
     try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
     store.close();
     process.exit(0);
@@ -657,6 +653,11 @@ async function main() {
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
+  // Signal readiness now that the RPC server is listening. The CLI polls this
+  // marker (not the endpoint itself, which is unstat-able when it's a named
+  // pipe) before issuing its first RPC. Written last so its presence implies a
+  // fully-initialized daemon.
+  writeFileSync(paths.ready, String(process.pid));
   console.log(`[charmd] listening on ${paths.socket} (session=${session}, root=${paths.root})`);
 }
 

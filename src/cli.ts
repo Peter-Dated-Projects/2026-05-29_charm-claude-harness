@@ -5,7 +5,7 @@ import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { charmPaths, defaultSessionName, type CharmPaths } from "./paths.ts";
 import { rpcCall } from "./daemon/rpc.ts";
-import { Tmux } from "./daemon/tmux.ts";
+import { createMultiplexer, multiplexerAvailable, type LaunchSpec } from "./daemon/multiplexer.ts";
 import { killGraphViewers } from "./graph-viewers.ts";
 import { fileURLToPath } from "node:url";
 
@@ -51,8 +51,12 @@ program
     const firstRun = !existsSync(paths.charmDir);
     // Reuse an existing .charm/ if present, otherwise scaffold a fresh one.
     scaffoldCharmDir(paths, { force: false });
-    if (!Tmux.available()) {
-      console.error("tmux is required.");
+    if (!multiplexerAvailable()) {
+      console.error(
+        process.platform === "win32"
+          ? "a terminal multiplexer is required: install psmux (`cargo install psmux`) — see PORTING-WINDOWS.md."
+          : "a terminal multiplexer is required: install tmux.",
+      );
       process.exit(2);
     }
 
@@ -91,20 +95,20 @@ program
     child.unref();
     console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
 
-    // 2. Wait for socket
-    await waitForSocket(paths.socket, 10_000);
+    // 2. Wait for the daemon to come up (its readiness marker), then ping.
+    await waitForDaemon(paths.ready, 10_000);
     await rpcCall(paths.socket, "ping");
 
-    // 3. Open tmux layout: window with main pane + console pane
-    const tmux = new Tmux(session);
-    if (tmux.hasSession()) {
-      console.error(`[charm] tmux session '${session}' already exists. Use --session or kill it.`);
+    // 3. Open the multiplexer layout: window with main pane + console pane
+    const mux = createMultiplexer(session);
+    if (mux.hasSession()) {
+      console.error(`[charm] session '${session}' already exists. Use --session or kill it.`);
       process.exit(2);
     }
-    tmux.newSession("charm", paths.root);
+    mux.newSession("charm", paths.root);
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
-    const { buildClaudeCommand, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
+    const { buildClaudeLaunch, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
     let mainModel: string;
     try {
       // The mode picks the fleet's model; -m/--model is an advanced override of
@@ -115,19 +119,27 @@ program
       process.exit(2);
     }
     console.log(`[charm] mode: ${mode} | main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
-    const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
-      role: "main",
-      ticket_id: null,
-      prompt: plain ? "" : `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
-      interactive: true,
-      model: mainModel,
-      plain,
-    });
-    const consoleArgv = resolveChild("console");
-    const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)}`;
+    const mainLaunch: LaunchSpec = {
+      ...buildClaudeLaunch(paths, MAIN_AGENT_ID, {
+        role: "main",
+        ticket_id: null,
+        prompt: plain ? "" : `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
+        interactive: true,
+        model: mainModel,
+        plain,
+      }),
+      cwd: paths.root,
+    };
+    // The console pane runs the charm-console entrypoint (bun-run from source, or
+    // the sibling binary when compiled) with no extra env.
+    const consoleLaunch: LaunchSpec = {
+      argv: [...resolveChild("console"), "--root", paths.root],
+      env: {},
+      cwd: paths.root,
+    };
 
-    const consolePane = tmux.spawnInWindow("charm", consoleCmd, paths.root);
-    const mainPane = tmux.splitPane({ cmd: mainCmd, cwd: paths.root, direction: "h", size: "65%" });
+    const consolePane = mux.spawnInWindow("charm", consoleLaunch);
+    const mainPane = mux.splitPane({ launch: mainLaunch, direction: "h", size: "65%" });
 
     // Tell the daemon which pane is the console (pinned left column) and
     // which panes already belong to the agent grid. From here on, every
@@ -137,25 +149,24 @@ program
       agent_pane_ids: [mainPane],
     });
 
-    // Bind `:` (no prefix) to a tmux command-prompt that runs `charm ctl`.
-    // Works from any pane — console or agent — so the user can quit/detach
-    // the whole charm from wherever the cursor happens to be.
-    // Re-invoke THIS cli for the `:` tmux command prompt. From source that's
-    // `bun <cli.ts> ctl …`; a compiled binary dispatches its own subcommands,
-    // so it's just `<binary> ctl …` (its embedded cli.ts path isn't on disk).
+    // Bind `:` (no prefix) to a command-prompt that runs `charm ctl`, so the user
+    // can quit/detach from any pane. Supported on tmux; a no-op on backends
+    // without a command-prompt (psmux), where `charm stop` is the quit path.
+    // Re-invoke THIS cli: from source that's `bun <cli.ts> ctl …`; a compiled
+    // binary dispatches its own subcommands, so it's just `<binary> ctl …`.
     const selfArgv = isCompiled()
       ? [process.execPath]
       : [process.execPath, fileURLToPath(import.meta.url)];
     const ctlTemplate =
       `${selfArgv.map(shellQuote).join(" ")} ctl ` +
       `--root ${shellQuote(paths.root)} --session ${shellQuote(session)} %1`;
-    tmux.bindCommandPrompt(ctlTemplate);
+    mux.bindCommandPrompt(ctlTemplate);
 
     // Focus the main agent pane so keystrokes go to Claude, not the console.
-    tmux.selectPane(`${session}:charm.1`);
+    mux.selectPane(`${session}:charm.1`);
 
-    if (opts.attach !== false) tmux.attach();
-    else console.log(`tmux session '${session}' ready. attach with: tmux attach -t ${session}`);
+    if (opts.attach !== false) mux.attach();
+    else console.log(`session '${session}' ready. attach with: charm attach`);
   });
 
 program
@@ -163,7 +174,7 @@ program
   .description("stop the charm: close all graph viewers, kill the daemon, and tear down the tmux session")
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
-  .action((opts) => {
+  .action(async (opts) => {
     const paths = charmPaths(resolve(opts.root));
     const session = resolveSession(paths, opts.session);
     // 1. Close standalone graph viewers first, by tracked PID. Done here (not
@@ -171,20 +182,34 @@ program
     // gone — and, in future, when viewers run outside the tmux session entirely.
     const killed = killGraphViewers(paths.graphPids);
     if (killed.length) console.log(`[charm] closed ${killed.length} graph viewer(s): ${killed.join(", ")}`);
-    // 2. Kill the daemon (its signal handler also runs cleanup, harmlessly
-    // re-reaping viewers and removing the socket/pidfile).
-    if (existsSync(paths.pidFile)) {
-      const pid = Number(readFileSync(paths.pidFile, "utf8").trim());
-      if (pid) {
-        try { process.kill(pid); console.log(`[charm] killed daemon pid=${pid}`); }
-        catch { console.log(`[charm] daemon pid=${pid} not running`); }
+    // 2. Ask the daemon to shut itself down gracefully (the `shutdown` RPC kills
+    // the tmux session, then runs cleanup: removes the socket/ready/pidfile and
+    // reaps viewers). This is the primary path and is REQUIRED on Windows, where
+    // a SIGTERM via process.kill terminates the daemon abruptly without running
+    // its handler — leaving the endpoint/ready/pidfile behind to block the next
+    // start. Fall back to process.kill only if the daemon is already unreachable.
+    let stopped = false;
+    try {
+      await rpcCall(paths.socket, "shutdown");
+      console.log("[charm] daemon shut down");
+      stopped = true;
+    } catch {
+      if (existsSync(paths.pidFile)) {
+        const pid = Number(readFileSync(paths.pidFile, "utf8").trim());
+        if (pid) {
+          try { process.kill(pid); console.log(`[charm] killed daemon pid=${pid}`); stopped = true; }
+          catch { console.log(`[charm] daemon pid=${pid} not running`); }
+        }
       }
     }
-    // 3. Tear down the tmux session (closes console, agent, and graph windows).
-    const tmux = new Tmux(session);
-    if (tmux.hasSession()) {
-      tmux.killSession();
-      console.log(`[charm] killed tmux session '${session}'`);
+    if (!stopped) console.log("[charm] no running daemon found");
+    // 3. Tear down the multiplexer session (closes console, agent, graph panes).
+    // The shutdown RPC already does this when the daemon was reachable; this
+    // covers the fallback path (and is a harmless no-op when already gone).
+    const mux = createMultiplexer(session);
+    if (mux.hasSession()) {
+      mux.killSession();
+      console.log(`[charm] killed session '${session}'`);
     }
   });
 
@@ -196,12 +221,12 @@ program
   .action((opts) => {
     const paths = charmPaths(resolve(opts.root));
     const session = resolveSession(paths, opts.session);
-    const tmux = new Tmux(session);
-    if (!tmux.hasSession()) {
-      console.error(`no tmux session '${session}'`);
+    const mux = createMultiplexer(session);
+    if (!mux.hasSession()) {
+      console.error(`no session '${session}'`);
       process.exit(2);
     }
-    tmux.attach();
+    mux.attach();
   });
 
 program
@@ -214,7 +239,7 @@ program
       const s = await rpcCall<any>(paths.socket, "status");
       console.log(JSON.stringify(s, null, 2));
     } catch (e: any) {
-      if (!existsSync(paths.socket)) {
+      if (!existsSync(paths.ready)) {
         console.error("no charm daemon running. start one with: charm start");
       } else {
         console.error(`daemon unreachable: ${e.message}`);
@@ -310,14 +335,16 @@ program
   .action(async (cmd: string, opts) => {
     const paths = charmPaths(resolve(opts.root));
     const session = resolveSession(paths, opts.session);
-    const tmux = new Tmux(session);
+    const mux = createMultiplexer(session);
     const c = cmd.trim().toLowerCase();
     if (c === "q" || c === "quit") {
       try { await rpcCall(paths.socket, "shutdown"); }
-      catch { tmux.killSession(); /* daemon already gone — make sure tmux dies too */ }
+      catch { mux.killSession(); /* daemon already gone — make sure the session dies too */ }
       return;
     }
     if (c === "a" || c === "detach") {
+      // ctl is only reached via the tmux `:` command-prompt binding (tmux-only),
+      // so detach-client targets tmux directly.
       spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
       return;
     }
@@ -458,7 +485,10 @@ function scaffoldCharmDir(
     console.warn("[charm] skill templates not found; skipping skills scaffold");
   }
 
-  const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
+  // The MCP shim command `claude` will spawn. Default to the bare name (resolved
+  // on PATH), with the platform executable suffix on Windows so an installed
+  // `charm-mcp.exe` is found — claude's process spawn does no PATHEXT lookup.
+  const mcpBin = process.env.CHARM_MCP_BIN ?? (process.platform === "win32" ? "charm-mcp.exe" : "charm-mcp");
   const mcpConfig = {
     mcpServers: {
       charm: { command: mcpBin, args: [], env: {} },
@@ -569,18 +599,27 @@ function resolveChild(kind: "daemon" | "console"): string[] {
     const here = dirname(fileURLToPath(import.meta.url));
     return ["bun", "run", resolve(here, "..", sourceRel)];
   }
-  const binName = kind === "daemon" ? "charmd" : "charm-console";
+  // Compiled siblings carry the platform's executable suffix (charmd.exe on
+  // Windows). Without it, both the existsSync probe and the bare-name PATH
+  // fallback miss — Windows process spawn does no PATHEXT resolution for argv[0].
+  const binName = exeName(kind === "daemon" ? "charmd" : "charm-console");
   const sibling = join(dirname(process.execPath), binName);
   return [existsSync(sibling) ? sibling : binName];
 }
 
-async function waitForSocket(path: string, timeoutMs: number): Promise<void> {
+/** Append the platform executable suffix (`.exe` on Windows) to a bare binary
+ *  name so sibling-binary resolution and PATH lookups match the real file. */
+function exeName(base: string): string {
+  return process.platform === "win32" ? `${base}.exe` : base;
+}
+
+async function waitForDaemon(readyPath: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (existsSync(path)) return;
+    if (existsSync(readyPath)) return;
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error(`timeout waiting for daemon socket ${path}`);
+  throw new Error(`timeout waiting for daemon (readiness marker ${readyPath})`);
 }
 
 function shellQuote(s: string): string {

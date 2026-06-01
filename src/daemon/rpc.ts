@@ -3,9 +3,22 @@ import { RpcRequest, RpcResponse } from "../schema.ts";
 
 export type Handler = (method: string, params: unknown) => Promise<unknown>;
 
-/** Newline-delimited JSON-RPC over Unix domain socket. */
+/** True for a Windows named-pipe endpoint (`\\.\pipe\...`). Such endpoints live
+ *  in the kernel object namespace, not the filesystem, so they must never be
+ *  stat-ed or unlinked like a Unix socket file — the pipe vanishes on its own
+ *  when the listening handle closes. */
+export function isPipe(endpoint: string): boolean {
+  return endpoint.startsWith("\\\\.\\pipe\\") || endpoint.startsWith("\\\\?\\pipe\\");
+}
+
+/** Newline-delimited JSON-RPC over a Unix-domain socket (POSIX) or named pipe
+ *  (Windows). Both are reached through Bun's `unix:` option; the only platform
+ *  difference is stale-endpoint cleanup, which applies to socket files only. */
 export function startRpcServer(socketPath: string, handler: Handler) {
-  if (existsSync(socketPath)) {
+  // A leftover Unix socket file from a crashed daemon would make Bun.listen fail
+  // with EADDRINUSE, so remove it first. Named pipes have no such file and are
+  // freed by the OS when the old handle dies — skip the unlink there.
+  if (!isPipe(socketPath) && existsSync(socketPath)) {
     try { unlinkSync(socketPath); } catch { /* ignore */ }
   }
   const server = Bun.listen({

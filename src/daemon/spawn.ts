@@ -150,9 +150,18 @@ export function resolveModel(input: string): string {
   throw new Error(`unknown --model "${input}". Use one of: ${choices} (or a raw claude-* id)`);
 }
 
-/** Build the shell command that the tmux pane will run.
- *  CHARM_AGENT_ID is exported so the MCP shim can identify the agent. */
-export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: SpawnSpec): string {
+/** A platform-agnostic description of how to launch one `claude` agent process:
+ *  the argv to exec and the environment to set. This is the source of truth that
+ *  every multiplexer backend consumes — the tmux/POSIX backend serializes it to a
+ *  shell string (buildClaudeCommand), while argv-based backends (WezTerm, ConPTY)
+ *  pass argv + env straight to the process. Building argv instead of a quoted
+ *  string also removes a whole class of shell-quoting bugs (notably the multiline
+ *  --append-system-prompt payload, which is just one argv element here). */
+export type ClaudeLaunch = { argv: string[]; env: Record<string, string> };
+
+/** Build the structured launch spec (argv + env) for a `claude` agent.
+ *  CHARM_AGENT_ID is set so the MCP shim can identify the agent. */
+export function buildClaudeLaunch(paths: CharmPaths, agent_id: string, spec: SpawnSpec): ClaudeLaunch {
   // Resolve the role's system prompt. Every role but `main` loads a single
   // `<role>.md`. The orchestrator (`main`) has no `main.md`: it runs Stage 0
   // (discovery) then Stage 1 (planning) in one session, so its prompt IS those
@@ -221,39 +230,77 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
   const systemPrompt = rolePrompt + CHARM_RULES + CHARM_SKILLS + modelLine;
-  const flags: string[] = [];
-  if (!spec.interactive) flags.push("-p");
-  if (spec.model) flags.push("--model", shellQuote(spec.model));
-  // Spawned agents run unattended in tmux panes, so they must not stall on permission
+  // argv[0] is the claude binary; the multiplexer backend resolves it on PATH
+  // (claude / claude.cmd / claude.ps1 on Windows). Each flag value is a distinct
+  // argv element — no quoting here; quoting is a serialization concern handled
+  // per-backend (buildClaudeCommand for shell).
+  const argv: string[] = ["claude"];
+  if (!spec.interactive) argv.push("-p");
+  if (spec.model) argv.push("--model", spec.model);
+  // Spawned agents run unattended in panes, so they must not stall on permission
   // prompts. Default to `auto` (skips prompts); overridable via CHARM_PERMISSION_MODE.
-  flags.push("--permission-mode", shellQuote(defaultPermissionMode()));
+  argv.push("--permission-mode", defaultPermissionMode());
   // `--mcp-config` is variadic (`<configs...>`) — commander slurps every
-  // following positional until the next flag. Put it FIRST so the next flag
-  // (`--disallowed-tools`) terminates the list, otherwise the user prompt
-  // gets eaten as a phantom MCP config path.
-  flags.push("--mcp-config", shellQuote(paths.mcpConfig));
+  // following positional until the next flag. Keep it before the next flag
+  // (`--disallowed-tools`) so the list terminates cleanly.
+  argv.push("--mcp-config", paths.mcpConfig);
   // Remove Claude Code's native subagent tool (`Agent`, older alias `Task`) so agents
   // can't spawn subagents outside charm's orchestration. All fan-out must go through the
   // charm MCP tools (spawn_workers / spawn_review_agents / request_review), which the
-  // daemon needs for dependency + file-scope enforcement. This is also variadic, so the
+  // daemon needs for dependency + file-scope enforcement. Also variadic, so the
   // next flag (`--append-system-prompt`) terminates the list.
-  flags.push("--disallowed-tools", shellQuote("Agent"), shellQuote("Task"));
-  flags.push("--append-system-prompt", shellQuote(systemPrompt));
+  argv.push("--disallowed-tools", "Agent", "Task");
+  argv.push("--append-system-prompt", systemPrompt);
   // An empty prompt means a blank interactive window (e.g. `charm start` with
   // no goal): omit the positional so Claude opens waiting for user input.
-  if (spec.prompt) flags.push(shellQuote(spec.prompt));
-  // export agent id, then exec claude
-  const thinking = defaultThinkingForRole(spec.role);
-  return [
-    `export CHARM_AGENT_ID=${shellQuote(agent_id)}`,
-    `export CHARM_SOCKET=${shellQuote(paths.socket)}`,
+  if (spec.prompt) argv.push(spec.prompt);
+
+  const env: Record<string, string> = {
+    CHARM_AGENT_ID: agent_id,
+    CHARM_SOCKET: paths.socket,
     // Disable Claude Code's per-project prompt history — otherwise the previous
     // charm-start prompt gets pre-populated into the input box and re-submitted
     // after the current prompt begins processing.
-    `export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`,
-    `export MAX_THINKING_TOKENS=${thinking}`,
-    `exec claude ${flags.join(" ")}`,
-  ].join(" && ");
+    CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
+    MAX_THINKING_TOKENS: String(defaultThinkingForRole(spec.role)),
+  };
+  return { argv, env };
+}
+
+/** Serialize a ClaudeLaunch into a single POSIX `sh -c` string:
+ *  `export K=V && … && exec claude <args…>`. Used by the tmux backend, which
+ *  runs panes through `sh -c`. POSIX-only by construction (the `export`/`exec`
+ *  syntax and single-quote escaping are bash-isms) — argv-based backends
+ *  (WezTerm, ConPTY) consume buildClaudeLaunch directly and never call this. */
+export function serializeLaunchForShell({ argv, env }: ClaudeLaunch): string {
+  const exports = Object.entries(env).map(([k, v]) => `export ${k}=${shellQuote(v)}`);
+  const exec = `exec ${argv.map(shellQuote).join(" ")}`;
+  return [...exports, exec].join(" && ");
+}
+
+/** Build the `sh -c` command string a tmux pane runs to launch one agent.
+ *  Thin wrapper preserving the original API; the argv/env truth now lives in
+ *  buildClaudeLaunch. */
+export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: SpawnSpec): string {
+  return serializeLaunchForShell(buildClaudeLaunch(paths, agent_id, spec));
+}
+
+/** Single-quote a string for a PowerShell command. In a PS single-quoted literal
+ *  only the quote itself is special (escaped by doubling); backslashes and `$`
+ *  are literal — exactly what we want for Windows paths and named-pipe endpoints. */
+function pwshQuote(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+/** Serialize a launch into a PowerShell `-Command` string:
+ *  `$env:K='V'; …; & 'claude' 'arg' …`. The Windows analog of
+ *  serializeLaunchForShell, used by the psmux backend (panes run pwsh, not sh).
+ *  The `&` call operator resolves `claude` through PATHEXT (claude.cmd/.ps1), so
+ *  no explicit .exe/.cmd resolution is needed here. Accepts any {argv, env}. */
+export function serializeLaunchForPwsh({ argv, env }: ClaudeLaunch): string {
+  const sets = Object.entries(env).map(([k, v]) => `$env:${k}=${pwshQuote(v)}`);
+  const call = `& ${argv.map(pwshQuote).join(" ")}`;
+  return [...sets, call].join("; ");
 }
 
 /** Pre-approve a directory in ~/.claude.json so Claude Code skips the

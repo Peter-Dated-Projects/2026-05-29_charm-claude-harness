@@ -11,6 +11,47 @@ All agents work on **one shared git tree** (no worktrees). Parallelism safety co
 
 Rust was the original pick, but rustup-init downloads are blocked on this machine (both bare `rustup` and `asdf-rust` failed — asdf-rust uses rustup-init internally and silently produced empty install dirs). We pivoted to **Bun + TypeScript**: `bun build --compile` produces a single-binary MCP shim (spawned by every `claude` process), the MCP TypeScript SDK is the canonical reference implementation, and `bun:sqlite` is built in. Bun is installed via the `asdf-bun` plugin, which pulls from GitHub Releases rather than rust-lang.org and is unblocked.
 
+## Windows (native)
+
+charm runs natively on Windows on the **`charm-windows-port`** branch — no WSL
+required. The POSIX couplings were abstracted away: the daemon RPC uses a named
+pipe instead of a Unix socket, agents launch via argv/`pwsh` instead of `sh -c`,
+and the tmux dependency sits behind a pluggable multiplexer with a **psmux**
+backend. See **[PORTING-WINDOWS.md](PORTING-WINDOWS.md)** for the full design and
+status.
+
+**Windows prerequisites:**
+
+- **Bun** (<https://bun.sh>) and the **Claude Code CLI** (`claude`) on PATH, as on
+  other platforms.
+- **psmux** — the terminal multiplexer that stands in for tmux. Install via
+  Rust/cargo:
+  1. Open <https://doc.rust-lang.org/cargo/getting-started/installation.html>
+  2. Download the Windows installer (`rustup-init.exe`) and complete installation.
+  3. Open a new terminal and run: `cargo install psmux`
+
+**Run it** (from the repo, dev mode):
+
+```powershell
+.\frieren.ps1 setup            # bun install
+.\charm.ps1 init               # scaffold .charm\
+.\charm.ps1 start "your goal"  # opens the psmux session with the agent panes
+```
+
+**Install globally** (native `.exe` on PATH — no repo/bun needed afterward):
+
+```powershell
+.\frieren.ps1 install          # build + place charm + siblings on PATH (default: %LOCALAPPDATA%\charm\bin)
+charm init                     # then `charm` works anywhere (open a new shell first)
+charm start "your goal"
+.\frieren.ps1 uninstall        # remove binaries, templates, and the PATH entry
+```
+
+Note: psmux runs pane processes only while a client is attached, so keep the
+charm session attached while agents work (detaching pauses them). WezTerm is a
+viable alternative backend behind the same abstraction. A WSL2 fallback also
+works if you prefer the Linux build.
+
 ## Five-stage workflow
 
 | Stage | Who | Mode | Gate |
