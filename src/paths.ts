@@ -49,6 +49,10 @@ export function charmPaths(root: string) {
     claudeDir: join(root, ".claude"),
     claudeSettings: join(root, ".claude", "settings.json"),
     projectMd: join(charmDir, "PROJECT.md"),
+    // Workspace facts + guardrails shared by every agent, seeded from
+    // templates/charm/CLAUDE.md and appended to each charm-spawned agent's
+    // system prompt by buildClaudeCommand (daemon/spawn.ts).
+    charmMd: join(charmDir, "CLAUDE.md"),
     coordinationMd: join(charmDir, "COORDINATION.md"),
     mcpConfig: join(charmDir, "charm.json"),
     pidFile: join(charmDir, "charmd.pid"),

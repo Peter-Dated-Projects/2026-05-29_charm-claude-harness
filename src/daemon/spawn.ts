@@ -221,10 +221,21 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
         readFileSync(skillsIndex, "utf8").trim() +
         "\n"
       : "";
+  // Inject the shared workspace CLAUDE.md (guardrails + operator-skills router),
+  // scaffolded from templates/charm/CLAUDE.md into <root>/.charm/CLAUDE.md by
+  // `charm init`. We read the LOCAL copy at spawn so a project can hand-tune its
+  // own guardrails. This is appended to the system prompt rather than wired as a
+  // SessionStart hook on purpose: a hook in .claude/settings.json fires for every
+  // `claude` run in the repo, but charm's guardrails should reach ONLY
+  // charm-spawned agents. Every role gets it (workers edit files, so the file
+  // scope and ticket/kb guardrails apply fleet-wide); plain windows do too.
+  const CHARM_WORKSPACE = existsSync(paths.charmMd)
+    ? "\n\n" + readFileSync(paths.charmMd, "utf8").trim() + "\n"
+    : "";
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
-  const systemPrompt = rolePrompt + CHARM_RULES + CHARM_SKILLS + modelLine;
+  const systemPrompt = rolePrompt + CHARM_WORKSPACE + CHARM_RULES + CHARM_SKILLS + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   if (spec.model) flags.push("--model", shellQuote(spec.model));
