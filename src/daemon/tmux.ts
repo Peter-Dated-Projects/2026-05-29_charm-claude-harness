@@ -28,6 +28,18 @@ export class Tmux {
   }
 
   /**
+   * Set a per-session tmux option (e.g. a user option `@charm_socket`) scoped to
+   * THIS session. The `:` key binding reads these back via format expansion at
+   * keypress time, so a `:q` resolves to whichever session it was pressed in —
+   * the binding itself stays a single global entry, but the values it expands are
+   * per-session. Best-effort: a failure here only degrades the dynamic binding to
+   * its tmux-session fallback.
+   */
+  setOption(name: string, value: string): void {
+    spawnSync("tmux", ["set-option", "-t", this.session, name, value]);
+  }
+
+  /**
    * Bind `:` (no prefix) at the session level so any pane — console or agent —
    * pops a tmux command-prompt that runs `cmdTemplate` with the typed text
    * substituted for `%%%`. The substitution happens via tmux's own `%1` token.

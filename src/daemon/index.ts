@@ -32,7 +32,7 @@ import {
   type AgentRole,
 } from "../schema.ts";
 
-type DaemonOpts = { root: string; session: string };
+type DaemonOpts = { root: string; session: string; uuid?: string };
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -129,6 +129,7 @@ async function main() {
     .name("charmd")
     .option("--root <path>", "project root", process.cwd())
     .option("--session <name>", "tmux session name (default: derived from --root)")
+    .option("--uuid <id>", "session UUID (control-plane key; default: derived single-session layout)")
     .parse(process.argv);
   const opts = program.opts<DaemonOpts>();
   // cli.ts always passes an explicit --session; derive a per-directory default
@@ -136,8 +137,12 @@ async function main() {
   // a hardcoded "charm" that would collide with another directory's session.
   const session = opts.session ?? defaultSessionName(opts.root);
 
-  const paths = charmPaths(opts.root);
+  // The UUID must match the one `charm start` used: it keys this session's
+  // socket/pidfile/run dir, and start blocks waiting for exactly that socket. A
+  // bare `charmd` (no --uuid) uses the legacy single-session layout under .charm/.
+  const paths = charmPaths(opts.root, opts.uuid);
   mkdirSync(paths.charmDir, { recursive: true });
+  mkdirSync(paths.runDir, { recursive: true });
   mkdirSync(paths.logsDir, { recursive: true });
 
   if (existsSync(paths.pidFile)) {
@@ -611,17 +616,23 @@ async function main() {
       case "set_session_description": {
         const input = SetSessionDescriptionInput.parse(params);
         const now = Date.now();
-        // Preserve created_at if the agent updates an existing description.
-        let createdAt = now;
+        // Merge into the meta `charm start` wrote: keep the session identity
+        // (uuid/session_name/root/socket/pid) and created_at, override only the
+        // description. Falling back to this daemon's own identity if the file is
+        // missing/corrupt so the record stays coherent for `stop`/`attach`.
+        let prev: Partial<SessionMeta> = {};
         if (existsSync(paths.metaJson)) {
-          try {
-            const prev = SessionMeta.parse(JSON.parse(readFileSync(paths.metaJson, "utf8")));
-            createdAt = prev.created_at;
-          } catch { /* corrupted — start fresh */ }
+          try { prev = SessionMeta.parse(JSON.parse(readFileSync(paths.metaJson, "utf8"))); }
+          catch { /* corrupted — rebuild from what we know */ }
         }
         const meta: SessionMeta = {
+          uuid: prev.uuid ?? opts.uuid,
+          session_name: prev.session_name ?? session,
+          root: prev.root ?? paths.root,
+          socket: prev.socket ?? paths.socket,
+          pid: prev.pid ?? process.pid,
           description: input.description,
-          created_at: createdAt,
+          created_at: prev.created_at ?? now,
           updated_at: now,
           source: "agent",
         };
