@@ -9,3 +9,5 @@ dist/
 .DS_Store
 # bun --compile leaves orphaned temp files; never commit them
 *.bun-build
+
+testing/
