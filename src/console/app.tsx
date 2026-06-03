@@ -19,9 +19,15 @@ const MIN_FILES_ROWS = 5;
 const MIN_VIEWER_ROWS = 3;
 
 const program = new Command();
-program.option("-r, --root <path>", "project root", process.cwd()).parse(process.argv);
-const ROOT = resolve(program.opts<{ root: string }>().root);
-const PATHS = charmPaths(ROOT);
+program
+  .option("-r, --root <path>", "project root", process.cwd())
+  // The UUID must match the daemon's: it keys the per-session socket the console
+  // polls. `charm start` passes it; omitted, we fall back to the legacy layout.
+  .option("-u, --uuid <id>", "session UUID (control-plane key)")
+  .parse(process.argv);
+const CLI_OPTS = program.opts<{ root: string; uuid?: string }>();
+const ROOT = resolve(CLI_OPTS.root);
+const PATHS = charmPaths(ROOT, CLI_OPTS.uuid);
 
 type Status = {
   tickets: TicketFrontmatter[];

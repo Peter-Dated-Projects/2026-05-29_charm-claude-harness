@@ -247,12 +247,24 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // (`--disallowed-tools`) terminates the list, otherwise the user prompt
   // gets eaten as a phantom MCP config path.
   flags.push("--mcp-config", shellQuote(paths.mcpConfig));
-  // Remove Claude Code's native subagent tool (`Agent`, older alias `Task`) so agents
-  // can't spawn subagents outside charm's orchestration. All fan-out must go through the
-  // charm MCP tools (spawn_workers / spawn_review_agents / request_review), which the
-  // daemon needs for dependency + file-scope enforcement. This is also variadic, so the
-  // next flag (`--append-system-prompt`) terminates the list.
-  flags.push("--disallowed-tools", shellQuote("Agent"), shellQuote("Task"));
+  // Strip every built-in tool that can spawn agents OUTSIDE charm's orchestration,
+  // so all fan-out must go through the charm MCP tools (spawn_workers /
+  // spawn_review_agents / request_review) the daemon needs for dependency +
+  // file-scope enforcement:
+  //   - Agent       — the native subagent tool (current name in Claude Code).
+  //   - Task        — its older alias; harmless to keep listed for older CLIs.
+  //   - Workflow    — multi-agent orchestration that fans out subagents via
+  //                   agent()/parallel()/pipeline(); a SECOND spawn path that
+  //                   `--disallowed-tools Agent` alone does NOT remove. Verified
+  //                   against Claude Code 2.1.161: blocked agents otherwise
+  //                   offer to "run it as a Workflow instead", bypassing charm.
+  // `--disallowed-tools` is variadic, so the next flag (`--append-system-prompt`)
+  // terminates the list. This is a hard, API-level removal (the tools leave the
+  // schema), not a prompt request — the model cannot call them even if told to.
+  // NOTE: this does not close the Bash escape hatch (an agent can still run
+  // `claude` itself via Bash); that is only closable by sandboxing Bash, which
+  // workers need. The flag covers the built-in tools, which is the real exposure.
+  flags.push("--disallowed-tools", shellQuote("Agent"), shellQuote("Task"), shellQuote("Workflow"));
   flags.push("--append-system-prompt", shellQuote(systemPrompt));
   // An empty prompt means a blank interactive window (e.g. `charm start` with
   // no goal): omit the positional so Claude opens waiting for user input.

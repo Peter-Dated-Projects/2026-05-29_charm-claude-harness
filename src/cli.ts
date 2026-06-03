@@ -3,7 +3,9 @@ import { Command } from "commander";
 import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { charmPaths, defaultSessionName, type CharmPaths } from "./paths.ts";
+import { randomUUID } from "node:crypto";
+import { charmPaths, sessionNameForId, type CharmPaths } from "./paths.ts";
+import { SessionMeta } from "./schema.ts";
 import { rpcCall } from "./daemon/rpc.ts";
 import { Tmux } from "./daemon/tmux.ts";
 import { killGraphViewers } from "./graph-viewers.ts";
@@ -45,24 +47,40 @@ program
     "override the MAIN agent's model only (sub-agents follow the mode): sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
   )
   .option("--no-attach", "do not auto-attach to the tmux session")
+  .option("-u, --uuid <id>", "internal: pin this session's UUID (default: a fresh random one)")
   .action(async (goalParts: string[], opts) => {
-    const paths = charmPaths(resolve(opts.root));
+    const root = resolve(opts.root);
+    // Each `charm start` mints a fresh session UUID. It is this session's primary
+    // key: its socket, pidfile, daemon log, meta, and graph-viewer pids all live
+    // under .charm/run/<uuid>/, and its tmux name carries the uuid — so multiple
+    // sessions (same dir or different) never collide, and a `:q` tears down only
+    // the session it was pressed in.
+    const sessionId = (opts.uuid as string | undefined) ?? randomUUID();
+    const paths = charmPaths(root, sessionId);
     // Detect a first run BEFORE scaffolding creates .charm/, so we know whether
     // to offer the one-time .gitignore setup below.
     const firstRun = !existsSync(paths.charmDir);
-    // Reuse an existing .charm/ if present, otherwise scaffold a fresh one.
+    // Reuse an existing .charm/ if present, otherwise scaffold a fresh one. (The
+    // shared workspace under .charm/ is created here; the per-session run dir is
+    // created just below.)
     scaffoldCharmDir(paths, { force: false });
+    // Garbage-collect run dirs whose daemon is gone, so a crashed prior session
+    // doesn't linger as a phantom in `stop`/`attach`'s session picker.
+    pruneDeadSessions(root);
+    mkdirSync(paths.runDir, { recursive: true });
+    mkdirSync(paths.logsDir, { recursive: true });
     if (!Tmux.available()) {
       console.error("tmux is required.");
       process.exit(2);
     }
 
-    // Resolve and persist the tmux session name for this directory. Persisting it
-    // lets `stop`/`attach`/`ctl` (and charm.sh) recover the exact name without
-    // re-deriving — and the per-directory default is what lets multiple charms
-    // run side by side without colliding on tmux's global session namespace.
-    const session = resolveSession(paths, opts.session);
-    writeFileSync(paths.sessionFile, session + "\n");
+    // Resolve this session's tmux name. An explicit --session (or $CHARM_SESSION)
+    // wins; otherwise it's derived from the dir basename + the uuid so it's unique
+    // even against another `start` in the same directory. The name is no longer
+    // re-derivable from the root alone, so we persist it: in this session's
+    // meta.json (the per-session record) and in the per-directory last-session
+    // pointer that `charm.sh` reads to attach right after launch.
+    const session = opts.session ?? process.env.CHARM_SESSION ?? sessionNameForId(root, sessionId);
 
     const goal = (goalParts ?? []).join(" ").trim();
     const plain = goal.length === 0;
@@ -84,13 +102,27 @@ program
     // daemon writes corrupt the tmux session once the terminal is handed off.
     const logFd = openSync(logFile, "a");
     const [daemonCmd, ...daemonPrefix] = resolveChild("daemon");
-    const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", session], {
+    const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", session, "--uuid", sessionId], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
       env: { ...process.env, CHARM_MODE: mode },
     });
     child.unref();
     console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
+
+    // Persist this session's identity now that we have the daemon pid. The
+    // meta.json is the per-session record `stop`/`attach`/`status` read to find
+    // and pick a session; the last-session pointer is the per-directory hint
+    // `charm.sh` uses to attach to the session it just launched. The daemon later
+    // enriches meta.json with the agent-set description (preserving these fields).
+    writeSessionMeta(paths, {
+      uuid: sessionId,
+      session_name: session,
+      root: paths.root,
+      socket: paths.socket,
+      pid: child.pid,
+    });
+    writeFileSync(paths.lastSessionFile, session + "\n");
 
     // 2. Wait for socket
     await waitForSocket(paths.socket, 10_000);
@@ -103,6 +135,10 @@ program
       process.exit(2);
     }
     tmux.newSession("charm", paths.root);
+    // Record this session's socket as a per-session tmux option. The `:` binding
+    // reads it back via format expansion at keypress time, so `:q` resolves to
+    // whichever session it was pressed in — see bindCommandPrompt below.
+    tmux.setOption("@charm_socket", paths.socket);
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
     const { buildClaudeCommand, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
@@ -125,7 +161,7 @@ program
       plain,
     });
     const consoleArgv = resolveChild("console");
-    const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)}`;
+    const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)} --uuid ${shellQuote(sessionId)}`;
 
     const consolePane = tmux.spawnInWindow("charm", consoleCmd, paths.root);
     const mainPane = tmux.splitPane({ cmd: mainCmd, cwd: paths.root, direction: "h", size: "65%" });
@@ -141,15 +177,27 @@ program
     // Bind `:` (no prefix) to a tmux command-prompt that runs `charm ctl`.
     // Works from any pane — console or agent — so the user can quit/detach
     // the whole charm from wherever the cursor happens to be.
-    // Re-invoke THIS cli for the `:` tmux command prompt. From source that's
-    // `bun <cli.ts> ctl …`; a compiled binary dispatches its own subcommands,
-    // so it's just `<binary> ctl …` (its embedded cli.ts path isn't on disk).
+    //
+    // CRITICAL: the binding must NOT bake in THIS session's identity. tmux key
+    // tables (`root`) are server-global, not per-session — so each `charm start`
+    // overwrites the single `:` entry for the whole server. If the entry carried
+    // a fixed --socket/--session, pressing `:q` in an OLDER session would fire
+    // the NEWEST session's identity and kill the wrong charm. Instead we pass
+    // tmux format tokens (`#{@charm_socket}`, `#{session_name}`) that tmux expands
+    // at keypress time, in the context of the session the key was pressed in. The
+    // @charm_socket option was set per-session above, so `:q` always resolves to
+    // the socket of the session you pressed it in. (The tokens are intentionally
+    // NOT shell-quoted — they must reach tmux literally to be expanded.)
+    //
+    // Re-invoke THIS cli for the prompt. From source that's `bun <cli.ts> ctl …`;
+    // a compiled binary dispatches its own subcommands, so it's just
+    // `<binary> ctl …` (its embedded cli.ts path isn't on disk).
     const selfArgv = isCompiled()
       ? [process.execPath]
       : [process.execPath, fileURLToPath(import.meta.url)];
     const ctlTemplate =
       `${selfArgv.map(shellQuote).join(" ")} ctl ` +
-      `--root ${shellQuote(paths.root)} --session ${shellQuote(session)} %1`;
+      `--socket "#{@charm_socket}" --session "#{session_name}" %1`;
     tmux.bindCommandPrompt(ctlTemplate);
 
     // Focus the main agent pane so keystrokes go to Claude, not the console.
@@ -161,51 +209,42 @@ program
 
 program
   .command("stop")
-  .description("stop the charm: close all graph viewers, kill the daemon, and tear down the tmux session")
+  .description("stop a charm: close its graph viewers, kill its daemon, and tear down its tmux session")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
+  .option("--all", "stop every charm session in this directory", false)
   .action((opts) => {
-    const paths = charmPaths(resolve(opts.root));
-    const session = resolveSession(paths, opts.session);
-    // 1. Close standalone graph viewers first, by tracked PID. Done here (not
-    // left to the daemon) so viewers still get reaped when the daemon is already
-    // gone — and, in future, when viewers run outside the tmux session entirely.
-    const killed = killGraphViewers(paths.graphPids);
-    if (killed.length) console.log(`[charm] closed ${killed.length} graph viewer(s): ${killed.join(", ")}`);
-    // 2. Kill the daemon (its signal handler also runs cleanup, harmlessly
-    // re-reaping viewers and removing the socket/pidfile).
-    if (existsSync(paths.pidFile)) {
-      const pid = Number(readFileSync(paths.pidFile, "utf8").trim());
-      if (pid) {
-        try { process.kill(pid); console.log(`[charm] killed daemon pid=${pid}`); }
-        catch { console.log(`[charm] daemon pid=${pid} not running`); }
-      }
-      // Always reclaim the run-state files. A live daemon's signal handler also
-      // removes these, but doing it here unconditionally means a crashed daemon
-      // (dead pid) gets cleaned up too — otherwise the stale pidfile would block
-      // the next `start`, leaving stop and start deadlocked against each other.
-      try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
-      try { if (existsSync(paths.socket)) unlinkSync(paths.socket); } catch { /* ignore */ }
+    const root = resolve(opts.root);
+    // Pick which session(s) to stop. With --all, every session in the dir; else
+    // the one named/uuid'd, or — when exactly one runs — that one. Ambiguity
+    // (multiple sessions, no selector) is a hard error rather than a guess: a
+    // wrong guess here is the very cross-session kill this whole change fixes.
+    let targets: RunSession[];
+    if (opts.all) {
+      targets = listRunSessions(root);
+      if (targets.length === 0) { console.log(`[charm] no charm sessions in ${root}`); return; }
+    } else {
+      try { targets = [resolveOneSession(root, opts)]; }
+      catch (e: any) { console.error(e.message); process.exit(2); }
     }
-    // 3. Tear down the tmux session (closes console, agent, and graph windows).
-    const tmux = new Tmux(session);
-    if (tmux.hasSession()) {
-      tmux.killSession();
-      console.log(`[charm] killed tmux session '${session}'`);
-    }
+    for (const t of targets) stopSession(t);
   });
 
 program
   .command("attach")
-  .description("attach to the tmux session for the charm")
+  .description("attach to a charm's tmux session")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
   .action((opts) => {
-    const paths = charmPaths(resolve(opts.root));
-    const session = resolveSession(paths, opts.session);
-    const tmux = new Tmux(session);
+    const root = resolve(opts.root);
+    let target: RunSession;
+    try { target = resolveOneSession(root, opts); }
+    catch (e: any) { console.error(e.message); process.exit(2); }
+    const tmux = new Tmux(target.meta.session_name ?? "");
     if (!tmux.hasSession()) {
-      console.error(`no tmux session '${session}'`);
+      console.error(`no tmux session '${target.meta.session_name}'`);
       process.exit(2);
     }
     tmux.attach();
@@ -215,13 +254,18 @@ program
   .command("status")
   .description("print agents, tickets, pending approvals")
   .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
   .action(async (opts) => {
-    const paths = charmPaths(resolve(opts.root));
+    const root = resolve(opts.root);
+    let target: RunSession;
+    try { target = resolveOneSession(root, opts); }
+    catch (e: any) { console.error(e.message); process.exit(1); }
     try {
-      const s = await rpcCall<any>(paths.socket, "status");
+      const s = await rpcCall<any>(target.paths.socket, "status");
       console.log(JSON.stringify(s, null, 2));
     } catch (e: any) {
-      if (!existsSync(paths.socket)) {
+      if (!existsSync(target.paths.socket)) {
         console.error("no charm daemon running. start one with: charm start");
       } else {
         console.error(`daemon unreachable: ${e.message}`);
@@ -234,10 +278,15 @@ program
   .command("approve <gate_id>")
   .description("resolve a pending approval gate")
   .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
   .option("--reject", "reject instead of approve", false)
   .action(async (gateId: string, opts) => {
-    const paths = charmPaths(resolve(opts.root));
-    const res = await rpcCall<{ resolved: boolean }>(paths.socket, "approve_gate", {
+    const root = resolve(opts.root);
+    let target: RunSession;
+    try { target = resolveOneSession(root, opts); }
+    catch (e: any) { console.error(e.message); process.exit(1); }
+    const res = await rpcCall<{ resolved: boolean }>(target.paths.socket, "approve_gate", {
       id: gateId,
       decision: opts.reject ? "reject" : "approve",
     });
@@ -248,8 +297,17 @@ program
   .command("restart")
   .description("reset the ticket backlog: kill ticketed agents, wipe ticket files + the db index, reset COORDINATION.md (daemon, KB, and session stay up)")
   .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
   .action(async (opts) => {
-    const paths = charmPaths(resolve(opts.root));
+    const root = resolve(opts.root);
+    // The ticket board (tickets/, db, COORDINATION.md) is shared per-directory,
+    // but killing the in-flight agents needs a daemon socket — resolve the one
+    // session whose fleet we're resetting.
+    let target: RunSession;
+    try { target = resolveOneSession(root, opts); }
+    catch (e: any) { console.error(e.message); process.exit(2); }
+    const paths = target.paths;
     // 1. Kill every agent currently assigned a ticket (operator caller = no
     //    caller_id). Done first so no agent reports done/failed against a ticket
     //    we are about to delete — report_status throws "unknown ticket" otherwise.
@@ -312,20 +370,32 @@ program
 program
   .command("ctl <cmd>")
   .description("internal: handle a vim-style command (`:q`, `:a`) from the tmux key binding")
-  .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
+  .option("--socket <path>", "daemon socket of the session the key was pressed in")
+  .option("-s, --session <name>", "tmux session the key was pressed in")
   .action(async (cmd: string, opts) => {
-    const paths = charmPaths(resolve(opts.root));
-    const session = resolveSession(paths, opts.session);
-    const tmux = new Tmux(session);
+    // This runs from the `:` key binding, which passes the ACTIVE session's
+    // identity via tmux format expansion (--socket #{@charm_socket}, --session
+    // #{session_name}). So a `:q` always targets the session it was pressed in —
+    // never a sibling charm that happens to share the tmux server. Both flags may
+    // be absent/empty if a session was created outside `charm start`; we degrade
+    // gracefully (kill by session name) rather than touch the wrong daemon.
+    const socket = (opts.socket as string | undefined)?.trim() || "";
+    const session = (opts.session as string | undefined)?.trim() || "";
     const c = cmd.trim().toLowerCase();
     if (c === "q" || c === "quit") {
-      try { await rpcCall(paths.socket, "shutdown"); }
-      catch { tmux.killSession(); /* daemon already gone — make sure tmux dies too */ }
+      // Ask THIS session's daemon to shut down: it tears down its own tmux
+      // session and reaps its own (per-session) graph viewers. If the socket is
+      // unset or the daemon is already gone, fall back to killing the tmux
+      // session by name so `:q` still closes the window.
+      if (socket) {
+        try { await rpcCall(socket, "shutdown"); return; }
+        catch { /* daemon gone — fall through to the tmux fallback */ }
+      }
+      if (session) new Tmux(session).killSession();
       return;
     }
     if (c === "a" || c === "detach") {
-      spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
+      if (session) spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
       return;
     }
     // Unknown: surface in tmux status line briefly.
@@ -334,12 +404,16 @@ program
 
 program
   .command("session-name")
-  .description("internal: print the resolved tmux session name for a root (used by charm.sh)")
+  .description("internal: print a session's tmux name for this root (used by charm.sh)")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
   .action((opts) => {
-    const paths = charmPaths(resolve(opts.root));
-    process.stdout.write(resolveSession(paths, opts.session) + "\n");
+    const root = resolve(opts.root);
+    let target: RunSession;
+    try { target = resolveOneSession(root, opts); }
+    catch (e: any) { console.error(e.message); process.exit(2); }
+    process.stdout.write((target.meta.session_name ?? "") + "\n");
   });
 
 program.parseAsync(process.argv).catch((e) => {
@@ -347,24 +421,134 @@ program.parseAsync(process.argv).catch((e) => {
   process.exit(1);
 });
 
-/** Resolve the tmux session name for a project root. Precedence:
- *    1. an explicit --session flag
- *    2. the $CHARM_SESSION env override
- *    3. the name a prior `start` persisted to .charm/session
- *    4. a stable default derived from the root path (so two directories never
- *       collide on tmux's global session namespace)
- *  This is the single source of truth for the name — `start` writes it, every
- *  other command (and the bash wrapper, via the `session-name` subcommand) reads
- *  it back through here so they all agree on which session belongs to this dir. */
-function resolveSession(paths: CharmPaths, explicit?: string): string {
-  if (explicit) return explicit;
-  const env = process.env.CHARM_SESSION;
-  if (env) return env;
-  if (existsSync(paths.sessionFile)) {
-    const s = readFileSync(paths.sessionFile, "utf8").trim();
-    if (s) return s;
+/** A discovered charm session in a directory: its UUID, resolved per-session
+ *  paths, parsed meta.json, and whether its daemon is currently alive. */
+type RunSession = { sessionId: string; paths: CharmPaths; meta: SessionMeta; alive: boolean };
+
+/** True for a pid that names a live process. Signal 0 does the kernel's
+ *  existence/permission check without delivering a signal. */
+function pidAlive(pid: number | undefined): boolean {
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/** Enumerate every charm session under <root>/.charm/run/, parsing each
+ *  meta.json and flagging whether its daemon is alive. Newest first. Unreadable
+ *  or meta-less run dirs are skipped (they're mid-creation or corrupt). */
+function listRunSessions(root: string): RunSession[] {
+  const { runRootDir } = charmPaths(root);
+  if (!existsSync(runRootDir)) return [];
+  const out: RunSession[] = [];
+  for (const id of readdirSync(runRootDir)) {
+    const paths = charmPaths(root, id);
+    if (!existsSync(paths.metaJson)) continue;
+    let meta: SessionMeta;
+    try { meta = SessionMeta.parse(JSON.parse(readFileSync(paths.metaJson, "utf8"))); }
+    catch { continue; }
+    const pid = meta.pid ?? (existsSync(paths.pidFile) ? Number(readFileSync(paths.pidFile, "utf8").trim()) : undefined);
+    out.push({ sessionId: id, paths, meta, alive: pidAlive(pid) });
   }
-  return defaultSessionName(paths.root);
+  return out.sort((a, b) => b.meta.created_at - a.meta.created_at);
+}
+
+/** Pick exactly one session for a command that operates on a single charm.
+ *  Precedence: explicit --uuid, then --session / $CHARM_SESSION (by tmux name),
+ *  else the single (preferring live) session in the dir. Ambiguity — multiple
+ *  sessions and no selector — throws with a listing rather than guessing: a wrong
+ *  guess is exactly the cross-session kill this change exists to prevent. */
+function resolveOneSession(root: string, opts: { uuid?: string; session?: string }): RunSession {
+  const all = listRunSessions(root);
+  if (opts.uuid) {
+    const s = all.find((s) => s.sessionId === opts.uuid);
+    if (!s) throw new Error(`no charm session with uuid '${opts.uuid}' in ${root}`);
+    return s;
+  }
+  const name = opts.session ?? process.env.CHARM_SESSION;
+  if (name) {
+    const matches = all.filter((s) => s.meta.session_name === name);
+    if (matches.length === 0) throw new Error(`no charm session named '${name}' in ${root}`);
+    if (matches.length > 1) throw new Error(`multiple charm sessions named '${name}' in ${root}; pass --uuid <id>`);
+    return matches[0]!;
+  }
+  const live = all.filter((s) => s.alive);
+  const pool = live.length ? live : all;
+  if (pool.length === 1) return pool[0]!;
+  if (pool.length === 0) throw new Error(`no charm session in ${root}. start one with: charm start`);
+  const listing = pool
+    .map((s) => `  ${s.meta.session_name}  (--uuid ${s.sessionId}${s.alive ? "" : ", dead"})${s.meta.description ? ` — ${s.meta.description}` : ""}`)
+    .join("\n");
+  throw new Error(`multiple charm sessions in ${root}; pick one with --session <name> or --uuid <id>:\n${listing}`);
+}
+
+/** Tear down one session: close its graph viewers, kill its daemon, reclaim its
+ *  run-state files, kill its tmux session, and remove its run dir. Mirrors the
+ *  daemon's own cleanup so it works whether the daemon is alive or already gone. */
+function stopSession(t: RunSession): void {
+  const { paths, meta } = t;
+  const killed = killGraphViewers(paths.graphPids);
+  if (killed.length) console.log(`[charm] closed ${killed.length} graph viewer(s): ${killed.join(", ")}`);
+  if (existsSync(paths.pidFile)) {
+    const pid = Number(readFileSync(paths.pidFile, "utf8").trim());
+    if (pid) {
+      try { process.kill(pid); console.log(`[charm] killed daemon pid=${pid}`); }
+      catch { console.log(`[charm] daemon pid=${pid} not running`); }
+    }
+    try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
+  }
+  try { if (existsSync(paths.socket)) unlinkSync(paths.socket); } catch { /* ignore */ }
+  const session = meta.session_name;
+  if (session) {
+    const tmux = new Tmux(session);
+    if (tmux.hasSession()) {
+      tmux.killSession();
+      console.log(`[charm] killed tmux session '${session}'`);
+    }
+  }
+  // Drop the (now-defunct) run dir so it doesn't linger in the session picker.
+  try { rmSync(paths.runDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  // Clear the per-dir last-session pointer if it named this session.
+  try {
+    if (session && existsSync(paths.lastSessionFile) && readFileSync(paths.lastSessionFile, "utf8").trim() === session) {
+      unlinkSync(paths.lastSessionFile);
+    }
+  } catch { /* ignore */ }
+}
+
+/** Remove run dirs whose daemon is dead. Called at `start` so a crashed prior
+ *  session doesn't haunt the picker; never touches a session with a live pid. */
+function pruneDeadSessions(root: string): void {
+  for (const s of listRunSessions(root)) {
+    if (s.alive) continue;
+    try { rmSync(s.paths.runDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+/** Write (or overwrite) a session's meta.json with its identity. created_at is
+ *  preserved across rewrites; updated_at is stamped now. The daemon later merges
+ *  in the agent-set description via the same file, preserving these fields. */
+function writeSessionMeta(
+  paths: CharmPaths,
+  identity: { uuid: string; session_name: string; root: string; socket: string; pid: number | undefined },
+): void {
+  const now = Date.now();
+  let created_at = now;
+  let description = "";
+  if (existsSync(paths.metaJson)) {
+    try {
+      const prev = SessionMeta.parse(JSON.parse(readFileSync(paths.metaJson, "utf8")));
+      created_at = prev.created_at;
+      description = prev.description;
+    } catch { /* corrupt — start fresh */ }
+  }
+  const meta: SessionMeta = {
+    ...identity,
+    description,
+    created_at,
+    updated_at: now,
+    source: "start",
+  };
+  mkdirSync(dirname(paths.metaJson), { recursive: true });
+  writeFileSync(paths.metaJson, JSON.stringify(meta, null, 2) + "\n");
 }
 
 /** On the first `start` in a directory, offer to add charm's run-state ignore

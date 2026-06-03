@@ -364,10 +364,13 @@ cmd_kill() {
     for r in $roots; do
         [[ -z "$r" ]] && continue
         local f
-        for f in "$r/.charm/charmd.pid" "$r/.charm/graph-viewers.pids"; do
-            if [[ -f "$f" ]]; then
-                if [[ $dry == 1 ]]; then echo "    [dry] rm $f"
-                else rm -f "$f" && echo "    removed $f"; fi
+        # Per-session run state now lives under .charm/run/<uuid>/ (socket,
+        # pidfile, graph-viewer pids, meta); the flat .charm/* paths are the
+        # legacy single-session layout. Sweep both, plus the last-session pointer.
+        for f in "$r/.charm/run" "$r/.charm/last-session" "$r/.charm/charmd.pid" "$r/.charm/graph-viewers.pids"; do
+            if [[ -e "$f" ]]; then
+                if [[ $dry == 1 ]]; then echo "    [dry] rm -r $f"
+                else rm -rf "$f" && echo "    removed $f"; fi
             fi
         done
     done

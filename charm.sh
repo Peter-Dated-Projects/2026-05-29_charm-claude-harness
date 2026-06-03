@@ -59,16 +59,18 @@ parse_root() {
   printf '%s' "$root"
 }
 
-# Resolve the tmux session name for a directory so the wrapper attaches to /
-# tears down the right one. cli.ts owns the derivation; here we just read its
+# Resolve the tmux session name for a directory so the wrapper attaches to the
+# right one. Session names are now per-session (UUID-suffixed) and no longer
+# derivable from the root alone, so cli.ts owns resolution; here we just read its
 # result. Precedence: an explicit --session ($2) wins, then $CHARM_SESSION, then
-# the name `start` persisted to <root>/.charm/session; if that's missing, ask the
-# CLI to derive it. Keeping one source of truth avoids duplicating the hash here.
+# the per-dir last-session pointer `start` writes (<root>/.charm/last-session);
+# if that's missing, ask the CLI to pick (errors if multiple sessions and no
+# selector). Keeping one source of truth avoids duplicating the logic here.
 resolve_session() {
   local root="$1" explicit="${2:-}"
   if [[ -n "$explicit" ]]; then printf '%s' "$explicit"; return; fi
   if [[ -n "${CHARM_SESSION:-}" ]]; then printf '%s' "$CHARM_SESSION"; return; fi
-  local f="$root/.charm/session"
+  local f="$root/.charm/last-session"
   if [[ -f "$f" ]]; then
     local s; s="$(<"$f")"; s="${s//[$'\t\r\n ']/}"
     if [[ -n "$s" ]]; then printf '%s' "$s"; return; fi
@@ -86,29 +88,11 @@ case "${1:-}" in
     sed -n '4,15p' "$0"
     exit 0
     ;;
-  stop)
-    shift
-    ROOT="$(parse_root "$@")"
-    SESSION_NAME="$(resolve_session "$ROOT" "$(parse_session "$@")")"
-    PIDFILE="${ROOT}/.charm/charmd.pid"
-    # Close standalone graph viewers first, by tracked PID. Done before killing
-    # the daemon so they're reaped even if the daemon is already gone -- and so
-    # it still works if viewers ever run outside the tmux session.
-    VIEWERS="${ROOT}/.charm/graph-viewers.pids"
-    if [[ -f "$VIEWERS" ]]; then
-      while IFS= read -r vpid; do
-        [[ -n "$vpid" ]] || continue
-        kill "$vpid" 2>/dev/null && echo "closed graph viewer pid=$vpid" || true
-      done < "$VIEWERS"
-      rm -f "$VIEWERS"
-    fi
-    if [[ -f "$PIDFILE" ]]; then
-      PID="$(cat "$PIDFILE")"
-      kill "$PID" 2>/dev/null && echo "killed charmd pid=$PID" || true
-      rm -f "$PIDFILE"
-    fi
-    tmux kill-session -t "$SESSION_NAME" 2>/dev/null && echo "killed tmux session '$SESSION_NAME'" || true
-    ;;
+  # `stop` is handled by the CLI (the `*)` default below): per-session run state
+  # (socket, pidfile, graph-viewer pids) now lives under <root>/.charm/run/<uuid>/,
+  # and `charm stop` resolves the session, reaps its graph viewers, kills its
+  # daemon + tmux session, and removes its run dir — including selecting among
+  # multiple sessions (--session/--uuid) or stopping them all (--all).
   start)
     shift
     NO_ATTACH=0
