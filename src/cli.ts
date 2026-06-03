@@ -28,6 +28,7 @@ program
     console.log(`  tickets:  ${paths.ticketsDir}/`);
     console.log(`  kb:       ${paths.kbDir}/  (durable, git-tracked)`);
     console.log(`  skills:   ${paths.skillsDir}/  (operator skills + index)`);
+    console.log(`  claude:   ${paths.charmMd}  (workspace guardrails, injected into each agent's prompt)`);
     console.log(`  config:   ${paths.mcpConfig}`);
   });
 
@@ -464,6 +465,21 @@ function scaffoldCharmDir(
     console.warn("[charm] skill templates not found; skipping skills scaffold");
   }
 
+  // Seed the shared workspace CLAUDE.md (guardrails + operator-skills router).
+  // It lands at .charm/CLAUDE.md, and buildClaudeCommand (daemon/spawn.ts)
+  // appends this local copy to every charm-spawned agent's system prompt.
+  // Like prompts/skills it's tooling, not user data: copy if missing, overwrite
+  // only with --force, so a project can hand-tune its own .charm/CLAUDE.md.
+  const charmTemplates = locateTemplateDir("charm");
+  if (charmTemplates) {
+    const src = join(charmTemplates, "CLAUDE.md");
+    if (existsSync(src) && (!existsSync(paths.charmMd) || force)) {
+      cpSync(src, paths.charmMd);
+    }
+  } else {
+    console.warn("[charm] charm templates not found; skipping CLAUDE.md scaffold");
+  }
+
   const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
   const mcpConfig = {
     mcpServers: {
@@ -493,6 +509,11 @@ function scaffoldCharmDir(
  * we leave everything else (including the user's formatting) untouched. The write
  * is skipped entirely when the allow-list already contains every charm entry, so
  * repeated `charm start`s don't reformat or churn a user-maintained file.
+ *
+ * Note: the shared workspace CLAUDE.md is NOT wired in here. It is injected into
+ * each agent's system prompt at spawn (see buildClaudeCommand in daemon/spawn.ts)
+ * rather than via a SessionStart hook, so it reaches only charm-spawned sessions
+ * and not every plain `claude` a user runs in the project.
  */
 function scaffoldClaudeSettings(paths: ReturnType<typeof charmPaths>) {
   const tmplDir = locateTemplateDir("claude");
