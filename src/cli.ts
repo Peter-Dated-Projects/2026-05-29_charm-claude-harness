@@ -19,12 +19,13 @@ program
 
 program
   .command("init")
-  .description("scaffold .charm/ (tickets, charm.json, prompt templates) in the current dir")
+  .description("scaffold or refresh .charm/ in the current dir: re-copies template tooling (prompts, skills, CLAUDE.md, charm.json) -- additive or update only, never deletes; kb/, COORDINATION.md, and settings.json are preserved")
   .option("-r, --root <path>", "project root", process.cwd())
-  .option("-f, --force", "overwrite existing prompt files", false)
   .action((opts) => {
     const paths = charmPaths(resolve(opts.root));
-    scaffoldCharmDir(paths, { force: opts.force });
+    // init always refreshes template-managed tooling (overwrite existing + add
+    // new). User/runtime data (kb, coordination, settings) is still preserved.
+    scaffoldCharmDir(paths, { refresh: true });
     console.log(`charm initialized at ${paths.charmDir}`);
     console.log(`  prompts:  ${paths.promptsDir}/`);
     console.log(`  tickets:  ${paths.ticketsDir}/`);
@@ -63,7 +64,7 @@ program
     // Reuse an existing .charm/ if present, otherwise scaffold a fresh one. (The
     // shared workspace under .charm/ is created here; the per-session run dir is
     // created just below.)
-    scaffoldCharmDir(paths, { force: false });
+    scaffoldCharmDir(paths, { refresh: false });
     // Garbage-collect run dirs whose daemon is gone, so a crashed prior session
     // doesn't linger as a phantom in `stop`/`attach`'s session picker.
     pruneDeadSessions(root);
@@ -606,9 +607,26 @@ async function resolveMode(opts: StartOpts): Promise<"research" | "development">
   return "research";
 }
 
+/**
+ * Scaffold (or refresh) the shared .charm/ workspace.
+ *
+ * `refresh` controls how template-managed *tooling* (prompts, operator skills,
+ * the workspace CLAUDE.md, and charm.json) is treated when it already exists:
+ *   - refresh=true  (charm init): re-copy every template file, overwriting the
+ *     local copy. New template files are added, changed ones are updated. This
+ *     is additive-or-modify only -- cpSync never removes a destination file that
+ *     has no template counterpart, so local-only files survive.
+ *   - refresh=false (charm start): additive only -- copy a template file only if
+ *     it's missing locally, never overwrite. Keeps frequent starts from churning
+ *     or reverting a hand-tuned workspace.
+ *
+ * Either way, user/runtime DATA is never clobbered: kb/ and COORDINATION.md are
+ * seeded only when absent, and .claude/settings.json is merged (union), never
+ * overwritten. Nothing is ever deleted.
+ */
 function scaffoldCharmDir(
   paths: ReturnType<typeof charmPaths>,
-  { force }: { force: boolean },
+  { refresh }: { refresh: boolean },
 ) {
   mkdirSync(paths.charmDir, { recursive: true });
   mkdirSync(paths.ticketsDir, { recursive: true });
@@ -619,7 +637,7 @@ function scaffoldCharmDir(
   if (templatesDir) {
     for (const f of readdirSync(templatesDir)) {
       const dest = join(paths.promptsDir, f);
-      if (existsSync(dest) && !force) continue;
+      if (existsSync(dest) && !refresh) continue;
       cpSync(join(templatesDir, f), dest);
     }
   } else {
@@ -627,8 +645,8 @@ function scaffoldCharmDir(
   }
 
   // Seed the durable KB skeleton ONLY if it doesn't exist yet. The KB is real,
-  // accumulating data -- never clobber it on re-init/start, even with --force
-  // (force is for prompt templates, not user/agent knowledge).
+  // accumulating data -- never clobber it on re-init/start, even when refresh is
+  // on (refresh is for template tooling, not user/agent knowledge).
   if (!existsSync(paths.kbDir)) {
     const kbTemplates = locateTemplateDir("kb");
     if (kbTemplates) {
@@ -641,10 +659,10 @@ function scaffoldCharmDir(
 
   // Seed the operator skills (restart, reset-kb) + their router index so the
   // main agent can discover and follow them on demand. Like prompts, these are
-  // tooling (not user data): copy missing files, overwrite only with --force.
+  // tooling (not user data): copy missing files, overwrite existing on refresh.
   const skillTemplates = locateTemplateDir("skills");
   if (skillTemplates) {
-    cpSync(skillTemplates, paths.skillsDir, { recursive: true, force, errorOnExist: false });
+    cpSync(skillTemplates, paths.skillsDir, { recursive: true, force: refresh, errorOnExist: false });
   } else {
     console.warn("[charm] skill templates not found; skipping skills scaffold");
   }
@@ -652,12 +670,12 @@ function scaffoldCharmDir(
   // Seed the shared workspace CLAUDE.md (guardrails + operator-skills router).
   // It lands at .charm/CLAUDE.md, and buildClaudeCommand (daemon/spawn.ts)
   // appends this local copy to every charm-spawned agent's system prompt.
-  // Like prompts/skills it's tooling, not user data: copy if missing, overwrite
-  // only with --force, so a project can hand-tune its own .charm/CLAUDE.md.
+  // Like prompts/skills it's tooling, not user data: copy if missing, and
+  // refresh (overwrite) it on `charm init` so the workspace tracks the template.
   const charmTemplates = locateTemplateDir("charm");
   if (charmTemplates) {
     const src = join(charmTemplates, "CLAUDE.md");
-    if (existsSync(src) && (!existsSync(paths.charmMd) || force)) {
+    if (existsSync(src) && (!existsSync(paths.charmMd) || refresh)) {
       cpSync(src, paths.charmMd);
     }
   } else {
@@ -670,7 +688,7 @@ function scaffoldCharmDir(
       charm: { command: mcpBin, args: [], env: {} },
     },
   };
-  if (!existsSync(paths.mcpConfig) || force) {
+  if (!existsSync(paths.mcpConfig) || refresh) {
     writeFileSync(paths.mcpConfig, JSON.stringify(mcpConfig, null, 2) + "\n");
   }
 
