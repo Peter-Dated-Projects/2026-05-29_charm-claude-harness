@@ -35,14 +35,14 @@ const server = new McpServer({ name: "charm-mcp", version: "0.0.1" });
 server.registerTool(
   "create_tickets",
   {
-    description: "Create one or more tickets. Each ticket needs a title, body, depends_on, and touches (file globs).",
+    description: "Create one to three tickets per call. Each ticket needs a title, body, depends_on, and touches (file globs). To create more than 3, make multiple calls.",
     inputSchema: {
       tickets: z.array(z.object({
         title: z.string(),
         body: z.string(),
         depends_on: z.array(z.string()).default([]),
         touches: z.array(z.string()).default([]),
-      })),
+      })).min(1).max(3, "create_tickets accepts at most 3 tickets per call; split larger batches across multiple calls"),
     },
   },
   async (args) => ok(await call("create_tickets", args)),

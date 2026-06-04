@@ -86,7 +86,7 @@ export const CreateTicketsInput = z.object({
     body: z.string(),
     depends_on: z.array(z.string()).default([]),
     touches: z.array(z.string()).default([]),
-  })),
+  })).min(1).max(3, "create_tickets accepts at most 3 tickets per call; split larger batches across multiple calls"),
 });
 export type CreateTicketsInput = z.infer<typeof CreateTicketsInput>;
 
