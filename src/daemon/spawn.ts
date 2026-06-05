@@ -39,12 +39,14 @@ export const MODEL_ALIASES: Record<string, string> = {
   opus: "claude-opus-4-8",
 };
 
-/** A charm "mode" pins every agent role to a single model family, so the whole
- *  fleet (main + reviewers + workers + testers) runs on one model:
+/** A charm "mode" sets the DEFAULT model family for the whole fleet (main +
+ *  reviewers + workers + testers) and the orchestrator's behavioral framing:
  *    research    -> Sonnet  (fast, cheap; exploration and research workflows)
  *    development -> Opus     (most capable; for writing and shipping code)
- *  Selected at `charm start` via --research / --development (alias --dev) or the
- *  interactive startup prompt, then propagated to the daemon as CHARM_MODE. */
+ *  This is a default, not a hard pin — `charm start -m/--model` (CHARM_MODEL)
+ *  overrides the model for any mode, so research can run on Opus and development
+ *  on Sonnet. Selected at `charm start` via --research / --development (alias
+ *  --dev) or the interactive startup prompt, then propagated as CHARM_MODE. */
 export type CharmMode = "research" | "development";
 
 export const MODE_MODEL: Record<CharmMode, string> = {
@@ -73,11 +75,17 @@ export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
 
 /** Resolve the model for a spawned agent role. Precedence, highest first:
  *    1. CHARM_MODEL_<ROLE> env override (power-user, per-role)
- *    2. CHARM_MODE (research -> Sonnet, development -> Opus) — the fleet-wide mode
- *    3. DEFAULT_MODEL_BY_ROLE static fallback */
+ *    2. CHARM_MODEL fleet-wide override (`charm start -m/--model`) — wins over the
+ *       mode, so ANY mode can run ANY model (e.g. Opus in research mode).
+ *    3. CHARM_MODE default (research -> Sonnet, development -> Opus)
+ *    4. DEFAULT_MODEL_BY_ROLE static fallback
+ *  Mode is a DEFAULT, not a hard pin: it only decides the model when no explicit
+ *  override (1 or 2) is set. */
 export function defaultModelForRole(role: AgentRole): string {
-  const override = process.env[`CHARM_MODEL_${role.toUpperCase()}`];
-  if (override) return resolveModel(override);
+  const roleOverride = process.env[`CHARM_MODEL_${role.toUpperCase()}`];
+  if (roleOverride) return resolveModel(roleOverride);
+  const fleetOverride = process.env.CHARM_MODEL;
+  if (fleetOverride) return resolveModel(fleetOverride);
   const mode = process.env.CHARM_MODE;
   if (isMode(mode)) return resolveModel(MODE_MODEL[mode]);
   return resolveModel(DEFAULT_MODEL_BY_ROLE[role]);
@@ -192,9 +200,9 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "## Charm MCP tools (full catalog — available to every agent)",
     "You are connected to the `charm-mcp` server. Every charm agent has all of these tools available. Call the ones your task needs; the daemon enforces the hard constraints noted below.",
     "- create_tickets — create one or more tickets (each: title, body, depends_on, touches file globs).",
-    "- spawn_review_agents — spawn one headless reviewer agent per ticket id.",
-    "- spawn_workers — spawn interactive worker agents; the daemon defers any ticket whose deps or `touches` conflict with running work.",
-    "- request_review — spawn a tester agent on one finished ticket id.",
+    "- spawn_review_agents — spawn one headless reviewer agent per ticket id. Capped like spawn_workers (see below); ids over the cap come back in `deferred` — retry them as agents finish.",
+    "- spawn_workers — spawn interactive worker agents; the daemon defers any ticket whose deps or `touches` conflict with running work, AND any that would exceed the concurrent-agent cap (a fixed ceiling on how many agents — including you, the orchestrator — run at once). Deferred ids are returned in `deferred`; simply call spawn_workers again for them once running agents finish and free slots. A `capped` count in the result means the cap (not deps/touches) was the reason.",
+    "- request_review — spawn a tester agent on one finished ticket id. Errors with 'agent cap reached' if no slot is free; retry once an agent finishes.",
     "- await_approval — block until a human approves or rejects a gate (stage 0, 2, or 4) in the Console pane.",
     "- set_session_description — set or update the one-sentence (<=80 char) session description shown by `charm list`.",
     "- update_plan — record your current plan before editing files. The daemon appends it to your ticket's activity log (.charm/tickets/<id>.md). Self-scoped to your ticket.",
