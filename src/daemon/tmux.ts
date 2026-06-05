@@ -53,7 +53,16 @@ export class Tmux {
     ]);
   }
 
-  /** Split current window and start a command. Returns the new pane id (e.g. "%17"). */
+  /** Split a window and start a command. Returns the new pane id (e.g. "%17").
+   *
+   * CRITICAL: `target` defaults to THIS session. A bare `tmux split-window` with
+   * no `-t` targets tmux's globally "current" pane — and the daemon runs as a
+   * detached process with no attached client, so "current" resolves to whichever
+   * session the user most recently touched. With two charms open in different
+   * directories, that means a spawn from session A's daemon lands its pane in
+   * session B's window (the file cwd is still correct via `-c`, but the pane
+   * escapes the wrong session and breaks relayout). Always scope the split to
+   * this session so it can never leak into a sibling charm. */
   splitPane(opts: { cmd: string; cwd: string; direction?: "h" | "v"; target?: string; size?: string }): string {
     const args = [
       "split-window",
@@ -61,8 +70,8 @@ export class Tmux {
       "-P",
       "-F", "#{pane_id}",
       "-c", opts.cwd,
+      "-t", opts.target ?? this.session,
     ];
-    if (opts.target) args.push("-t", opts.target);
     if (opts.size) args.push("-l", opts.size);
     args.push("sh", "-c", opts.cmd);
     const r = spawnSync("tmux", args, { encoding: "utf8" });

@@ -259,7 +259,10 @@ async function main() {
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
     const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
     const cmd = buildClaudeCommand(paths, agent.id, resolved);
-    const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
+    // Target this session's agent-grid window explicitly. Without a target the
+    // split lands in tmux's globally-current pane, so a spawn could leak into a
+    // different charm session the user happened to be focused on (see Tmux.splitPane).
+    const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
     registry.attach(agent.id, { pane_id: pane });
     refreshCoordination();
     agentPaneIds.push(pane);
