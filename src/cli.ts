@@ -370,7 +370,7 @@ program
 
 program
   .command("ctl <cmd>")
-  .description("internal: handle a vim-style command (`:q`, `:a`) from the tmux key binding")
+  .description("internal: handle a vim-style command (`:q`, `:a`, `:dev`/`:research`) from the tmux key binding")
   .option("--socket <path>", "daemon socket of the session the key was pressed in")
   .option("-s, --session <name>", "tmux session the key was pressed in")
   .action(async (cmd: string, opts) => {
@@ -397,6 +397,23 @@ program
     }
     if (c === "a" || c === "detach") {
       if (session) spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
+      return;
+    }
+    // Swap the fleet mode mid-session: research <-> development. Accepts the
+    // mode's short aliases so `:d`/`:dev`/`:development` and `:r`/`:res`/
+    // `:research` all work, mirroring the [r]/[d] startup picker. The daemon
+    // re-points future spawns at the new model AND live-swaps the orchestrator
+    // onto it via `/model` (its context is preserved). No socket -> no daemon to
+    // tell, so just surface that in the status line.
+    const DEV_ALIASES = new Set(["d", "dev", "development"]);
+    const RES_ALIASES = new Set(["r", "res", "research"]);
+    if (DEV_ALIASES.has(c) || RES_ALIASES.has(c)) {
+      const mode = DEV_ALIASES.has(c) ? "development" : "research";
+      if (socket) {
+        try { await rpcCall(socket, "set_mode", { mode }); return; }
+        catch { /* daemon gone — fall through to the status-line notice */ }
+      }
+      spawn("tmux", ["display-message", `charm: cannot switch to ${mode} mode (no daemon)`], { stdio: "ignore" });
       return;
     }
     // Unknown: surface in tmux status line briefly.

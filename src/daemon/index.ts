@@ -12,7 +12,7 @@ import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, resolveModel, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import {
   CreateTicketsInput,
@@ -639,6 +639,36 @@ async function main() {
         writeFileSync(paths.metaJson, JSON.stringify(meta, null, 2) + "\n");
         return { ok: true };
       }
+      case "set_mode": {
+        // Mid-session fleet-mode swap (research <-> development), driven by the
+        // `:dev`/`:research` tmux command. Two effects:
+        //  1. Re-point future spawns. defaultModelForRole() reads CHARM_MODE live
+        //     on every spawn, so mutating it here means every agent the
+        //     orchestrator spawns from now on runs on the new mode's model.
+        //     Already-running panes keep the model they were spawned with.
+        //  2. Live-swap the orchestrator itself. Its pane is an interactive
+        //     Claude Code session, so injecting `/model <id>` switches its model
+        //     WITHOUT losing context; a follow-up note tells it the mode changed
+        //     so it can adjust its approach.
+        const { mode } = params as { mode: string };
+        if (!isMode(mode)) throw new Error(`invalid mode: ${mode} (expected research|development)`);
+        process.env.CHARM_MODE = mode;
+        const model = resolveModel(MODE_MODEL[mode]);
+        if (tmuxAvailable && orchestratorPaneId && tmux.paneIndex(orchestratorPaneId) !== null) {
+          try {
+            tmux.sendText(orchestratorPaneId, `/model ${model}`);
+            tmux.sendText(
+              orchestratorPaneId,
+              `[charm] Mode switched to ${mode}: you are now running on ${model}, and every sub-agent you ` +
+              `spawn from here on will run on ${model} too. Adjust your approach to match ${mode} mode.`,
+            );
+          } catch (e) {
+            console.error("[charmd] set_mode orchestrator notify failed:", e);
+          }
+        }
+        try { spawnSync("tmux", ["display-message", `charm: mode -> ${mode} (${model})`]); } catch { /* ignore */ }
+        return { ok: true, mode, model };
+      }
       case "shutdown": {
         // Kill the tmux session first so panes (console, agents) tear down
         // before the daemon disappears. Schedule cleanup on next tick so the
@@ -676,23 +706,56 @@ async function main() {
     }
   });
 
-  const cleanup = () => {
+  const cleanup = (code = 0) => {
     try { server.stop(); } catch { /* ignore */ }
     // Reap any standalone graph viewers we spawned before we exit, so they don't
-    // linger as orphans (covers SIGINT/SIGTERM and the shutdown RPC alike).
+    // linger as orphans (covers SIGINT/SIGTERM, the shutdown RPC, and crashes).
     try { killGraphViewers(paths.graphPids); } catch { /* ignore */ }
     try { unlinkSync(paths.socket); } catch { /* ignore */ }
     try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
-    store.close();
-    process.exit(0);
+    try { store.close(); } catch { /* ignore */ }
+    process.exit(code);
   };
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
+  // Wrap so the signal name Node passes as arg0 isn't forwarded as the exit code
+  // (process.exit("SIGINT") would coerce to a bogus status). Both are intentional
+  // shutdowns -> exit 0.
+  process.on("SIGINT", () => cleanup(0));
+  process.on("SIGTERM", () => cleanup(0));
+
+  // Without these, a single throw in an RPC handler, a socket callback, or the
+  // ping timer takes down the whole daemon — and because the normal teardown
+  // never runs, it leaves its socket and pidfile behind, which then makes the
+  // next `start` refuse ("already running"). That silent death with no log line
+  // is exactly why post-sleep/long-run crashes were impossible to diagnose.
+  // Log the cause with a timestamp (so a death can be correlated against a
+  // sleep/wake in the system log) and tear down cleanly with a non-zero code.
+  process.on("uncaughtException", (err) => {
+    logCrash("uncaughtException", err);
+    cleanup(1);
+  });
+  // Unhandled rejections are NOT treated as fatal here. The post-sleep burst is
+  // full of fire-and-forget tmux/RPC calls that reject benignly after their pane
+  // vanished; killing the daemon on those would make the sleep problem worse, not
+  // better. Log loudly instead — if a real crash follows, the rejection line
+  // above it is the lead.
+  process.on("unhandledRejection", (reason) => {
+    logCrash("unhandledRejection", reason);
+  });
 
   console.log(`[charmd] listening on ${paths.socket} (session=${session}, root=${paths.root})`);
 }
 
+/** Timestamped crash logging. The daemon's stdout/stderr are redirected to its
+ *  per-session charmd.log (see cli.ts `start`), so a plain console.error lands in
+ *  that file; the ISO timestamp is what lets a death be lined up against a
+ *  sleep/wake event. */
+function logCrash(kind: string, err: unknown): void {
+  const ts = new Date().toISOString();
+  const detail = err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
+  console.error(`[charmd] ${ts} ${kind}: ${detail}`);
+}
+
 main().catch((e) => {
-  console.error("[charmd] fatal:", e);
+  logCrash("fatal (startup)", e);
   process.exit(1);
 });
