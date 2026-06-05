@@ -40,12 +40,17 @@ program
   .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
-  .option("--research", "research mode: run every agent on Sonnet", false)
-  .option("--development", "development mode: run every agent on Opus", false)
+  .option("--research", "research mode: default the fleet to Sonnet (overridable with -m/--model)", false)
+  .option("--development", "development mode: default the fleet to Opus (overridable with -m/--model)", false)
   .option("--dev", "alias for --development", false)
   .option(
     "-m, --model <model>",
-    "override the MAIN agent's model only (sub-agents follow the mode): sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
+    "model for the WHOLE fleet (main agent + every sub-agent), honored in any mode and overriding the mode default: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
+  )
+  .option(
+    "--max-agents <n>",
+    "max concurrent agent sessions in this charm, INCLUDING the orchestrator (so n=10 allows the orchestrator + 9 sub-agents)",
+    "10",
   )
   .option("--no-attach", "do not auto-attach to the tmux session")
   .option("-u, --uuid <id>", "internal: pin this session's UUID (default: a fresh random one)")
@@ -89,13 +94,40 @@ program
     // On the very first run in this dir, offer to wire up .gitignore.
     if (firstRun) await maybeConfigureGitignore(paths);
 
-    // 0. Resolve the charm mode (research -> Sonnet fleet, development -> Opus fleet).
-    // From flags if given; otherwise an in-terminal prompt (or research as the
-    // non-interactive fallback so piped/--no-attach usage doesn't hang).
+    // 0. Resolve the charm mode. Mode is the DEFAULT model selector and the
+    // orchestrator's behavioral framing — research defaults the fleet to Sonnet,
+    // development to Opus. From flags if given; otherwise an in-terminal prompt
+    // (or research as the non-interactive fallback so piped/--no-attach usage
+    // doesn't hang).
     const mode = await resolveMode(opts);
 
-    // 1. Spawn charmd in background. CHARM_MODE tells the daemon which model to
-    // give every sub-agent it spawns (workers, reviewers, testers).
+    // Resolve the fleet model. The mode sets the default; -m/--model overrides it
+    // for the WHOLE fleet (main agent + every sub-agent) and is honored in ANY
+    // mode — so you can run Opus in research mode or Sonnet in development mode.
+    // Resolved up front so a bad alias fails before we spawn anything, and so the
+    // daemon receives (via CHARM_MODEL) the exact id it will hand to sub-agents.
+    const { resolveModel, MODE_MODEL, buildClaudeCommand, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
+    let fleetModel: string;
+    try {
+      fleetModel = resolveModel(opts.model ?? MODE_MODEL[mode]);
+    } catch (e: any) {
+      console.error(e.message);
+      process.exit(2);
+    }
+
+    // Concurrent-agent cap for this charm (passed to the daemon as CHARM_MAX_AGENTS).
+    // Counts the orchestrator, so it must be >= 1 (1 = orchestrator only, no
+    // sub-agents). Validate here so a bad value fails at the CLI, not silently in
+    // the daemon.
+    const maxAgents = Number(opts.maxAgents);
+    if (!Number.isInteger(maxAgents) || maxAgents < 1) {
+      console.error(`[charm] --max-agents must be an integer >= 1 (got "${opts.maxAgents}").`);
+      process.exit(2);
+    }
+
+    // 1. Spawn charmd in background. CHARM_MODE sets the fleet's default model and
+    // behavioral framing; CHARM_MODEL (set only when -m/--model was given) pins the
+    // model for every role the daemon spawns, independent of mode.
     const logFile = join(paths.logsDir, "charmd.log");
     // Point the daemon's stdout/stderr at its log file rather than inheriting
     // this CLI's TTY. The daemon outlives `start`, so an inherited TTY would
@@ -106,7 +138,7 @@ program
     const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", session, "--uuid", sessionId], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
-      env: { ...process.env, CHARM_MODE: mode },
+      env: { ...process.env, CHARM_MODE: mode, CHARM_MAX_AGENTS: String(maxAgents), ...(opts.model ? { CHARM_MODEL: fleetModel } : {}) },
     });
     child.unref();
     console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
@@ -142,23 +174,15 @@ program
     tmux.setOption("@charm_socket", paths.socket);
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
-    const { buildClaudeCommand, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
-    let mainModel: string;
-    try {
-      // The mode picks the fleet's model; -m/--model is an advanced override of
-      // the main pane only (sub-agents still follow the mode via CHARM_MODE).
-      mainModel = resolveModel(opts.model ?? MODE_MODEL[mode]);
-    } catch (e: any) {
-      console.error(e.message);
-      process.exit(2);
-    }
-    console.log(`[charm] mode: ${mode} | main agent model: ${mainModel}${plain ? " (plain window, no goal)" : ""}`);
+    // fleetModel + buildClaudeCommand + MAIN_AGENT_ID were resolved/imported above.
+    const modelNote = opts.model ? "-m override, all agents" : `${mode} default`;
+    console.log(`[charm] mode: ${mode} | fleet model: ${fleetModel} (${modelNote}) | max agents: ${maxAgents}${plain ? " | plain window, no goal" : ""}`);
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
       prompt: plain ? "" : `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
       interactive: true,
-      model: mainModel,
+      model: fleetModel,
       plain,
     });
     const consoleArgv = resolveChild("console");

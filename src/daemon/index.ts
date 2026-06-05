@@ -185,6 +185,26 @@ async function main() {
         return { ticket_id: a.ticket_id!, touches: t?.frontmatter.touches ?? [] };
       });
 
+  // Hard ceiling on concurrent agent sessions (tmux panes / live Claude processes)
+  // in this charm, INCLUDING the orchestrator. Set at `charm start` via
+  // --max-agents (CHARM_MAX_AGENTS); defaults to 10. The CLI validates it, but a
+  // bare `charmd` may have it unset/garbage, so re-floor here.
+  const maxAgents = (() => {
+    const raw = Number(process.env.CHARM_MAX_AGENTS);
+    return Number.isInteger(raw) && raw >= 1 ? raw : 10;
+  })();
+
+  // Agents occupying a live slot: the orchestrator (always present once its pane
+  // is registered — it isn't in the registry) plus every sub-agent that's
+  // spawning/running/blocked. done/failed agents are reaped and free their slot.
+  const liveAgentCount = (): number =>
+    (orchestratorPaneId ? 1 : 0) +
+    registry.list().filter((a) => a.state === "spawning" || a.state === "running" || a.state === "blocked").length;
+
+  // Slots left before the cap. Batch spawners clamp to this so they never spawn
+  // past the ceiling (and report the rest as deferred for a later retry).
+  const remainingAgentSlots = (): number => Math.max(0, maxAgents - liveAgentCount());
+
   // Recompute COORDINATION.md from current state: one row per live ticket (every
   // status except `complete`), driven off the sqlite index — NOT the agent
   // registry. This is the board's whole point: an open-but-unassigned ticket and
@@ -256,6 +276,16 @@ async function main() {
   }
 
   function spawnAgent(spec: SpawnSpec): string {
+    // Hard cap guard — the single chokepoint every spawn path flows through, so
+    // no caller can exceed the ceiling even if a batch clamp is wrong. Batch
+    // spawners pre-clamp to remainingAgentSlots() and never reach this throw;
+    // it's the safety net for the single-spawn paths (e.g. request_review).
+    if (liveAgentCount() >= maxAgents) {
+      throw new Error(
+        `agent cap reached: ${liveAgentCount()}/${maxAgents} live (incl. orchestrator). ` +
+          `Wait for an agent to finish, or restart with a higher --max-agents.`,
+      );
+    }
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
     const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
     const cmd = buildClaudeCommand(paths, agent.id, resolved);
@@ -372,8 +402,13 @@ async function main() {
       }
       case "spawn_review_agents": {
         const input = SpawnReviewersInput.parse(params);
+        // Clamp to the concurrent-agent cap, same as spawn_workers: spawn up to
+        // the free slots and defer the rest for a later retry.
+        const slots = remainingAgentSlots();
+        const toSpawn = input.ticket_ids.slice(0, slots);
+        const deferred = input.ticket_ids.slice(slots);
         const ids: string[] = [];
-        for (const tid of input.ticket_ids) {
+        for (const tid of toSpawn) {
           ids.push(spawnAgent({
             role: "reviewer",
             ticket_id: tid,
@@ -381,7 +416,13 @@ async function main() {
             interactive: true,
           }));
         }
-        return { agent_ids: ids };
+        if (deferred.length > 0) {
+          console.error(
+            `[charmd] spawn_review_agents: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
+              `deferred ${deferred.length} ticket(s).`,
+          );
+        }
+        return { agent_ids: ids, ...(deferred.length > 0 ? { deferred, max_agents: maxAgents } : {}) };
       }
       case "spawn_workers": {
         const input = SpawnWorkersInput.parse(params);
@@ -394,8 +435,14 @@ async function main() {
           inFlight: inFlight(),
           candidates: input.ticket_ids,
         });
+        // Clamp to the concurrent-agent cap: spawn only as many as we have free
+        // slots for, and let the rest fall into `deferred` so the orchestrator
+        // retries them once running agents finish and free their slots.
+        const slots = remainingAgentSlots();
+        const toSpawn = runnable.slice(0, slots);
+        const cappedOut = runnable.length - toSpawn.length;
         const ids: string[] = [];
-        for (const tid of runnable) {
+        for (const tid of toSpawn) {
           ids.push(spawnAgent({
             role: "worker",
             ticket_id: tid,
@@ -404,8 +451,16 @@ async function main() {
           }));
           store.update(tid, { status: "running", stage: "in_progress" });
         }
-        const deferred = input.ticket_ids.filter((id) => !runnable.includes(id));
-        return { agent_ids: ids, deferred };
+        // Deferred = not-yet-runnable (deps/touches) PLUS the ones clamped by the
+        // cap. The orchestrator treats both the same: retry on the next tick.
+        const deferred = input.ticket_ids.filter((id) => !toSpawn.includes(id));
+        if (cappedOut > 0) {
+          console.error(
+            `[charmd] spawn_workers: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
+              `deferred ${cappedOut} runnable ticket(s).`,
+          );
+        }
+        return { agent_ids: ids, deferred, ...(cappedOut > 0 ? { capped: cappedOut, max_agents: maxAgents } : {}) };
       }
       case "await_approval": {
         const input = AwaitApprovalInput.parse(params);
@@ -653,6 +708,11 @@ async function main() {
         const { mode } = params as { mode: string };
         if (!isMode(mode)) throw new Error(`invalid mode: ${mode} (expected research|development)`);
         process.env.CHARM_MODE = mode;
+        // Clear any start-time fleet override (-m/--model / CHARM_MODEL). Switching
+        // mode is an explicit request for that mode's model; leaving the override
+        // set would shadow it in defaultModelForRole and the swap would silently
+        // no-op for sub-agents.
+        delete process.env.CHARM_MODEL;
         const model = resolveModel(MODE_MODEL[mode]);
         if (tmuxAvailable && orchestratorPaneId && tmux.paneIndex(orchestratorPaneId) !== null) {
           try {
