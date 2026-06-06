@@ -1,191 +1,220 @@
+# charm — a multi-agent orchestration harness for Claude Code
 
-# Plan — Claude Code Multi-Agent Charm ("Calm Meadow")
+Charm turns one goal into a visible fleet of `claude` processes working a shared git
+tree in parallel, with a human approval gate between each stage of the work.
 
-## Context
+## Why this exists
 
-We're building a terminal-based orchestration charm that wraps standalone `claude` CLI processes into a visible, staged, multi-agent workflow. The motivating problem: Claude Code's built-in subagent tool hides subagents inside the parent process, so the user can't watch them work or intervene. We want the opposite — every agent runs as a real `claude` process in its own terminal pane, the human approves transitions between stages, and agents coordinate through a shared planning file rather than git worktrees.
+Claude Code already ships a subagent tool, but it hides every subagent *inside the
+parent process*. You can't watch them work, you can't drop into one mid-task, and you
+can't tell what they're doing to each other. I wanted the opposite: a way to run **more
+Claude in parallel** where every agent is a real, first-class `claude` process I can see
+streaming in its own terminal pane, intervene in by hand, and reason about as an
+independent worker.
 
-All agents work on **one shared git tree** (no worktrees). Parallelism safety comes from two layers:
-1. **Hard layer** — each ticket declares its file scope (`touches:`), and the daemon refuses to run two workers whose scopes overlap.
-2. **Soft layer** — every worker reads/writes a shared `.charm/COORDINATION.md` so it knows what other in-flight agents are doing and why.
+Charm is that harness. The main agent decomposes a goal into tickets, then fans the
+tickets out to worker agents — each a separate `claude` running in its own tmux pane on
+the same repository. The human stays in the loop at staged approval gates, and the agents
+stay out of each other's way through two coordination layers (hard file-scope locking +
+a soft shared coordination file) instead of git worktrees.
 
-Rust was the original pick, but rustup-init downloads are blocked on this machine (both bare `rustup` and `asdf-rust` failed — asdf-rust uses rustup-init internally and silently produced empty install dirs). We pivoted to **Bun + TypeScript**: `bun build --compile` produces a single-binary MCP shim (spawned by every `claude` process), the MCP TypeScript SDK is the canonical reference implementation, and `bun:sqlite` is built in. Bun is installed via the `asdf-bun` plugin, which pulls from GitHub Releases rather than rust-lang.org and is unblocked.
+## How it works
 
-## Five-stage workflow
+### The five-stage pipeline
 
-| Stage | Who | Mode | Gate |
+Every charm session runs the same fixed, gated pipeline. The main ("orchestrator") agent
+drives it in a single session; fan-out only happens after discovery and planning are
+approved.
+
+| Stage | Who runs it | Mode | Gate before advancing |
 |---|---|---|---|
-| 0 — Discovery | main agent + human | interactive | human approves `.charm/PROJECT.md` |
-| 1 — Ticket generation | main agent | interactive | none (auto → stage 2) |
-| 2 — Ticket review/enrichment | N review agents | headless | human approves each ticket |
-| 3 — Development | M worker agents | interactive, coordinated | none (auto → stage 4 per ticket) |
-| 4 — Test & review | test agents per ticket | headless | human approves diff before merge |
+| 0 — Discovery | main agent + human, interactively | interactive | human approves `.charm/PROJECT.md` |
+| 1 — Planning / ticket generation | main agent | interactive | none → auto into Stage 2 |
+| 2 — Ticket review & enrichment | N reviewer agents | headless | human approves the enriched tickets |
+| 3 — Development | M worker agents | interactive, coordinated | none → each ticket advances on its own |
+| 4 — Test & review | tester agents, one per ticket | headless | human approves the diff before merge |
 
-Stage gates are blocking — the daemon halts the pipeline until the human types `y` in the approval pane.
+Gates are blocking: the daemon halts the pipeline until the human approves in the Console
+pane (or via `charm approve <gate_id>`). The hard rule baked into the orchestrator prompt
+is that no parallel work is fanned out before discovery and planning are approved.
 
-## Architecture
+### Parallelism on one shared tree
 
-```
+All agents work on **one git tree** — no worktrees (a deliberate rejection). Safety comes
+from two layers:
+
+1. **Hard layer** — each ticket declares its file scope (`touches:` in frontmatter), and
+   the daemon's dependency + scope solver refuses to run two workers whose scopes overlap.
+   Overlapping tickets are serialized automatically.
+2. **Soft layer** — every worker reads and writes a shared `.charm/COORDINATION.md` so it
+   knows what other in-flight agents are doing and why, before it touches anything.
+
+A concurrent-agent cap (`--max-agents`, default 10, counting the orchestrator) bounds how
+many `claude` processes run at once.
+
+### Architecture
+
+```text
 ┌──────────────────────────────────────────────────────┐
-│  charmd  (Bun + TypeScript)                        │
-│    ticket store (.md + bun:sqlite index)             │
-│    agent registry, dep + file-scope solver           │
-│    .charm/COORDINATION.md writer (file-locked)       │
-│    tmux pane manager                                 │
-│    Unix-socket RPC (Bun.listen)                      │
-└──────────────────┬───────────────────────────────────┘
-                   │
+│  charmd  (Bun + TypeScript daemon)                     │
+│    ticket store (.md files + bun:sqlite index)         │
+│    agent registry + dep/file-scope solver              │
+│    .charm/COORDINATION.md writer                       │
+│    tmux pane/layout manager                            │
+│    Unix-socket JSON-RPC                                 │
+└──────────────────┬─────────────────────────────────────┘
+                   │  (one shim per claude process, over the socket)
        ┌───────────┴───────────┐
-       │  charm-mcp (Bun TS) │  stdio, one instance per claude
-       │  thin RPC shim        │  process; exposes charm tools
+       │  charm-mcp (Bun, TS)  │  stdio MCP server; exposes charm tools
        └───────────┬───────────┘
                    │
   ┌────────┬───────┴────────┬─────────────┐
-  │        │                │             │
-[main]  [reviewer-1]    [worker-A]    [worker-B]      ← real `claude`
-                                                        processes,
-                                                        each in its own
-                                                        tmux pane
+ [main]  [reviewer-1]   [worker-A]    [worker-B]   ← real `claude` processes,
+                                                     each in its own tmux pane
 
-  ┌──────────────────────────────────┬──────────────────────┐
-  │  main agent (claude)             │                      │
-  │                                  │   Console pane       │
-  ├──────────────┬───────────────────┤   [Artifacts]        │
-  │              │                   │   [Approvals]        │
-  │  worker A    │  worker B         │                      │
-  │              │                   │   .charm/PROJECT.md  │
-  │              │                   │   .charm/COORD..md   │
-  │              │                   │   .charm/tickets/... │
-  └──────────────┴───────────────────┴──────────────────────┘
-  Console pane is a Ratatui binary spawned by the daemon into a reserved
-  tmux pane; auto-refreshes file contents via `notify`; stage-aware default
-  selection (Stage 0 → .charm/PROJECT.md, Stage 2 → ticket-under-review,
-  Stage 3 → .charm/COORDINATION.md).
+  tmux window:  console pane (left)  +  agent grid (right, VS-Code-style)
 ```
+
+- **`charm` (CLI)** — `init` / `start` / `stop` / `attach` / `status` / `approve` /
+  `restart` / `reset-kb`. `start` spawns the daemon and console, opens the tmux layout,
+  and launches the main agent.
+- **`charmd` (daemon)** — the long-running brain. Owns the ticket store, the agent
+  registry, the dependency/scope solver, the coordination file, and the tmux layout. Talks
+  to agents over a per-session Unix socket with a JSON line protocol.
+- **`charm-mcp` (MCP shim)** — a thin stdio MCP server spawned by *every* `claude` process
+  via `.charm/charm.json`. It exposes the charm tools and forwards each call to the daemon
+  over the socket.
+- **`charm-console` (TUI)** — an Ink (React-for-the-terminal) app pinned to the left pane.
+  Live file viewer for `.charm/PROJECT.md`, `COORDINATION.md`, and tickets (fs-watched
+  auto-refresh), plus the approval gates.
+- **`charm-graph`** — a standalone animated force-directed view of the ticket/dependency
+  graph, opened in its own terminal window via the `open_graph` tool.
+
+Each session is keyed by a fresh UUID. Its socket, pidfile, daemon log, and metadata live
+under `.charm/run/<uuid>/`, and its tmux session name carries the UUID — so multiple charm
+sessions (same dir or different) never collide, and `:q` tears down only the session it
+was pressed in.
+
+### MCP tools exposed to agents
+
+| Tool | Typical caller | Effect |
+|---|---|---|
+| `create_tickets` | main | write `.charm/tickets/*.md` + index (capped at 3/call) |
+| `spawn_review_agents` | main | spawn one headless reviewer per ticket id |
+| `spawn_workers` | main | enforce dep + scope, spawn interactive workers |
+| `request_review` | main/worker | spawn a tester on a finished ticket |
+| `await_approval` | main | block on a human gate in the Console |
+| `update_plan` | worker | upsert this agent's entry in `COORDINATION.md` |
+| `read_coordination` | any | fetch current `COORDINATION.md` |
+| `list_tickets` / `list_agents` | any | inspect board / fleet state |
+| `report_status` | any | mark self spawning/running/blocked/done/failed |
+| `set_ticket_status` | any | move a ticket's status/stage |
+| `kill_agent` / `continue_agent` / `cancel_ticket` | main | manage the fleet |
+| `set_session_description` | main | label the session for the picker |
+| `open_graph` | any | open the standalone graph viewer window |
+
+### Durable knowledge base
+
+`.charm/kb/` is a git-tracked, cross-session knowledge base (architecture, decisions,
+conventions, gotchas, domain glossary) that survives between runs. It's the one part of
+`.charm/` that the optional `.gitignore` setup keeps tracked — everything else under
+`.charm/` is ephemeral run state.
 
 ## Tech stack
 
-| Layer | Pick | Notes |
+| Layer | Choice | Notes |
 |---|---|---|
-| Runtime / language | **Bun + TypeScript** | One repo, multiple entrypoints compiled via `bun build --compile` |
+| Runtime / language | **Bun + TypeScript** | one repo, several entrypoints compiled via `bun build --compile` |
 | CLI parsing | `commander` | |
-| MCP server | `@modelcontextprotocol/sdk` (official TS SDK) | stdio transport; canonical reference implementation |
-| Pane substrate | **tmux shell-out** for MVP | Graduate to a richer in-app viewer in v2 if needed |
-| Daemon RPC | Unix socket + JSON line protocol (`Bun.listen` / `Bun.connect`) | `zod` for envelope validation |
-| Process spawn | `Bun.spawn` | |
-| Ticket index | **`bun:sqlite`** (built-in) | Source of truth is `.md` files; SQLite is just an index |
+| MCP server | `@modelcontextprotocol/sdk` (official TS SDK) | stdio transport |
+| Pane substrate | **tmux** (shell-out) | required at runtime |
+| Daemon RPC | Unix socket + JSON line protocol | per-session socket |
+| Process spawn | Bun / `node:child_process` | spawns `claude` + sibling binaries |
+| Ticket index | **`bun:sqlite`** (built-in) | `.md` files are source of truth; SQLite is just an index |
 | Dep + scope solver | `graphology` + `graphology-dag` | |
 | Frontmatter | `gray-matter` | |
-| File watching | `chokidar` (or `Bun.watch`) | |
-| Console pane | **Ink** (React-based TUI) + `chokidar` | Tabbed TUI in one reserved tmux pane: **Artifacts** (live file viewer for `.charm/PROJECT.md`, `.charm/COORDINATION.md`, `.charm/tickets/*.md` with fs-watch auto-refresh and stage-aware default selection) and **Approvals** (pending human gates). Same TUI stack Claude Code itself uses. |
-| Schema validation | `zod` | RPC envelopes, MCP tool inputs, frontmatter |
+| File watching | `chokidar` | console auto-refresh |
+| Console / graph TUI | **Ink** + React, `marked` | same TUI stack Claude Code itself uses |
+| Schema validation | `zod` | RPC envelopes, MCP tool I/O, frontmatter |
 
-Distribution: `bun build src/cli.ts --compile --outfile charm` produces a standalone binary. The MCP shim is a separate compiled entrypoint (`bun build src/mcp/server.ts --compile --outfile charm-mcp`) so each `claude` process spawns it cleanly with no runtime dependency.
+Bun was the pick over the original Rust plan because `bun build --compile` produces
+single-file native binaries with the runtime embedded (no Node/Bun needed at runtime), the
+MCP TypeScript SDK is the canonical reference implementation, and `bun:sqlite` is built in.
 
-## Artifacts the charm owns
+Each entrypoint compiles to its own binary — `charm` (CLI), `charmd`, `charm-mcp`,
+`charm-console`, `charm-graph` — and they must be co-located on PATH, since `charm start`
+execs its siblings and every `claude` resolves `charm-mcp` by name.
 
-- `.charm/PROJECT.md` — human-approved project brief (Stage 0 output)
-- `.charm/tickets/T-NNN.md` — one ticket per file, YAML frontmatter (`title, status, stage, depends_on, touches`)
-- `.charm/COORDINATION.md` — daemon-maintained registry of in-flight agents and their declared plans
-- `.charm/db.sqlite` — fast index
-- `.charm/sock` — daemon Unix socket
-- `.charm/prompts/*.md` — system prompts for each role (first-class deliverables)
-- `.charm/charm.json` — MCP server config consumed by every `claude` process
+## Requirements
 
-## Spawning a `claude` process — concrete invocations
+- **Claude Code CLI** (`claude`) on PATH — charm launches `claude` processes as its agents.
+  `npm install -g @anthropic-ai/claude-code`
+- **tmux** on PATH at runtime.
+- **Bun** ≥ 1.1 to build or run from source (not needed once binaries are installed).
 
-```bash
-# Interactive worker (visible streaming, human can intervene)
-claude \
-  --append-system-prompt "$(cat .charm/prompts/worker.md)" \
-  --mcp-config .charm/charm.json \
-  "Implement ticket T-007. First read .charm/tickets/T-007.md and .charm/COORDINATION.md, \
-   then call update_plan() with your plan, then implement."
+## Quick start
 
-# Headless review pass (one-shot, exits when done)
-claude -p \
-  --append-system-prompt "$(cat .charm/prompts/reviewer.md)" \
-  --mcp-config .charm/charm.json \
-  "Review and enrich .charm/tickets/T-007.md in place."
+From source, no install:
+
+```sh
+./frieren.sh setup                      # checks deps, runs bun install
+./charm.sh start "build a markdown to-do CLI"   # prompts research vs development mode
 ```
 
-The daemon wraps each with `tmux split-window -h -P -F '#{pane_id}'` to capture the pane id, then maintains a `pane_id → agent_id` map for kill/focus/status.
+`start` opens a tmux session: the console on the left, the main agent on the right. Walk
+through discovery, approve the project brief, let it plan and review tickets, approve them,
+and watch workers fan out. Inside the session, the `:` key opens a command prompt — `:q`
+quits the charm, `:a` detaches, `:dev` / `:research` swap the fleet's model mid-session.
 
-## MCP tools exposed to every `claude` process
+Mode and model:
 
-| Tool | Caller | Effect |
-|---|---|---|
-| `create_tickets(list)` | main | write `.charm/tickets/*.md` + index |
-| `spawn_review_agents(ids)` | main | daemon spawns one headless reviewer per id |
-| `spawn_workers(ids)` | main | daemon enforces dep+scope, spawns interactive workers |
-| `await_approval(stage, payload)` | main | block on human approval in TUI pane |
-| `update_plan(plan_text)` | worker | append/update entry in `.charm/COORDINATION.md` |
-| `read_coordination()` | any | fetch current `.charm/COORDINATION.md` |
-| `report_status(state)` | any | mark agent done/blocked/failed |
-| `request_review(ticket_id)` | worker | spawn tester on finished ticket |
+```sh
+./charm.sh start --research "..."   # fleet defaults to Sonnet
+./charm.sh start --development "..."  # fleet defaults to Opus
+./charm.sh start -m opus-4.8 "..."  # pin the whole fleet to a model in any mode
+```
 
-## Prompts — call out as a real deliverable
+Install globally (build + place binaries and templates on PATH at `~/.local/bin`):
 
-Quality of prompts will make or break the user-perceived behavior. Write each as a small `.md` file under `.charm/prompts/`:
+```sh
+./frieren.sh install
+charm start "your goal"
+```
 
-- `discovery.md` — main, Stage 0: drive the structured Q&A that produces `.charm/PROJECT.md`; ask one focused question at a time; produce explicit non-goals.
-- `planner.md` — main, Stage 1: turn `.charm/PROJECT.md` into tickets; **must** populate `touches` and `depends_on`; small tickets preferred.
-- `reviewer.md` — Stage 2: enrich a single ticket with context, edge cases, acceptance criteria, refined file scope; never expand scope beyond the ticket.
-- `worker.md` — Stage 3: read `.charm/COORDINATION.md` first; call `update_plan` before any edit; stop and report if scope expands.
-- `tester.md` — Stage 4: validate acceptance criteria; produce a checklist result; no code edits.
+Panic button if a session wedges — kills every charm process machine-wide while sparing
+your other (non-charm) `claude` sessions:
 
-## MVP build order
+```sh
+./frieren.sh kill
+```
 
-1. `bun init`, `tsconfig.json`, repo layout. Single `package.json`, multiple bin entrypoints.
-2. `charm` CLI skeleton (`commander`) — `init`, `start`, `attach`, `status`.
-3. `charmd` daemon (long-running Bun process) — Unix-socket RPC, in-memory agent registry.
-4. tmux integration — spawn pane, capture pane id, kill pane.
-5. `charm-mcp` stdio MCP server (`@modelcontextprotocol/sdk`), wired to daemon RPC.
-6. Five prompt files under `.charm/prompts/`.
-7. Ticket store — `gray-matter` parse/write + `bun:sqlite` index.
-8. Dep + file-scope solver using `graphology` + `graphology-dag`.
-9. `.charm/COORDINATION.md` writer with file-locked atomic rewrites + JSON-shaped section per agent.
-10. Console pane (Ink, one reserved tmux pane): **Artifacts** tab (file tree + live markdown viewer, fs-watch via `chokidar`, stage-aware default file) and **Approvals** tab (pending gates, accept/reject inline).
-11. End-to-end smoke test (see Verification).
-12. `bun build --compile` recipes for `charm` and `charm-mcp`.
+## Project layout
 
-### Out of scope for MVP
-- Custom in-app window manager replacing tmux (v2)
-- Cost / token tracking
-- Resume across daemon restarts
-- Cross-machine orchestration
-- Git worktrees (explicitly rejected — shared tree by design)
+```text
+src/
+  cli.ts              charm CLI (init/start/stop/attach/status/approve/...)
+  paths.ts            per-session path resolution
+  schema.ts           zod schemas (tickets, RPC, session meta)
+  graph-viewers.ts    graph-viewer process management
+  daemon/             charmd: index, rpc, registry, solver, coord, tmux, layout,
+                      spawn, approvals
+  mcp/server.ts       charm-mcp stdio MCP server
+  store/tickets.ts    gray-matter + bun:sqlite ticket store
+  console/            Ink TUI: app, markdown, graph, mouse
+  cli/                interactive mode + confirm prompts
+templates/            prompts, kb skeleton, skills, CLAUDE.md, settings — copied
+                      into a project's .charm/ on init
+frieren.sh            project lifecycle (setup/build/test/install/kill)
+charm.sh              run-from-source wrapper (forwards to src/cli.ts)
+docs/                 design notes (parallelization, sequencing, KB design)
+```
 
-## Critical files to create
+`.charm/` (created in a target project, not this repo) holds `PROJECT.md`, `tickets/`,
+`COORDINATION.md`, the sqlite index, prompts, the durable `kb/`, and per-session run state
+under `run/<uuid>/`.
 
-- `package.json`, `tsconfig.json`, `bun.lockb` at repo root
-- `src/cli.ts` — `charm` CLI entrypoint (`init`, `start`, `attach`, `status`)
-- `src/daemon/{index.ts, registry.ts, tmux.ts, solver.ts, coord.ts, rpc.ts}`
-- `src/mcp/{server.ts, tools.ts}` — compiled to `charm-mcp` binary
-- `src/console/{app.tsx, artifacts.tsx, approvals.tsx}` — Ink-based Console pane
-- `src/schema.ts` — `zod` schemas for ticket frontmatter, RPC envelopes, MCP tool I/O
-- `.charm/prompts/{discovery,planner,reviewer,worker,tester}.md` (templates)
-- `.charm/charm.json` (MCP config template consumed by every `claude` process)
+## Build
 
-No existing code to reuse — this is greenfield (repo only has the initial commit).
-
-## Verification
-
-End-to-end smoke test:
-
-1. `charm init` in an empty directory → confirms `.charm/tickets/`, `.charm/charm.json`, `.charm/` created.
-2. `charm start "build a markdown to-do CLI in Rust"` → tmux session opens, main agent in pane 0, Console pane reserved on the right showing the Artifacts tab (initially empty).
-3. Discovery chat works → `.charm/PROJECT.md` written and **appears live in the Console pane's Artifacts tab** as the main agent writes it; approval gate fires in the Approvals tab; human approves.
-4. Main generates tickets → `ls .charm/tickets/` shows N files with valid `touches` and `depends_on`.
-5. Review agents spawn → headless panes appear and exit; each ticket's body has been enriched.
-6. Approval pane prompts per ticket → user approves T-001…T-00N.
-7. Workers spawn → interactive panes appear; `.charm/COORDINATION.md` shows live entries **in the Artifacts tab as workers call `update_plan`**.
-8. Force a collision case: two tickets with overlapping `touches` → confirm daemon serializes them (visible in logs and tmux: second pane appears only after first finishes).
-9. Workers finish → test agents spawn → diffs surface for human merge approval.
-10. Inspect `git log` (single tree, sequential commits from workers) and `.charm/db.sqlite` for audit trail.
-
-Targeted unit tests (small, valuable):
-- Scope solver: given a ticket set + in-flight workers, returns the correct next-runnable batch.
-- Frontmatter round-trip: parse → mutate → write preserves field order and comments.
-- `.charm/COORDINATION.md` concurrent writes under `flock` produce no interleaved garbage.
-- MCP tool dispatch table covers every documented tool.
+See [BUILD.md](BUILD.md) for the full build matrix: host-arch builds, cross-compiling both
+Mac architectures, `lipo` universal binaries, packaging, and macOS Gatekeeper handling. The
+short version is `./frieren.sh build` (binaries → `dist/`) or `./frieren.sh install`.
