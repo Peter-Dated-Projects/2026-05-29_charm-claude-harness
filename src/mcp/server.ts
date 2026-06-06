@@ -2,7 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { rpcCall } from "../daemon/rpc.ts";
+import { rpcCall, type RpcCallOpts } from "../daemon/rpc.ts";
 
 /**
  * charm-mcp — stdio MCP shim spawned by every `claude` process.
@@ -20,8 +20,8 @@ if (!SOCKET) {
   process.exit(1);
 }
 
-async function call<T>(method: string, params?: unknown): Promise<T> {
-  return rpcCall<T>(SOCKET!, method, params);
+async function call<T>(method: string, params?: unknown, opts?: RpcCallOpts): Promise<T> {
+  return rpcCall<T>(SOCKET!, method, params, opts);
 }
 
 function ok(payload: unknown) {
@@ -77,7 +77,9 @@ server.registerTool(
       payload_path: z.string().nullable().default(null),
     },
   },
-  async (args) => ok(await call("await_approval", args)),
+  // No timeout: this blocks until a human resolves the gate in the Console pane,
+  // which can legitimately take minutes — a default timeout would abort the wait.
+  async (args) => ok(await call("await_approval", args, { timeoutMs: 0 })),
 );
 
 server.registerTool(

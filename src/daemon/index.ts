@@ -124,6 +124,7 @@ function graphLaunchSpec(pidFile: string, kbDir: string): { cmd: string; args: s
 }
 
 async function main() {
+  installTimestampedConsole();
   const program = new Command();
   program
     .name("charmd")
@@ -168,6 +169,10 @@ async function main() {
   store.reindexAll();
   const registry = new AgentRegistry();
   const coord = new CoordinationWriter(paths);
+  // A lock file present now is a crash leftover (the pidfile guard above already
+  // proved no other daemon is live) — clear it so withLock doesn't freeze the
+  // loop for 5s on the first write.
+  coord.clearStaleLock();
   const tmux = new Tmux(session);
   const approvals = new ApprovalQueue();
 
@@ -241,15 +246,31 @@ async function main() {
   let orchestratorPaneId: string | null = null;
   const WINDOW = "charm";
 
-  function relayout() {
+  // The tmux pane-grid operations (splitPane/killPane/relayout) are now async and
+  // mutate shared state (`agentPaneIds`) and the window layout. Serialize them
+  // through this promise-chain mutex so two concurrent handlers can't interleave
+  // their tmux calls and corrupt the grid. Lightweight RPCs (create_tickets,
+  // report_status, list_tickets) do NOT take this lock, so they keep being
+  // serviced in the gaps between a spawn's awaited tmux subprocesses — which is
+  // the whole point of going async. Errors are swallowed off the chain so one
+  // failed layout op can't poison every subsequent one.
+  let layoutChain: Promise<unknown> = Promise.resolve();
+  function withLayoutLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = layoutChain.then(fn, fn);
+    layoutChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  // The actual relayout work, assuming the caller already holds the layout lock.
+  async function relayoutLocked() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
     try {
-      const win = tmux.windowSize(WINDOW);
-      const cIdx = tmux.paneIndex(consolePaneId);
+      const win = await tmux.windowSize(WINDOW);
+      const cIdx = await tmux.paneIndex(consolePaneId);
       if (cIdx === null) return;
       const agentIdxs: number[] = [];
       for (const pid of agentPaneIds) {
-        const idx = tmux.paneIndex(pid);
+        const idx = await tmux.paneIndex(pid);
         if (idx !== null) agentIdxs.push(idx);
       }
       if (agentIdxs.length === 0) return;
@@ -257,7 +278,7 @@ async function main() {
       // may have dragged the divider. Fall back to a 35% share only on the
       // first layout, when the pane hasn't been sized yet. Floored at 40 cols
       // so the Ink TUI stays readable, and capped so the agent grid keeps room.
-      const cur = tmux.paneWidth(consolePaneId);
+      const cur = await tmux.paneWidth(consolePaneId);
       const consoleWidth = Math.min(
         Math.max(20, win.w - 20),
         Math.max(40, cur ?? Math.floor(win.w * 0.35)),
@@ -269,48 +290,58 @@ async function main() {
         agentPaneIndexes: agentIdxs,
         consoleWidth,
       });
-      tmux.applyLayout(WINDOW, layout);
+      await tmux.applyLayout(WINDOW, layout);
     } catch (e) {
       console.error("[charmd] relayout failed:", e);
     }
   }
 
-  function spawnAgent(spec: SpawnSpec): string {
-    // Hard cap guard — the single chokepoint every spawn path flows through, so
-    // no caller can exceed the ceiling even if a batch clamp is wrong. Batch
-    // spawners pre-clamp to remainingAgentSlots() and never reach this throw;
-    // it's the safety net for the single-spawn paths (e.g. request_review).
-    if (liveAgentCount() >= maxAgents) {
-      throw new Error(
-        `agent cap reached: ${liveAgentCount()}/${maxAgents} live (incl. orchestrator). ` +
-          `Wait for an agent to finish, or restart with a higher --max-agents.`,
-      );
-    }
-    const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
-    const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
-    const cmd = buildClaudeCommand(paths, agent.id, resolved);
-    const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
-    registry.attach(agent.id, { pane_id: pane });
-    refreshCoordination();
-    agentPaneIds.push(pane);
-    relayout();
-    return agent.id;
+  /** Standalone relayout (takes the lock). Use from handlers that aren't already
+   *  inside a withLayoutLock section (e.g. register_panes). */
+  const relayout = () => withLayoutLock(relayoutLocked);
+
+  function spawnAgent(spec: SpawnSpec): Promise<string> {
+    return withLayoutLock(async () => {
+      // Hard cap guard — the single chokepoint every spawn path flows through, so
+      // no caller can exceed the ceiling even if a batch clamp is wrong. Batch
+      // spawners pre-clamp to remainingAgentSlots() and never reach this throw;
+      // it's the safety net for the single-spawn paths (e.g. request_review).
+      // Inside the lock, so concurrent spawns can't both pass the check and
+      // overshoot the ceiling.
+      if (liveAgentCount() >= maxAgents) {
+        throw new Error(
+          `agent cap reached: ${liveAgentCount()}/${maxAgents} live (incl. orchestrator). ` +
+            `Wait for an agent to finish, or restart with a higher --max-agents.`,
+        );
+      }
+      const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
+      const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
+      const cmd = buildClaudeCommand(paths, agent.id, resolved);
+      const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
+      registry.attach(agent.id, { pane_id: pane });
+      refreshCoordination();
+      agentPaneIds.push(pane);
+      await relayoutLocked();
+      return agent.id;
+    });
   }
 
   /** Kill an agent's pane and drop it from the registry, coordination doc, and
    *  pane grid, then relayout. Shared by dismiss_agent (done/failed cleanup) and
    *  kill_agent (forced termination). No-op if the agent is already gone. */
-  function tearDownAgent(agent_id: string) {
-    const a = registry.get(agent_id);
-    if (!a) return;
-    if (a.pane_id) {
-      try { tmux.killPane(a.pane_id); } catch { /* ignore */ }
-      const i = agentPaneIds.indexOf(a.pane_id);
-      if (i >= 0) agentPaneIds.splice(i, 1);
-    }
-    registry.remove(agent_id);
-    refreshCoordination();
-    relayout();
+  function tearDownAgent(agent_id: string): Promise<void> {
+    return withLayoutLock(async () => {
+      const a = registry.get(agent_id);
+      if (!a) return;
+      if (a.pane_id) {
+        try { await tmux.killPane(a.pane_id); } catch { /* ignore */ }
+        const i = agentPaneIds.indexOf(a.pane_id);
+        if (i >= 0) agentPaneIds.splice(i, 1);
+      }
+      registry.remove(agent_id);
+      refreshCoordination();
+      await relayoutLocked();
+    });
   }
 
   /** Resolve the role of a kill_agent caller. The human operator (Console pane)
@@ -335,20 +366,21 @@ async function main() {
     if (!tmuxAvailable || !orchestratorPaneId) return;
     pingPending.push(event);
     if (pingTimer) return; // already armed — coalesce into the pending flush
-    pingTimer = setTimeout(() => {
+    pingTimer = setTimeout(async () => {
       const events = pingPending;
       pingPending = [];
       pingTimer = null;
-      // The pane may have vanished (orchestrator exited) during the window.
-      if (!orchestratorPaneId || tmux.paneIndex(orchestratorPaneId) === null) return;
-      // One line only: literal newlines typed into the pane would submit early.
-      const line =
-        `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
-        `blocked agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
-        `one either resolve what it was waiting on and resume it with continue_agent or abandon it with kill_agent, ` +
-        `then advance the workflow per your orchestrator instructions.`;
-      try { tmux.sendText(orchestratorPaneId, line); }
-      catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
+      try {
+        // The pane may have vanished (orchestrator exited) during the window.
+        if (!orchestratorPaneId || (await tmux.paneIndex(orchestratorPaneId)) === null) return;
+        // One line only: literal newlines typed into the pane would submit early.
+        const line =
+          `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
+          `blocked agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
+          `one either resolve what it was waiting on and resume it with continue_agent or abandon it with kill_agent, ` +
+          `then advance the workflow per your orchestrator instructions.`;
+        await tmux.sendText(orchestratorPaneId, line);
+      } catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
     }, 1200);
   }
 
@@ -391,7 +423,7 @@ async function main() {
         // state changes.
         orchestratorPaneId = agent_pane_ids[0] ?? null;
         refreshCoordination();
-        relayout();
+        await relayout();
         return { ok: true };
       }
       // ---- MCP-facing tools ----
@@ -409,7 +441,7 @@ async function main() {
         const deferred = input.ticket_ids.slice(slots);
         const ids: string[] = [];
         for (const tid of toSpawn) {
-          ids.push(spawnAgent({
+          ids.push(await spawnAgent({
             role: "reviewer",
             ticket_id: tid,
             prompt: `Review and enrich .charm/tickets/${tid}.md in place.`,
@@ -443,7 +475,7 @@ async function main() {
         const cappedOut = runnable.length - toSpawn.length;
         const ids: string[] = [];
         for (const tid of toSpawn) {
-          ids.push(spawnAgent({
+          ids.push(await spawnAgent({
             role: "worker",
             ticket_id: tid,
             prompt: `Implement ticket T-${tid.slice(2)}. First read .charm/tickets/${tid}.md (your ticket, incl. its activity log) and .charm/COORDINATION.md (the index of what other agents are working on), then call update_plan() with your plan, then implement.`,
@@ -531,7 +563,7 @@ async function main() {
         if (a.state !== "done" && a.state !== "failed") {
           throw new Error(`agent ${agent_id} is ${a.state}; only done/failed can be dismissed`);
         }
-        tearDownAgent(agent_id);
+        await tearDownAgent(agent_id);
         return { ok: true };
       }
       case "kill_agent": {
@@ -579,9 +611,9 @@ async function main() {
           // The caller is tearing down its own pane, which also kills the claude
           // process that issued this RPC. Defer one tick so the reply flushes
           // before the pane (and its MCP shim) dies — mirrors `shutdown`.
-          setTimeout(() => tearDownAgent(targetId), 50);
+          setTimeout(() => { void tearDownAgent(targetId).catch((e) => console.error("[charmd] self-teardown failed:", e)); }, 50);
         } else {
-          tearDownAgent(targetId);
+          await tearDownAgent(targetId);
         }
         return { ok: true, killed: targetId };
       }
@@ -610,7 +642,7 @@ async function main() {
         });
         // Stop any agent currently on this ticket — its work is moot now.
         const onTicket = registry.list().find((a) => a.role !== "main" && a.ticket_id === input.ticket_id);
-        if (onTicket) tearDownAgent(onTicket.id);
+        if (onTicket) await tearDownAgent(onTicket.id);
         refreshCoordination();
         // A human operator cancelling from the console is news to the orchestrator;
         // a cancel the orchestrator issued itself is not.
@@ -646,14 +678,14 @@ async function main() {
           );
         }
         if (!target.pane_id) throw new Error(`agent ${target.id} has no pane to message`);
-        if (!tmuxAvailable || tmux.paneIndex(target.pane_id) === null) {
+        if (!tmuxAvailable || (await tmux.paneIndex(target.pane_id)) === null) {
           throw new Error(`agent ${target.id}'s pane is gone — it may have exited; kill_agent and respawn instead`);
         }
         // Wake the blocked agent with the orchestrator's guidance (one line — a
         // literal newline would submit early), then optimistically flip it back
         // to running. The agent corrects this via its own report_status as it
         // proceeds, re-blocks, or finishes.
-        tmux.sendText(target.pane_id, `[charm] Orchestrator: ${input.message}`);
+        await tmux.sendText(target.pane_id, `[charm] Orchestrator: ${input.message}`);
         const a = registry.setState(target.id, "running");
         // Record the orchestrator's unblock message in the ticket's activity log
         // so the resume (and its guidance) is part of the ticket's history.
@@ -714,10 +746,10 @@ async function main() {
         // no-op for sub-agents.
         delete process.env.CHARM_MODEL;
         const model = resolveModel(MODE_MODEL[mode]);
-        if (tmuxAvailable && orchestratorPaneId && tmux.paneIndex(orchestratorPaneId) !== null) {
+        if (tmuxAvailable && orchestratorPaneId && (await tmux.paneIndex(orchestratorPaneId)) !== null) {
           try {
-            tmux.sendText(orchestratorPaneId, `/model ${model}`);
-            tmux.sendText(
+            await tmux.sendText(orchestratorPaneId, `/model ${model}`);
+            await tmux.sendText(
               orchestratorPaneId,
               `[charm] Mode switched to ${mode}: you are now running on ${model}, and every sub-agent you ` +
               `spawn from here on will run on ${model} too. Adjust your approach to match ${mode} mode.`,
@@ -753,7 +785,7 @@ async function main() {
       }
       case "request_review": {
         const input = RequestReviewInput.parse(params);
-        const id = spawnAgent({
+        const id = await spawnAgent({
           role: "tester",
           ticket_id: input.ticket_id,
           prompt: `Validate ticket ${input.ticket_id}: read .charm/tickets/${input.ticket_id}.md acceptance criteria, run tests, produce a checklist result. No code edits.`,
@@ -805,14 +837,31 @@ async function main() {
   console.log(`[charmd] listening on ${paths.socket} (session=${session}, root=${paths.root})`);
 }
 
-/** Timestamped crash logging. The daemon's stdout/stderr are redirected to its
- *  per-session charmd.log (see cli.ts `start`), so a plain console.error lands in
- *  that file; the ISO timestamp is what lets a death be lined up against a
- *  sleep/wake event. */
+/** Prefix every daemon console line with an ISO timestamp. The daemon's
+ *  stdout/stderr are redirected to its per-session charmd.log (see cli.ts
+ *  `start`), so an unstamped line is undatable — and the whole point of this log
+ *  is correlating a restart or death against wall-clock (and the system
+ *  sleep/wake log). Wrap the console methods once, at the entry point, so every
+ *  existing and future call site is stamped without threading a logger through
+ *  the daemon. This does NOT catch errors the Bun runtime itself prints before
+ *  our code runs (e.g. a "Module not found" from a mis-bundled binary). */
+function installTimestampedConsole(): void {
+  const stamp =
+    (fn: (...a: unknown[]) => void) =>
+    (...args: unknown[]) =>
+      fn(`[${new Date().toISOString()}]`, ...args);
+  console.log = stamp(console.log.bind(console));
+  console.error = stamp(console.error.bind(console));
+  console.warn = stamp(console.warn.bind(console));
+  console.info = stamp(console.info.bind(console));
+}
+
+/** Crash logging. The console is already timestamped by installTimestampedConsole,
+ *  so this just formats the cause; the stamp on the emitted line is what lets a
+ *  death be lined up against a sleep/wake event. */
 function logCrash(kind: string, err: unknown): void {
-  const ts = new Date().toISOString();
   const detail = err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
-  console.error(`[charmd] ${ts} ${kind}: ${detail}`);
+  console.error(`[charmd] ${kind}: ${detail}`);
 }
 
 main().catch((e) => {
