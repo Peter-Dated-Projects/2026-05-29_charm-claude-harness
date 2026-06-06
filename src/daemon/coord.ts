@@ -63,6 +63,16 @@ export class CoordinationWriter {
     return existsSync(this.paths.coordinationMd) ? readFileSync(this.paths.coordinationMd, "utf8") : "";
   }
 
+  /** Remove a leftover lock file from a prior daemon that crashed mid-write.
+   *  The lock is held only for the microseconds of one synchronous write, so a
+   *  lock present at startup can only be stale — and left in place it makes the
+   *  next withLock() busy-spin (Bun.sleepSync) for the full 5s timeout, freezing
+   *  the daemon's event loop and starving every RPC. Safe to call once at
+   *  startup, after the single-daemon pidfile guard has run. */
+  clearStaleLock(): void {
+    try { unlinkSync(this.lockPath); } catch { /* nothing to clear */ }
+  }
+
   private atomicWrite(path: string, text: string) {
     const tmp = join(dirname(path), `.${basename(path)}.tmp.${process.pid}`);
     const fd = openSync(tmp, "w");

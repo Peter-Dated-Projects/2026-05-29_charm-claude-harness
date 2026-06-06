@@ -189,7 +189,7 @@ program
     const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)} --uuid ${shellQuote(sessionId)}`;
 
     const consolePane = tmux.spawnInWindow("charm", consoleCmd, paths.root);
-    const mainPane = tmux.splitPane({ cmd: mainCmd, cwd: paths.root, direction: "h", size: "65%" });
+    const mainPane = await tmux.splitPane({ cmd: mainCmd, cwd: paths.root, direction: "h", size: "65%" });
 
     // Tell the daemon which pane is the console (pinned left column) and
     // which panes already belong to the agent grid. From here on, every

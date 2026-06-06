@@ -56,7 +56,7 @@ afterEach(() => {
 
 test.skipIf(!tmuxAvailable)(
   "splitPane places the sub-agent pane in the daemon's own session, not the current one",
-  () => {
+  async () => {
     const cwd = tmpdir();
     const tmux = new Tmux(OWN);
 
@@ -77,7 +77,7 @@ test.skipIf(!tmuxAvailable)(
 
     // The real call path: spawnAgent uses splitPane with direction "h" and no
     // explicit target, relying on the class to scope to its own session.
-    const pane = tmux.splitPane({ cmd: "sh -c 'sleep 30'", cwd, direction: "h" });
+    const pane = await tmux.splitPane({ cmd: "sh -c 'sleep 30'", cwd, direction: "h" });
     expect(sessionOfPane(pane)).toBe(OWN);
   },
 );

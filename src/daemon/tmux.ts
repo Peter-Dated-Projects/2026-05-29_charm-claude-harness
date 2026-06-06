@@ -1,5 +1,24 @@
 import { spawnSync } from "node:child_process";
 
+/**
+ * Async tmux invocation. Unlike spawnSync (which blocks the daemon's single
+ * event-loop thread for the full duration of the child process — and `tmux
+ * split-window` launches a whole `claude`), this yields the loop while tmux
+ * runs, so unrelated RPCs (create_tickets, report_status, list_tickets) keep
+ * being serviced instead of stalling behind a spawn/relayout burst. Used for
+ * every tmux call on the daemon's RPC-serving hot path; the startup/CLI-only
+ * methods below stay synchronous since nothing is waiting on the socket yet.
+ */
+async function tmuxRun(args: string[]): Promise<{ status: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn(["tmux", ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const [stdout, stderr, status] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { status, stdout, stderr };
+}
+
 export class Tmux {
   constructor(public session: string) {}
 
@@ -69,12 +88,14 @@ export class Tmux {
   }
 
   /** Split a window and start a command. Returns the new pane id (e.g. "%17").
+   *  Async (Bun.spawn): this is the heaviest tmux call on the hot path — it
+   *  launches a `claude` in the new pane — so it must not block the event loop.
    *  Defaults the split target to THIS session when no explicit target is given:
    *  charm runs every session on the default tmux server and the daemon is
    *  detached, so an untargeted `split-window` would land in tmux's global
    *  "current session" (possibly another live charm session) rather than the one
    *  this Tmux instance owns. */
-  splitPane(opts: { cmd: string; cwd: string; direction?: "h" | "v"; target?: string; size?: string }): string {
+  async splitPane(opts: { cmd: string; cwd: string; direction?: "h" | "v"; target?: string; size?: string }): Promise<string> {
     const args = [
       "split-window",
       opts.direction === "v" ? "-v" : "-h",
@@ -85,7 +106,7 @@ export class Tmux {
     args.push("-t", opts.target ?? this.session);
     if (opts.size) args.push("-l", opts.size);
     args.push("sh", "-c", opts.cmd);
-    const r = spawnSync("tmux", args, { encoding: "utf8" });
+    const r = await tmuxRun(args);
     if (r.status !== 0) throw new Error(`tmux split-window failed: ${r.stderr}`);
     const pane = r.stdout.trim();
     spawnSync("tmux", ["set-option", "-p", "-t", pane, "allow-passthrough", "on"]);
@@ -131,8 +152,8 @@ export class Tmux {
     return pane;
   }
 
-  killPane(paneId: string): void {
-    spawnSync("tmux", ["kill-pane", "-t", paneId]);
+  async killPane(paneId: string): Promise<void> {
+    await tmuxRun(["kill-pane", "-t", paneId]);
   }
 
   /**
@@ -148,9 +169,9 @@ export class Tmux {
    * input. Send the literal text and the Enter as two calls — a trailing "Enter"
    * inside an `-l` payload would be typed verbatim, not submitted.
    */
-  sendText(paneId: string, text: string): void {
-    spawnSync("tmux", ["send-keys", "-t", paneId, "-l", text]);
-    spawnSync("tmux", ["send-keys", "-t", paneId, "Enter"]);
+  async sendText(paneId: string, text: string): Promise<void> {
+    await tmuxRun(["send-keys", "-t", paneId, "-l", text]);
+    await tmuxRun(["send-keys", "-t", paneId, "Enter"]);
   }
 
   selectPane(paneId: string): void {
@@ -192,11 +213,9 @@ export class Tmux {
   }
 
   /** Window dimensions in cells. */
-  windowSize(window: string): { w: number; h: number } {
-    const r = spawnSync(
-      "tmux",
+  async windowSize(window: string): Promise<{ w: number; h: number }> {
+    const r = await tmuxRun(
       ["display-message", "-p", "-t", `${this.session}:${window}`, "#{window_width}x#{window_height}"],
-      { encoding: "utf8" },
     );
     if (r.status !== 0) throw new Error(`tmux display-message failed: ${r.stderr}`);
     const m = r.stdout.trim().match(/^(\d+)x(\d+)$/);
@@ -205,28 +224,24 @@ export class Tmux {
   }
 
   /** Look up the current pane_index for a stable pane_id. Returns null if the pane no longer exists. */
-  paneIndex(paneId: string): number | null {
-    const r = spawnSync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_index}"], { encoding: "utf8" });
+  async paneIndex(paneId: string): Promise<number | null> {
+    const r = await tmuxRun(["display-message", "-p", "-t", paneId, "#{pane_index}"]);
     if (r.status !== 0) return null;
     const n = Number(r.stdout.trim());
     return Number.isFinite(n) ? n : null;
   }
 
   /** Current width of a pane in cells. Returns null if the pane no longer exists. */
-  paneWidth(paneId: string): number | null {
-    const r = spawnSync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_width}"], { encoding: "utf8" });
+  async paneWidth(paneId: string): Promise<number | null> {
+    const r = await tmuxRun(["display-message", "-p", "-t", paneId, "#{pane_width}"]);
     if (r.status !== 0) return null;
     const n = Number(r.stdout.trim());
     return Number.isFinite(n) ? n : null;
   }
 
   /** Apply a tmux custom layout string (incl. checksum prefix) to the named window. */
-  applyLayout(window: string, layout: string): void {
-    const r = spawnSync(
-      "tmux",
-      ["select-layout", "-t", `${this.session}:${window}`, layout],
-      { encoding: "utf8" },
-    );
+  async applyLayout(window: string, layout: string): Promise<void> {
+    const r = await tmuxRun(["select-layout", "-t", `${this.session}:${window}`, layout]);
     if (r.status !== 0) throw new Error(`tmux select-layout failed: ${r.stderr}`);
   }
 }
