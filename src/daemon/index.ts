@@ -22,6 +22,7 @@ import {
   UpdatePlanInput,
   ReportStatusInput,
   SetTicketStatusInput,
+  SetTicketStateInput,
   RequestReviewInput,
   SetSessionDescriptionInput,
   KillAgentInput,
@@ -529,6 +530,49 @@ async function main() {
         const kind = input.status ? `status=${input.status}` : `stage=${input.stage}`;
         store.appendLog(a.ticket_id, { agent: a.id, kind, text: input.note });
         refreshCoordination();
+        return { ok: true };
+      }
+      case "set_ticket_state": {
+        // Orchestrator-driven ticket lifecycle: write status and/or stage onto a
+        // ticket addressed by id (not by the caller's own assignment — that's
+        // set_ticket_status). The orchestrator owns the workflow, so it can move a
+        // ticket it isn't itself on. Authorization mirrors cancel_ticket: operator
+        // or main only. `cancelled` is excluded by the schema — route call-offs
+        // through cancel_ticket. The transition is mirrored into the ticket's
+        // activity log and COORDINATION.md is rebuilt.
+        const input = SetTicketStateInput.parse(params);
+        const callerRole = resolveCaller(input.caller_id);
+        if (callerRole !== "operator" && callerRole !== "main") {
+          throw new Error(
+            `agent ${input.caller_id} (${callerRole}) may not set ticket state; that requires the orchestrator`,
+          );
+        }
+        const t = store.read(input.ticket_id);
+        if (!t) throw new Error(`unknown ticket: ${input.ticket_id}`);
+        const patch: { status?: string; stage?: string } = {};
+        if (input.status) patch.status = input.status;
+        if (input.stage) patch.stage = input.stage;
+        store.update(input.ticket_id, patch);
+        const kind = input.status ? `status=${input.status}` : `stage=${input.stage}`;
+        store.appendLog(input.ticket_id, {
+          agent: input.caller_id ?? "operator",
+          kind,
+          text: input.note,
+        });
+        // Writing a ticket to a terminal status (complete/failed) means any agent
+        // still on it is working moot — tear its pane down, same as cancel_ticket
+        // does for a call-off. Non-terminal writes (ready/blocked/stage walks)
+        // leave a live agent alone; it's still doing relevant work.
+        if (input.status === "complete" || input.status === "failed") {
+          const onTicket = registry.list().find((a) => a.role !== "main" && a.ticket_id === input.ticket_id);
+          if (onTicket) tearDownAgent(onTicket.id);
+        }
+        refreshCoordination();
+        // An operator writing state from the console is news to the orchestrator;
+        // a write the orchestrator issued itself is not.
+        if (callerRole === "operator") {
+          pingOrchestrator(`${input.ticket_id} ${kind} by operator${input.note ? `: ${input.note}` : ""}`);
+        }
         return { ok: true };
       }
       case "dismiss_agent": {

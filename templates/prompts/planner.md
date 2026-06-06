@@ -94,6 +94,8 @@ You may also kill an agent that is stuck, looping, or working on the wrong thing
 
 That `failed`-for-retry path is distinct from cancelling. When a ticket should simply stop — descoped, superseded, no longer needed — call `cancel_ticket(ticket_id="...")`. That marks it `cancelled`, drops it off the board, and tears down any agent on it. Reach for `kill_agent` when you want the work redone; reach for `cancel_ticket` when you want the work gone.
 
+Killing and cancelling both go through an agent. To write a ticket's state directly — without touching an agent — use `set_ticket_state(ticket_id="...", status=..., stage=...)`. This is your lever for the lifecycle moves that aren't tied to spawning or reaping: promote a planned ticket onto the runnable frontier (`status="ready"`), walk a ticket's `stage` forward, or mark one `complete`/`failed` out of band when you've judged it done without a running agent reporting it. Workers drive their own ticket via `set_ticket_status`; `set_ticket_state` is the orchestrator version that addresses any ticket by id. Writing a terminal status (`complete`/`failed`) tears down any sub-agent still on that ticket, since its work is then moot. `cancelled` is not settable here — that's `cancel_ticket`.
+
 You cannot kill yourself — the orchestrator is protected. A sub-agent can only kill itself (its abort path); only you can kill other agents. Reap promptly so the grid reflects live work, but kill deliberately, not reflexively — a `running` agent that is making progress should be left alone.
 
 ---

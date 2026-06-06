@@ -19,6 +19,13 @@ export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "runni
  *  own work — a worker that hits a wall reports `failed`, not `cancelled`. */
 export const WORKER_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "complete", "failed"];
 
+/** Statuses the orchestrator/operator may write onto any ticket via set_ticket_state.
+ *  Every status except `cancelled`: cancelling drops a ticket off the board and tears
+ *  down its agent, which is cancel_ticket's job — keeping it out of this general state
+ *  write means the two paths can't be confused. (Happens to match the worker set, but
+ *  it's a distinct authorization surface: this one is keyed by ticket_id, not agent.) */
+export const ORCHESTRATOR_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "complete", "failed"];
+
 export const TicketFrontmatter = z.object({
   id: z.string().regex(/^T-\d{3,}$/),
   title: z.string().min(1),
@@ -138,6 +145,28 @@ export const SetTicketStatusInput = z
     message: "set_ticket_status requires at least one of status or stage",
   });
 export type SetTicketStatusInput = z.infer<typeof SetTicketStatusInput>;
+
+// set_ticket_state is the orchestrator's lever to write any ticket's lifecycle
+// directly, addressed by ticket_id (not by the caller's own assignment — that's
+// set_ticket_status). The orchestrator owns the workflow, so it can move a ticket
+// it isn't itself "on": flip a generated ticket to `ready`, walk a stage forward,
+// mark something `complete`/`failed` out of band. caller_id authorization mirrors
+// cancel_ticket: absent -> human operator; present -> the orchestrator (main).
+// Sub-agents cannot use it. `cancelled` is excluded (see ORCHESTRATOR_SETTABLE_STATUSES);
+// route deliberate call-offs through cancel_ticket. At least one of status/stage
+// must be present, or the call is a no-op worth rejecting.
+export const SetTicketStateInput = z
+  .object({
+    caller_id: z.string().optional(),
+    ticket_id: z.string(),
+    status: z.enum(ORCHESTRATOR_SETTABLE_STATUSES as [TicketStatus, ...TicketStatus[]]).optional(),
+    stage: TicketStage.optional(),
+    note: z.string().optional(),
+  })
+  .refine((v) => v.status !== undefined || v.stage !== undefined, {
+    message: "set_ticket_state requires at least one of status or stage",
+  });
+export type SetTicketStateInput = z.infer<typeof SetTicketStateInput>;
 
 export const RequestReviewInput = z.object({
   ticket_id: z.string(),

@@ -108,7 +108,8 @@ was pressed in.
 | `read_coordination` | any | fetch current `COORDINATION.md` |
 | `list_tickets` / `list_agents` | any | inspect board / fleet state |
 | `report_status` | any | mark self spawning/running/blocked/done/failed |
-| `set_ticket_status` | any | move a ticket's status/stage |
+| `set_ticket_status` | worker | move the caller's OWN ticket's status/stage |
+| `set_ticket_state` | main | write any ticket's status/stage by id (terminal status reaps its agent) |
 | `kill_agent` / `continue_agent` / `cancel_ticket` | main | manage the fleet |
 | `set_session_description` | main | label the session for the picker |
 | `open_graph` | any | open the standalone graph viewer window |

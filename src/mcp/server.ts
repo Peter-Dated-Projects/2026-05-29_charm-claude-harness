@@ -160,6 +160,30 @@ server.registerTool(
 );
 
 server.registerTool(
+  "set_ticket_state",
+  {
+    description:
+      "Orchestrator-only: write a ticket's lifecycle directly, addressed by ticket_id. Set `status` " +
+      "(pending/ready/running/blocked/complete/failed) and/or `stage` (generated/review/approved/in_progress/" +
+      "testing/done/failed) on ANY ticket — unlike set_ticket_status, which only drives a worker's own ticket. " +
+      "Use it to schedule the backlog (flip a generated ticket to `ready`), walk a stage forward, or mark a " +
+      "ticket complete/failed out of band. Writing a terminal status (complete/failed) tears down any sub-agent " +
+      "still on the ticket. `cancelled` is not settable here — use cancel_ticket for a deliberate call-off. The " +
+      "transition is recorded in the ticket's activity log (.charm/tickets/<id>.md) and the coordination board.",
+    inputSchema: {
+      ticket_id: z.string(),
+      status: z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]).optional(),
+      stage: z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]).optional(),
+      note: z.string().optional(),
+    },
+  },
+  async (args) => {
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
+    return ok(await call("set_ticket_state", { caller_id: AGENT_ID, ...args }));
+  },
+);
+
+server.registerTool(
   "set_session_description",
   {
     description:
