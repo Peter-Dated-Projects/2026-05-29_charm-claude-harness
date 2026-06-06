@@ -3,6 +3,41 @@ import { RpcRequest, RpcResponse } from "../schema.ts";
 
 export type Handler = (method: string, params: unknown) => Promise<unknown>;
 
+// --- Backpressure-safe writes -------------------------------------------------
+// Bun's socket.write() writes only what fits the kernel send buffer (≈8KB on
+// macOS) and RETURNS the byte count — the unwritten tail is dropped, not queued.
+// The old code ignored the return value, so any frame over ~8KB (a detailed
+// create_tickets request, a large status reply) was silently truncated: the
+// receiver never saw the framing "\n", never replied, and the call hung. We
+// stash the unwritten tail on the socket and resend it from the connection's
+// `drain` handler until the whole frame is out. Verified against a 2MB payload.
+
+type PendingSocket = { write: (data: Uint8Array) => number; __pending?: Uint8Array | null };
+
+/** Resume flushing whatever's left of a partially-written frame. Wire this to
+ *  the socket's `drain` event on both client and server. */
+function flushSocket(sock: PendingSocket): void {
+  const p = sock.__pending;
+  if (!p || p.length === 0) { sock.__pending = null; return; }
+  const n = sock.write(p);
+  sock.__pending = n >= p.length ? null : p.subarray(n);
+}
+
+/** Append a frame to the socket's outbound queue and write as much as fits now;
+ *  the rest goes out on `drain`. */
+function enqueueWrite(sock: PendingSocket, text: string): void {
+  const bytes = new TextEncoder().encode(text);
+  if (sock.__pending && sock.__pending.length > 0) {
+    const merged = new Uint8Array(sock.__pending.length + bytes.length);
+    merged.set(sock.__pending, 0);
+    merged.set(bytes, sock.__pending.length);
+    sock.__pending = merged;
+  } else {
+    sock.__pending = bytes;
+  }
+  flushSocket(sock);
+}
+
 /** Newline-delimited JSON-RPC over Unix domain socket. */
 export function startRpcServer(socketPath: string, handler: Handler) {
   if (existsSync(socketPath)) {
@@ -24,21 +59,24 @@ export function startRpcServer(socketPath: string, handler: Handler) {
           try {
             req = RpcRequest.parse(JSON.parse(line));
           } catch (e: any) {
-            sock.write(JSON.stringify({ id: "?", ok: false, error: `bad request: ${e.message}` }) + "\n");
+            enqueueWrite(sock as unknown as PendingSocket, JSON.stringify({ id: "?", ok: false, error: `bad request: ${e.message}` }) + "\n");
             continue;
           }
           try {
             const result = await handler(req.method, req.params);
             const resp = RpcResponse.parse({ id: req.id, ok: true, result });
-            sock.write(JSON.stringify(resp) + "\n");
+            enqueueWrite(sock as unknown as PendingSocket, JSON.stringify(resp) + "\n");
           } catch (e: any) {
             const resp = RpcResponse.parse({ id: req.id, ok: false, error: e?.message ?? String(e) });
-            sock.write(JSON.stringify(resp) + "\n");
+            enqueueWrite(sock as unknown as PendingSocket, JSON.stringify(resp) + "\n");
           }
         }
       },
       open: (sock) => {
         (sock as any).data = { buf: "" };
+      },
+      drain: (sock) => {
+        flushSocket(sock as unknown as PendingSocket);
       },
       error: (_sock, err) => {
         console.error("[rpc] socket error", err);
@@ -116,7 +154,14 @@ function attemptCall<T>(socketPath: string, method: string, params: unknown, tim
         },
         open(s) {
           sock = s;
-          s.write(JSON.stringify({ id, method, params }) + "\n");
+          // Backpressure-safe: a request over ~8KB (a detailed create_tickets
+          // body) won't fit one write() — enqueueWrite + the drain handler below
+          // resend the tail until the whole frame is out. Without this the
+          // daemon never sees the closing "\n" and the call hangs.
+          enqueueWrite(s as unknown as PendingSocket, JSON.stringify({ id, method, params }) + "\n");
+        },
+        drain(s) {
+          flushSocket(s as unknown as PendingSocket);
         },
         error(_s, err) {
           finish(() => reject(err));
