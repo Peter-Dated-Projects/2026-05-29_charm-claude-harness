@@ -53,7 +53,12 @@ export class Tmux {
     ]);
   }
 
-  /** Split current window and start a command. Returns the new pane id (e.g. "%17"). */
+  /** Split a window and start a command. Returns the new pane id (e.g. "%17").
+   *  Defaults the split target to THIS session when no explicit target is given:
+   *  charm runs every session on the default tmux server and the daemon is
+   *  detached, so an untargeted `split-window` would land in tmux's global
+   *  "current session" (possibly another live charm session) rather than the one
+   *  this Tmux instance owns. */
   splitPane(opts: { cmd: string; cwd: string; direction?: "h" | "v"; target?: string; size?: string }): string {
     const args = [
       "split-window",
@@ -62,7 +67,7 @@ export class Tmux {
       "-F", "#{pane_id}",
       "-c", opts.cwd,
     ];
-    if (opts.target) args.push("-t", opts.target);
+    args.push("-t", opts.target ?? this.session);
     if (opts.size) args.push("-l", opts.size);
     args.push("sh", "-c", opts.cmd);
     const r = spawnSync("tmux", args, { encoding: "utf8" });

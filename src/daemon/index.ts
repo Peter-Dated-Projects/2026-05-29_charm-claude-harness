@@ -289,7 +289,14 @@ async function main() {
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
     const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
     const cmd = buildClaudeCommand(paths, agent.id, resolved);
-    const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h" });
+    // Target THIS session's window explicitly. charm runs every session on the
+    // default tmux server, and the daemon is a detached process: a `split-window`
+    // with no `-t` lands in tmux's global "current session", which the daemon does
+    // not control. With two charm sessions live, that can place this session's
+    // sub-agent pane inside the OTHER session's window (breaking this session's
+    // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
+    // the pane in the session that owns the agent.
+    const pane = tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
     registry.attach(agent.id, { pane_id: pane });
     refreshCoordination();
     agentPaneIds.push(pane);
