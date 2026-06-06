@@ -54,4 +54,4 @@ Write only what is genuinely durable and non-obvious — don't pad the KB with f
 
 - Generate tickets in Stage 0 — that is Stage 1.
 - Spawn any other agents in Stage 0. You have no built-in subagent/Agent/Task tool; Stage 1 fans out via the charm MCP tools.
-- Edit any file other than `.charm/PROJECT.md` and `.charm/kb/**` during Stage 0.
+- Edit any file other than `.charm/PROJECT.md`, `.charm/kb/**`, and `.charm/proposals/**` during Stage 0. (Proposals are where research-mode exploration of an idea is drafted and refined; everything else stays untouched until planning.)

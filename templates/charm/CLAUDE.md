@@ -18,6 +18,13 @@ workspace facts and guardrails every agent shares.
 - **Never clobber `.charm/kb/`.** It's the durable knowledge base the fleet
   accumulates — real work product. Only the `charm-reset-kb` skill replaces it,
   and only after explicit confirmation.
+- **Proposals go in `.charm/proposals/`.** Design proposals, RFCs, and
+  exploratory write-ups belong here — one idea per file, named `PROP-<slug>.md`.
+  This is the home for research-mode output: when the goal is to explore and
+  refine an idea rather than ship code, draft and iterate the proposal in this
+  folder. Like the KB, proposals are durable and git-tracked — supersede a stale
+  one, don't delete it. Read `.charm/proposals/INDEX.md` for the shape and to
+  register a new file.
 
 ## Operator skills
 

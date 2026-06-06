@@ -77,6 +77,12 @@ export function charmPaths(root: string, sessionId?: string) {
     // across runs). kbIndex is the tiny always-read entry point.
     kbDir: join(charmDir, "kb"),
     kbIndex: join(charmDir, "kb", "INDEX.md"),
+    // Design proposals / RFCs / exploratory write-ups — most often produced in
+    // research mode, refined in place across a session. Like the KB it's
+    // durable, git-tracked write product that accumulates across runs (seeded
+    // from templates/proposals/ only when absent, never clobbered).
+    proposalsDir: join(charmDir, "proposals"),
+    proposalsIndex: join(charmDir, "proposals", "INDEX.md"),
     // Operator skills (restart, reset-kb, …) + their router index, scaffolded
     // from templates/skills/. The main agent reads skillsIndex on demand so it
     // knows which SKILL.md to follow when asked to perform an operator action.

@@ -698,6 +698,19 @@ function scaffoldCharmDir(
     }
   }
 
+  // Seed the proposals folder skeleton ONLY if it doesn't exist yet. Proposals
+  // are durable, accumulating write product (like the KB), most often produced
+  // in research mode and refined in place -- never clobber them on re-init/start.
+  if (!existsSync(paths.proposalsDir)) {
+    const proposalTemplates = locateTemplateDir("proposals");
+    if (proposalTemplates) {
+      cpSync(proposalTemplates, paths.proposalsDir, { recursive: true });
+    } else {
+      mkdirSync(paths.proposalsDir, { recursive: true });
+      console.warn("[charm] proposals templates not found; created empty .charm/proposals/");
+    }
+  }
+
   // Seed the operator skills (restart, reset-kb) + their router index so the
   // main agent can discover and follow them on demand. Like prompts, these are
   // tooling (not user data): copy missing files, overwrite existing on refresh.
