@@ -104,6 +104,14 @@ export function charmPaths(root: string, sessionId?: string) {
     // line. Per-session so `:q`/`stop` reaps only THIS session's viewers, and so
     // `charm stop` can reap them even if the daemon is gone.
     graphPids: join(runDir, "graph-viewers.pids"),
+    // Per-session MCP config with CHARM_SOCKET baked into the env block.
+    // Using a per-session file (rather than the shared .charm/charm.json) ensures
+    // that each session's agents start their own charm-mcp instance. Without this,
+    // Claude Code can reuse a single charm-mcp process across sessions — and when
+    // session A closes and kills its claude panes, that shared process dies and
+    // breaks session B's agents too.
+    // In legacy single-session mode (no sessionId) this aliases to mcpConfig.
+    sessionMcpConfig: join(runDir, "charm.json"),
   } as const;
 }
 

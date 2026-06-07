@@ -254,7 +254,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // following positional until the next flag. Put it FIRST so the next flag
   // (`--disallowed-tools`) terminates the list, otherwise the user prompt
   // gets eaten as a phantom MCP config path.
-  flags.push("--mcp-config", shellQuote(paths.mcpConfig));
+  flags.push("--mcp-config", shellQuote(paths.sessionMcpConfig));
   // Strip every built-in tool that can spawn agents OUTSIDE charm's orchestration,
   // so all fan-out must go through the charm MCP tools (spawn_workers /
   // spawn_review_agents / request_review) the daemon needs for dependency +

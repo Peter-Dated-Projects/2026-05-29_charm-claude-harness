@@ -163,6 +163,21 @@ async function main() {
   }
   writeFileSync(paths.pidFile, String(process.pid));
 
+  // Write a per-session MCP config with CHARM_SOCKET in the env block.
+  // This guarantees each session's charm-mcp is a distinct process: Claude Code
+  // keys its MCP server registry on (command + env), so different sockets produce
+  // different instances. Without this, all sessions share the one charm-mcp that
+  // was started first — closing session A kills it and breaks every other session.
+  {
+    const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
+    const cfg = {
+      mcpServers: {
+        charm: { command: mcpBin, args: [], env: { CHARM_SOCKET: paths.socket } },
+      },
+    };
+    writeFileSync(paths.sessionMcpConfig, JSON.stringify(cfg, null, 2) + "\n");
+  }
+
   ensureDirectoryTrusted(paths.root);
 
   const store = new TicketStore(paths);
@@ -824,6 +839,7 @@ async function main() {
     try { killGraphViewers(paths.graphPids); } catch { /* ignore */ }
     try { unlinkSync(paths.socket); } catch { /* ignore */ }
     try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
+    try { unlinkSync(paths.sessionMcpConfig); } catch { /* ignore */ }
     try { store.close(); } catch { /* ignore */ }
     process.exit(code);
   };
