@@ -1,10 +1,13 @@
 node_modules/
 dist/
-# Charm run state is ephemeral and ignored, EXCEPT the durable knowledge base.
-# `.charm/*` ignores the run-state children; `!.charm/kb/` re-includes the KB so it
-# travels with the repo. (Works only because `.charm/` itself is not excluded.)
+# Charm run state is ephemeral and ignored, EXCEPT the durable, git-tracked
+# surfaces: the knowledge base and the proposal corpus. `.charm/*` ignores the
+# run-state children (tickets, scratchpad, db.sqlite, run/, logs/ — all rebuilt
+# per session); `!.charm/kb/` and `!.charm/proposals/` re-include the two that
+# must travel with the repo. (Works only because `.charm/` itself is not excluded.)
 .charm/*
 !.charm/kb/
+!.charm/proposals/
 *.log
 .DS_Store
 # bun --compile leaves orphaned temp files; never commit them
@@ -12,4 +15,5 @@ dist/
 
 testing/
 
+# Local-only Rust port scratch; never tracked on main.
 rust/

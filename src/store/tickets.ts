@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join, basename } from "node:path";
 import matter from "gray-matter";
 import { Database } from "bun:sqlite";
@@ -59,6 +59,7 @@ export class TicketStore {
 
   constructor(private paths: CharmPaths) {
     mkdirSync(paths.ticketsDir, { recursive: true });
+    mkdirSync(paths.scratchpadDir, { recursive: true });
     mkdirSync(paths.charmDir, { recursive: true });
     this.db = new Database(paths.db);
     this.db.exec(`
@@ -100,6 +101,40 @@ export class TicketStore {
     writeFileSync(path, text);
     this.indexOne({ frontmatter: fm, body: input.body, path });
     return { frontmatter: fm, body: input.body, path };
+  }
+
+  /** List the ticket-draft filenames (without the .md suffix) currently sitting
+   *  in the scratchpad. These are unindexed drafts the orchestrator authored by
+   *  hand; they are not tickets until promoted. */
+  listDrafts(): string[] {
+    if (!existsSync(this.paths.scratchpadDir)) return [];
+    return readdirSync(this.paths.scratchpadDir)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => basename(f, ".md"))
+      .sort();
+  }
+
+  /** Promote a hand-authored draft from the scratchpad into a real, indexed
+   *  ticket. Reads .charm/scratchpad/<name>.md, validates its frontmatter (the
+   *  draft's own `id` wins, falling back to the filename — so cross-draft
+   *  depends_on references survive promotion intact), writes it into ticketsDir,
+   *  indexes it, and removes the draft. Throws if the draft is missing or if a
+   *  ticket with the resolved id already exists (no silent clobber). */
+  promoteDraft(name: string): Ticket {
+    const draftName = name.endsWith(".md") ? name.slice(0, -3) : name;
+    const draftPath = join(this.paths.scratchpadDir, `${draftName}.md`);
+    if (!existsSync(draftPath)) throw new Error(`no draft in scratchpad: ${draftName}`);
+    const parsed = matter(readFileSync(draftPath, "utf8"));
+    // Mirror readPath: filename is the default id, frontmatter `id` overrides it.
+    const fm = TicketFrontmatter.parse({ id: draftName, ...parsed.data });
+    const destPath = join(this.paths.ticketsDir, `${fm.id}.md`);
+    if (existsSync(destPath)) {
+      throw new Error(`cannot promote ${draftName}: ticket ${fm.id} already exists`);
+    }
+    writeFileSync(destPath, matter.stringify(parsed.content, fm));
+    this.indexOne({ frontmatter: fm, body: parsed.content, path: destPath });
+    unlinkSync(draftPath);
+    return { frontmatter: fm, body: parsed.content, path: destPath };
   }
 
   read(id: string): Ticket | null {

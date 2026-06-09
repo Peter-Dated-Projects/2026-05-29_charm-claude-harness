@@ -49,6 +49,64 @@ server.registerTool(
 );
 
 server.registerTool(
+  "promote",
+  {
+    description:
+      "Promote hand-authored ticket DRAFTS from .charm/scratchpad/ into real, spawnable tickets. " +
+      "Workflow: write each draft as a file in .charm/scratchpad/<name>.md following normal ticket " +
+      "conventions (frontmatter with title/depends_on/touches + body) — a cheap local Write, no token " +
+      "cost — then call promote to move it into .charm/tickets/ and index it in sqlite (the move + index " +
+      "are why this must be an MCP call, not a raw file move: it keeps the board and db in sync). The " +
+      "draft's own id (or its filename) is preserved, so cross-draft depends_on references survive. " +
+      "Pass `tickets` (draft names, with or without .md) to promote specific drafts; omit it to promote " +
+      "every draft in the scratchpad.",
+    inputSchema: { tickets: z.array(z.string()).optional() },
+  },
+  async (args) => ok(await call("promote", args)),
+);
+
+server.registerTool(
+  "create_proposal",
+  {
+    description:
+      "Scaffold a new design proposal / feature-request doc in .charm/proposals/. Pass a free-text " +
+      "`name`; the daemon auto-derives the canonical PROP-<slug>.md filename, writes a draft template " +
+      "(Problem / Context / Proposal / Alternatives / Open Questions), and returns the file path. Edit " +
+      "the returned file to flesh out the proposal. A proposal describes WHAT to build and its impact; " +
+      "it does not dictate the ticket breakdown — you decide that later when you decompose it. Errors if " +
+      "a proposal with that slug already exists (never clobbers).",
+    inputSchema: { name: z.string().min(1) },
+  },
+  async (args) => ok(await call("create_proposal", args)),
+);
+
+server.registerTool(
+  "list_proposals",
+  {
+    description:
+      "List the design proposals / feature requests in .charm/proposals/ (PROP-*.md), each with its " +
+      "title and self-declared status, including ones already moved to proposals/finished/. A proposal " +
+      "describes WHAT to build and its impact; it does not dictate how many tickets to create — you read " +
+      "the proposal file and decide the ticket decomposition. Use this to see the menu of feature requests " +
+      "available to draw work from.",
+    inputSchema: {},
+  },
+  async () => ok(await call("list_proposals")),
+);
+
+server.registerTool(
+  "finish_proposal",
+  {
+    description:
+      "Mark a proposal finished by moving .charm/proposals/<name>.md into proposals/finished/, keeping the " +
+      "active proposals listing clean once a feature request has been fully decomposed into tickets (or " +
+      "superseded). `name` is the proposal filename, with or without the .md suffix.",
+    inputSchema: { name: z.string().min(1) },
+  },
+  async (args) => ok(await call("finish_proposal", args)),
+);
+
+server.registerTool(
   "spawn_review_agents",
   {
     description: "Spawn one headless reviewer agent per ticket id.",

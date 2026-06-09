@@ -14,8 +14,12 @@ import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
 import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, resolveModel, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
+import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import {
   CreateTicketsInput,
+  CreateProposalInput,
+  PromoteInput,
+  FinishProposalInput,
   SpawnReviewersInput,
   SpawnWorkersInput,
   AwaitApprovalInput,
@@ -520,6 +524,29 @@ async function main() {
         const created = input.tickets.map((t) => store.create(t).frontmatter);
         return created;
       }
+      case "promote": {
+        // Move hand-authored ticket DRAFTS from the scratchpad into the canonical
+        // tickets dir + sqlite index. This is the bridge that turns a cheap local
+        // file write by the orchestrator into a real, spawnable ticket without
+        // round-tripping the whole body through create_tickets. With no `tickets`
+        // arg, promote every draft currently in the scratchpad.
+        const input = PromoteInput.parse(params ?? {});
+        const names = input.tickets ?? store.listDrafts();
+        const promoted = names.map((n) => store.promoteDraft(n).frontmatter);
+        // Newly promoted tickets belong on the board immediately.
+        if (promoted.length > 0) refreshCoordination();
+        return promoted;
+      }
+      case "create_proposal": {
+        const input = CreateProposalInput.parse(params);
+        return createProposal(paths, input.name);
+      }
+      case "list_proposals":
+        return listProposals(paths);
+      case "finish_proposal": {
+        const input = FinishProposalInput.parse(params);
+        return finishProposal(paths, input.name);
+      }
       case "spawn_review_agents": {
         const input = SpawnReviewersInput.parse(params);
         // Clamp to the concurrent-agent cap, same as spawn_workers: spawn up to
@@ -532,7 +559,7 @@ async function main() {
           ids.push(spawnAgent({
             role: "reviewer",
             ticket_id: tid,
-            prompt: `Review and enrich .charm/tickets/${tid}.md in place.`,
+            prompt: `Read .charm/tickets/${tid}.md and review it.`,
             interactive: true,
           }));
         }
@@ -566,7 +593,7 @@ async function main() {
           ids.push(spawnAgent({
             role: "worker",
             ticket_id: tid,
-            prompt: `Implement ticket T-${tid.slice(2)}. First read .charm/tickets/${tid}.md (your ticket, incl. its activity log) and .charm/COORDINATION.md (the index of what other agents are working on), then call update_plan() with your plan, then implement.`,
+            prompt: `Read .charm/tickets/${tid}.md and complete it.`,
             interactive: true,
           }));
           store.update(tid, { status: "running", stage: "in_progress" });
@@ -923,7 +950,7 @@ async function main() {
         const id = spawnAgent({
           role: "tester",
           ticket_id: input.ticket_id,
-          prompt: `Validate ticket ${input.ticket_id}: read .charm/tickets/${input.ticket_id}.md acceptance criteria, run tests, produce a checklist result. No code edits.`,
+          prompt: `Read .charm/tickets/${input.ticket_id}.md and validate it.`,
           interactive: true,
         });
         return { agent_id: id };

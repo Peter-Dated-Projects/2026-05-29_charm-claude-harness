@@ -98,6 +98,31 @@ export const CreateTicketsInput = z.object({
 });
 export type CreateTicketsInput = z.infer<typeof CreateTicketsInput>;
 
+// promote ingests ticket DRAFTS the orchestrator wrote into .charm/scratchpad/
+// (cheap local writes, no MCP round-trip) into the canonical .charm/tickets/
+// directory and the sqlite index — which is what makes a draft a real, spawnable
+// ticket. `tickets` names the drafts to promote (with or without the .md suffix);
+// omit it to promote every draft currently in the scratchpad.
+export const PromoteInput = z.object({
+  tickets: z.array(z.string()).optional(),
+});
+export type PromoteInput = z.infer<typeof PromoteInput>;
+
+// create_proposal scaffolds a new proposal file in .charm/proposals/ from a
+// free-text name; the daemon derives the PROP-<slug>.md filename, writes a draft
+// template, and returns the path. `name` is the human-readable proposal title.
+export const CreateProposalInput = z.object({
+  name: z.string().min(1),
+});
+export type CreateProposalInput = z.infer<typeof CreateProposalInput>;
+
+// finish_proposal marks a proposal done by moving .charm/proposals/<name>.md into
+// .charm/proposals/finished/. `name` is the proposal filename, with or without .md.
+export const FinishProposalInput = z.object({
+  name: z.string().min(1),
+});
+export type FinishProposalInput = z.infer<typeof FinishProposalInput>;
+
 export const SpawnReviewersInput = z.object({
   ticket_ids: z.array(z.string()).min(1),
 });
