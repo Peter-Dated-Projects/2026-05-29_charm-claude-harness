@@ -264,9 +264,12 @@ async function main() {
       const cIdx = tmux.paneIndex(consolePaneId);
       if (cIdx === null) return;
       const agentIdxs: number[] = [];
+      const agentWidths: number[] = [];
       for (const pid of agentPaneIds) {
         const idx = tmux.paneIndex(pid);
-        if (idx !== null) agentIdxs.push(idx);
+        if (idx === null) continue;
+        agentIdxs.push(idx);
+        agentWidths.push(tmux.paneWidth(pid) ?? 0);
       }
       if (agentIdxs.length === 0) return;
       // Preserve whatever width the console column currently has -- the user
@@ -284,6 +287,7 @@ async function main() {
         consolePaneIndex: cIdx,
         agentPaneIndexes: agentIdxs,
         consoleWidth,
+        agentPaneWidths: agentWidths,
       });
       tmux.applyLayout(WINDOW, layout);
     } catch (e) {
@@ -388,7 +392,7 @@ async function main() {
   // dead / whose process id is gone is reaped — its ticket is reset to `failed`
   // (stays on the board so the system can retry it), its pane + slot are freed,
   // and the orchestrator is pinged to advance.
-  const SWEEP_MS = 30_000;
+  const SWEEP_MS = 15_000;
   // A `blocked` agent's Claude process is alive (idle, awaiting continue_agent),
   // so it is never seen dead and never falsely reaped. To avoid racing a pane
   // that's a tick away from a normal teardown (e.g. kill_agent defers its own
@@ -454,6 +458,18 @@ async function main() {
     }
     // Forget streak bookkeeping for agents that no longer exist.
     for (const id of [...deadStreak.keys()]) if (!registry.get(id)) deadStreak.delete(id);
+
+    // Orphan-pane pass: kill any tmux pane that is marked dead and not owned by
+    // a registered agent. These arise when tearDownAgent's kill-pane call fails
+    // silently (e.g. remain-on-exit panes that don't respond normally) — the
+    // agent drops from the registry but the zombie pane lingers indefinitely.
+    const knownPanes = new Set(agentPaneIds);
+    for (const pane of panes) {
+      if (!pane.dead) continue;
+      if (knownPanes.has(pane.pane_id)) continue;
+      console.error(`[charmd] sweep: removing orphan dead pane ${pane.pane_id}`);
+      try { tmux.killPane(pane.pane_id); } catch { /* ignore */ }
+    }
   }
 
   const server = startRpcServer(paths.socket, async (method, params) => {
@@ -592,7 +608,11 @@ async function main() {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
         if (input.state === "done" && a.ticket_id) {
-          store.update(a.ticket_id, { status: "complete", stage: "done" });
+          // Reviewers enrich a ticket and hand off to workers — mark it `reviewed`
+          // (ready for a worker to spawn) rather than `complete` (fully done). Only
+          // worker/tester done signals genuine completion.
+          const ticketDone = a.role === "reviewer" ? { status: "reviewed", stage: "review" } : { status: "complete", stage: "done" };
+          store.update(a.ticket_id, ticketDone);
         } else if (input.state === "failed" && a.ticket_id) {
           store.update(a.ticket_id, { status: "failed", stage: "failed" });
         }

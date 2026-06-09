@@ -3,15 +3,16 @@ import { z } from "zod";
 export const TicketStage = z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]);
 export type TicketStage = z.infer<typeof TicketStage>;
 
-export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "complete", "failed", "cancelled"]);
+export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "reviewed", "complete", "failed", "cancelled"]);
 export type TicketStatus = z.infer<typeof TicketStatus>;
 
 /** The statuses COORDINATION.md renders: every status except the two terminal
  *  "done with it" ones, `complete` and `cancelled`. Open and in-flight tickets
- *  obviously belong on the live board; `failed` stays too, because a failed ticket
- *  needs an operator's eyes (update the ticket, re-spawn a retry). Only a cleanly
- *  completed ticket, or one the operator deliberately called off, leaves the board. */
-export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "failed"];
+ *  obviously belong on the live board; `reviewed` stays (waiting for a worker);
+ *  `failed` stays too, because a failed ticket needs an operator's eyes (update
+ *  the ticket, re-spawn a retry). Only a cleanly completed ticket, or one the
+ *  operator deliberately called off, leaves the board. */
+export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "reviewed", "failed"];
 
 /** Statuses a worker may set on its own ticket via set_ticket_status. `cancelled`
  *  is intentionally excluded: cancelling is a deliberate operator/orchestrator
@@ -24,7 +25,7 @@ export const WORKER_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "ru
  *  down its agent, which is cancel_ticket's job — keeping it out of this general state
  *  write means the two paths can't be confused. (Happens to match the worker set, but
  *  it's a distinct authorization surface: this one is keyed by ticket_id, not agent.) */
-export const ORCHESTRATOR_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "complete", "failed"];
+export const ORCHESTRATOR_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "reviewed", "complete", "failed"];
 
 export const TicketFrontmatter = z.object({
   id: z.string().regex(/^T-\d{3,}$/),

@@ -11,3 +11,5 @@ dist/
 *.bun-build
 
 testing/
+
+rust/

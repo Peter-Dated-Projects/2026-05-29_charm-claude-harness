@@ -14,8 +14,23 @@ export class Tmux {
     // Keep dead panes visible so a crashing claude leaves its error on screen
     // instead of silently collapsing the layout.
     spawnSync("tmux", ["set-option", "-t", this.session, "remain-on-exit", "on"]);
-    // Mouse: click to focus a pane, scroll inside it.
+    // Mouse on: enables click-to-focus and pane resizing.
     spawnSync("tmux", ["set-option", "-t", this.session, "mouse", "on"]);
+    // set-clipboard on: forward OSC 52 sequences from applications (e.g. Claude Code)
+    // to the outer terminal so they can write to the system clipboard directly.
+    spawnSync("tmux", ["set-option", "-t", this.session, "set-clipboard", "on"]);
+    // allow-passthrough on: enables DCS passthrough for panes in this session.
+    // When charm itself is attached through another tmux session, pane applications
+    // that emit clipboard or other terminal-extended sequences (wrapped in the tmux
+    // DCS passthrough envelope \ePtmux;...\e\\) can reach the outermost terminal
+    // rather than being swallowed by an intermediate tmux layer.
+    spawnSync("tmux", ["set-option", "-t", this.session, "allow-passthrough", "on"]);
+    // Append tmux* and screen* to terminal-features so that when charm's session is
+    // attached through another tmux (TERM=tmux-256color or screen-256color), tmux
+    // knows the outer terminal supports clipboard (Ms) and will forward OSC 52
+    // sequences from pane apps up through the tmux chain instead of discarding them.
+    spawnSync("tmux", ["set-option", "-as", "terminal-features", "tmux*:clipboard"]);
+    spawnSync("tmux", ["set-option", "-as", "terminal-features", "screen*:clipboard"]);
   }
 
   hasSession(): boolean {
@@ -72,7 +87,9 @@ export class Tmux {
     args.push("sh", "-c", opts.cmd);
     const r = spawnSync("tmux", args, { encoding: "utf8" });
     if (r.status !== 0) throw new Error(`tmux split-window failed: ${r.stderr}`);
-    return r.stdout.trim();
+    const pane = r.stdout.trim();
+    spawnSync("tmux", ["set-option", "-p", "-t", pane, "allow-passthrough", "on"]);
+    return pane;
   }
 
   /**
@@ -109,7 +126,9 @@ export class Tmux {
     );
     if (r.status !== 0) throw new Error(`tmux respawn-pane failed: ${r.stderr}`);
     const id = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{pane_id}"], { encoding: "utf8" });
-    return id.stdout.trim();
+    const pane = id.stdout.trim();
+    spawnSync("tmux", ["set-option", "-p", "-t", pane, "allow-passthrough", "on"]);
+    return pane;
   }
 
   killPane(paneId: string): void {
