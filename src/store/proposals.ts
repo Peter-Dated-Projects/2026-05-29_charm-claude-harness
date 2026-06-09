@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { join, basename } from "node:path";
 import type { CharmPaths } from "../paths.ts";
 
@@ -43,6 +43,65 @@ function readDir(dir: string, finished: boolean): ProposalEntry[] {
       return { name: basename(f, ".md"), title, status, finished };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Turn a free-text proposal name into the canonical PROP-<slug> base (no .md).
+ *  Lowercases, collapses any non-alphanumeric run to a single hyphen, trims edge
+ *  hyphens, and strips a leading "prop-" the caller may have already typed so we
+ *  never produce "PROP-prop-foo". */
+function proposalSlug(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/^prop-/, "");
+  if (!slug) throw new Error(`proposal name has no usable characters: ${JSON.stringify(name)}`);
+  return `PROP-${slug}`;
+}
+
+/** Scaffold a new proposal file in .charm/proposals/ from `name`, returning the
+ *  resolved base name and absolute path. The filename is auto-derived as
+ *  PROP-<slug>.md; the body is a draft template the agent then fills in. Throws
+ *  if a proposal with that slug already exists (never clobbers). The H1 is the
+ *  human-readable name as given (the slug lives in the filename). */
+export function createProposal(paths: CharmPaths, name: string): { name: string; path: string } {
+  const base = proposalSlug(name);
+  const path = join(paths.proposalsDir, `${base}.md`);
+  if (existsSync(path)) throw new Error(`proposal already exists: ${base}`);
+  mkdirSync(paths.proposalsDir, { recursive: true });
+  const template = `# ${name.trim()}
+
+**Status:** draft
+
+---
+
+## Problem
+
+_What gap or pain does this address? Keep it concrete._
+
+## Context / Findings
+
+_Evidence, current behavior, file:line references, prior art._
+
+## Proposal
+
+_What to build and its impact. A proposal describes WHAT, not the ticket
+breakdown — the orchestrator decides how to decompose it into tickets._
+
+## Alternatives Considered
+
+_Other approaches and why they lose._
+
+## Open Questions
+
+_Unresolved decisions to settle during planning._
+
+## Status
+
+draft
+`;
+  writeFileSync(path, template);
+  return { name: base, path };
 }
 
 /** List every proposal in .charm/proposals/, including those already moved to

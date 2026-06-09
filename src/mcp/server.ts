@@ -66,6 +66,21 @@ server.registerTool(
 );
 
 server.registerTool(
+  "create_proposal",
+  {
+    description:
+      "Scaffold a new design proposal / feature-request doc in .charm/proposals/. Pass a free-text " +
+      "`name`; the daemon auto-derives the canonical PROP-<slug>.md filename, writes a draft template " +
+      "(Problem / Context / Proposal / Alternatives / Open Questions), and returns the file path. Edit " +
+      "the returned file to flesh out the proposal. A proposal describes WHAT to build and its impact; " +
+      "it does not dictate the ticket breakdown — you decide that later when you decompose it. Errors if " +
+      "a proposal with that slug already exists (never clobbers).",
+    inputSchema: { name: z.string().min(1) },
+  },
+  async (args) => ok(await call("create_proposal", args)),
+);
+
+server.registerTool(
   "list_proposals",
   {
     description:

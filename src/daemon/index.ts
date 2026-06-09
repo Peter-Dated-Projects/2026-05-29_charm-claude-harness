@@ -14,9 +14,10 @@ import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
 import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, resolveModel, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
-import { listProposals, finishProposal } from "../store/proposals.ts";
+import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import {
   CreateTicketsInput,
+  CreateProposalInput,
   PromoteInput,
   FinishProposalInput,
   SpawnReviewersInput,
@@ -438,6 +439,10 @@ async function main() {
         // Newly promoted tickets belong on the board immediately.
         if (promoted.length > 0) refreshCoordination();
         return promoted;
+      }
+      case "create_proposal": {
+        const input = CreateProposalInput.parse(params);
+        return createProposal(paths, input.name);
       }
       case "list_proposals":
         return listProposals(paths);
