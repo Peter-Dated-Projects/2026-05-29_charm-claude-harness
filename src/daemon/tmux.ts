@@ -138,10 +138,16 @@ export class Tmux {
     spawnSync("tmux", ["select-pane", "-t", paneId]);
   }
 
-  listPanes(): { pane_id: string; pid: number; cmd: string }[] {
+  /** List every pane in this session, including dead ones. With session-level
+   *  `remain-on-exit on`, a pane whose command has exited stays listed with
+   *  `dead: true` (and `#{pane_dead_status}` would hold its exit code) until
+   *  something kills it — which is exactly what the daemon's liveness sweep keys
+   *  off to reap agents that exited without reporting. A pane that was killed is
+   *  simply absent from the list. */
+  listPanes(): { pane_id: string; pid: number; cmd: string; dead: boolean }[] {
     const r = spawnSync(
       "tmux",
-      ["list-panes", "-s", "-t", this.session, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}"],
+      ["list-panes", "-s", "-t", this.session, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}"],
       { encoding: "utf8" },
     );
     if (r.status !== 0) return [];
@@ -150,8 +156,8 @@ export class Tmux {
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [pane_id, pid, cmd] = line.split("\t");
-        return { pane_id: pane_id!, pid: Number(pid), cmd: cmd! };
+        const [pane_id, pid, cmd, dead] = line.split("\t");
+        return { pane_id: pane_id!, pid: Number(pid), cmd: cmd!, dead: dead === "1" };
       });
   }
 
