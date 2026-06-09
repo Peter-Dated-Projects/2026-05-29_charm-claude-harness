@@ -264,9 +264,12 @@ async function main() {
       const cIdx = tmux.paneIndex(consolePaneId);
       if (cIdx === null) return;
       const agentIdxs: number[] = [];
+      const agentWidths: number[] = [];
       for (const pid of agentPaneIds) {
         const idx = tmux.paneIndex(pid);
-        if (idx !== null) agentIdxs.push(idx);
+        if (idx === null) continue;
+        agentIdxs.push(idx);
+        agentWidths.push(tmux.paneWidth(pid) ?? 0);
       }
       if (agentIdxs.length === 0) return;
       // Preserve whatever width the console column currently has -- the user
@@ -284,6 +287,7 @@ async function main() {
         consolePaneIndex: cIdx,
         agentPaneIndexes: agentIdxs,
         consoleWidth,
+        agentPaneWidths: agentWidths,
       });
       tmux.applyLayout(WINDOW, layout);
     } catch (e) {
@@ -373,6 +377,99 @@ async function main() {
       try { tmux.sendText(orchestratorPaneId, line); }
       catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
     }, 1200);
+  }
+
+  // --- Dead-pane liveness sweep --------------------------------------------
+  // The daemon only learns a sub-agent finished when that agent calls
+  // report_status. An agent whose Claude process exits or crashes WITHOUT a
+  // clean report (ran out of turn, OOM, kill -9, a dead MCP shim) leaves two
+  // pieces of garbage: a dead tmux pane (session-level `remain-on-exit on` keeps
+  // it on screen) AND a stranded registry entry that never frees its
+  // concurrent-agent slot — so the cap silently clogs over time until the fleet
+  // can't spawn. Nothing else reaps these; tearDownAgent is only ever driven by
+  // an explicit RPC. This sweep reconciles the registry against tmux ground
+  // truth on a timer: any agent we believe is alive whose pane is gone / marked
+  // dead / whose process id is gone is reaped — its ticket is reset to `failed`
+  // (stays on the board so the system can retry it), its pane + slot are freed,
+  // and the orchestrator is pinged to advance.
+  const SWEEP_MS = 15_000;
+  // A `blocked` agent's Claude process is alive (idle, awaiting continue_agent),
+  // so it is never seen dead and never falsely reaped. To avoid racing a pane
+  // that's a tick away from a normal teardown (e.g. kill_agent defers its own
+  // teardown ~50ms), only reap after an agent is seen dead on two consecutive
+  // sweeps.
+  const deadStreak = new Map<string, number>();
+  let sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  function sweepDeadPanes() {
+    if (!tmuxAvailable) return;
+    let panes: { pane_id: string; pid: number; dead: boolean }[];
+    try {
+      panes = tmux.listPanes();
+    } catch (e) {
+      console.error("[charmd] sweep: listPanes failed:", e);
+      return;
+    }
+    // Empty means the tmux query failed (status != 0 -> []), NOT that every pane
+    // vanished: a live session always has at least the console + orchestrator
+    // panes. Reaping off a failed query would mass-kill the fleet, so skip the
+    // tick and try again next time.
+    if (panes.length === 0) return;
+    const byPane = new Map(panes.map((p) => [p.pane_id, p]));
+    for (const a of registry.list()) {
+      // Only agents we believe are live and that own a pane can be leaked.
+      if (a.state !== "spawning" && a.state !== "running" && a.state !== "blocked") continue;
+      if (!a.pane_id) continue;
+      const pane = byPane.get(a.pane_id);
+      // Dead if the pane is gone (killed), tmux marks it dead (command exited
+      // under remain-on-exit), or its foreground process is no longer alive.
+      const dead = !pane || pane.dead || (pane.pid > 0 && !isProcessAlive(pane.pid));
+      if (!dead) {
+        deadStreak.delete(a.id);
+        continue;
+      }
+      const streak = (deadStreak.get(a.id) ?? 0) + 1;
+      deadStreak.set(a.id, streak);
+      if (streak < 2) continue; // give a normal teardown one more tick to win
+      deadStreak.delete(a.id);
+      console.error(
+        `[charmd] sweep: reaping dead agent ${a.id} (pane ${a.pane_id}, ticket ${a.ticket_id ?? "-"}); ` +
+          `process exited without report_status.`,
+      );
+      // Reset the ticket so the system can retry it. Mirrors a self-kill's
+      // terminal state (failed/failed): `failed` stays on the board for
+      // reassignment rather than dropping off like `cancelled`.
+      if (a.ticket_id) {
+        try {
+          store.update(a.ticket_id, { status: "failed", stage: "failed" });
+          store.appendLog(a.ticket_id, {
+            agent: a.id,
+            kind: "failed",
+            text: "system: agent pane died without reporting; reaped by the liveness sweep so this ticket can be retried.",
+          });
+        } catch {
+          /* ignore — a missing/locked ticket must not abort the sweep */
+        }
+      }
+      tearDownAgent(a.id);
+      pingOrchestrator(
+        `${a.id} died on ${a.ticket_id ?? "?"} (pane gone, no report_status) — reaped, ticket reset to failed for retry`,
+      );
+    }
+    // Forget streak bookkeeping for agents that no longer exist.
+    for (const id of [...deadStreak.keys()]) if (!registry.get(id)) deadStreak.delete(id);
+
+    // Orphan-pane pass: kill any tmux pane that is marked dead and not owned by
+    // a registered agent. These arise when tearDownAgent's kill-pane call fails
+    // silently (e.g. remain-on-exit panes that don't respond normally) — the
+    // agent drops from the registry but the zombie pane lingers indefinitely.
+    const knownPanes = new Set(agentPaneIds);
+    for (const pane of panes) {
+      if (!pane.dead) continue;
+      if (knownPanes.has(pane.pane_id)) continue;
+      console.error(`[charmd] sweep: removing orphan dead pane ${pane.pane_id}`);
+      try { tmux.killPane(pane.pane_id); } catch { /* ignore */ }
+    }
   }
 
   const server = startRpcServer(paths.socket, async (method, params) => {
@@ -511,7 +608,11 @@ async function main() {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
         if (input.state === "done" && a.ticket_id) {
-          store.update(a.ticket_id, { status: "complete", stage: "done" });
+          // Reviewers enrich a ticket and hand off to workers — mark it `reviewed`
+          // (ready for a worker to spawn) rather than `complete` (fully done). Only
+          // worker/tester done signals genuine completion.
+          const ticketDone = a.role === "reviewer" ? { status: "reviewed", stage: "review" } : { status: "complete", stage: "done" };
+          store.update(a.ticket_id, ticketDone);
         } else if (input.state === "failed" && a.ticket_id) {
           store.update(a.ticket_id, { status: "failed", stage: "failed" });
         }
@@ -833,6 +934,7 @@ async function main() {
   });
 
   const cleanup = (code = 0) => {
+    if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
     try { server.stop(); } catch { /* ignore */ }
     // Reap any standalone graph viewers we spawned before we exit, so they don't
     // linger as orphans (covers SIGINT/SIGTERM, the shutdown RPC, and crashes).
@@ -870,6 +972,10 @@ async function main() {
   });
 
   console.log(`[charmd] listening on ${paths.socket} (session=${session}, root=${paths.root})`);
+
+  // Start the dead-pane liveness sweep once we're listening (no agents exist
+  // before this, so there's nothing to reap earlier). Cleared in cleanup().
+  sweepTimer = setInterval(sweepDeadPanes, SWEEP_MS);
 }
 
 /** Timestamped crash logging. The daemon's stdout/stderr are redirected to its

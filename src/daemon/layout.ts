@@ -18,6 +18,10 @@ export type LayoutInputs = {
   consolePaneIndex: number;
   agentPaneIndexes: number[];
   consoleWidth: number;
+  // Current cell widths for each agent pane (same order as agentPaneIndexes).
+  // When provided, relayout preserves user-adjusted sizes proportionally instead
+  // of dividing the agent region evenly. Zeros are treated as "no hint."
+  agentPaneWidths?: number[];
 };
 
 export function buildLayoutString(inp: LayoutInputs): string {
@@ -28,31 +32,47 @@ export function buildLayoutString(inp: LayoutInputs): string {
   const agentX = cw + 1;
   const agentW = W - cw - 1;
   const consoleNode = leaf(cw, H, 0, 0, cIdx);
-  const agentNode = buildAgentRegion(agentW, H, agentX, 0, a);
+  const agentNode = buildAgentRegion(agentW, H, agentX, 0, a, inp.agentPaneWidths);
   return wrapChecksum(leftRight(W, H, 0, 0, [consoleNode, agentNode]));
 }
 
-function buildAgentRegion(W: number, H: number, X: number, Y: number, idxs: number[]): string {
+function buildAgentRegion(W: number, H: number, X: number, Y: number, idxs: number[], widths?: number[]): string {
   if (idxs.length === 1) return leaf(W, H, X, Y, idxs[0]!);
   const topCount = Math.ceil(idxs.length / 2);
   const topH = Math.floor((H - 1) / 2);
   const bottomH = H - 1 - topH;
-  const topRow = buildRow(W, topH, X, Y, idxs.slice(0, topCount));
-  const bottomRow = buildRow(W, bottomH, X, Y + topH + 1, idxs.slice(topCount));
+  const topRow = buildRow(W, topH, X, Y, idxs.slice(0, topCount), widths?.slice(0, topCount));
+  const bottomRow = buildRow(W, bottomH, X, Y + topH + 1, idxs.slice(topCount), widths?.slice(topCount));
   return topBottom(W, H, X, Y, [topRow, bottomRow]);
 }
 
-function buildRow(W: number, H: number, X: number, Y: number, idxs: number[]): string {
+function buildRow(W: number, H: number, X: number, Y: number, idxs: number[], hintWidths?: number[]): string {
   if (idxs.length === 1) return leaf(W, H, X, Y, idxs[0]!);
   const n = idxs.length;
-  const base = Math.floor((W - (n - 1)) / n);
+  // Total interior width (cell area, excluding n-1 single-char dividers).
+  const available = W - (n - 1);
+
+  let interiorWidths: number[];
+  const hints = hintWidths?.filter(w => w > 0);
+  if (hints && hints.length === n) {
+    // Scale user-adjusted widths proportionally to fit the available space,
+    // so manual resizes survive agent spawns/kills without being discarded.
+    const hintTotal = hints.reduce((a, b) => a + b, 0);
+    const scaled = hints.map(w => Math.max(1, Math.round((w * available) / hintTotal)));
+    // Fix any rounding drift in the last pane so widths sum exactly to available.
+    const prefix = scaled.slice(0, -1).reduce((a, b) => a + b, 0);
+    scaled[n - 1] = Math.max(1, available - prefix);
+    interiorWidths = scaled;
+  } else {
+    const base = Math.floor(available / n);
+    interiorWidths = idxs.map((_, i) => (i === n - 1 ? available - base * (n - 1) : base));
+  }
+
   let cursor = X;
   const children: string[] = [];
   for (let i = 0; i < n; i++) {
-    const isLast = i === n - 1;
-    const w = isLast ? W - (cursor - X) : base;
-    children.push(leaf(w, H, cursor, Y, idxs[i]!));
-    cursor += w + 1;
+    children.push(leaf(interiorWidths[i]!, H, cursor, Y, idxs[i]!));
+    cursor += interiorWidths[i]! + 1;
   }
   return leftRight(W, H, X, Y, children);
 }
