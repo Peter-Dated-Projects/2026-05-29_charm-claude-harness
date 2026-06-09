@@ -671,6 +671,11 @@ function scaffoldCharmDir(
 ) {
   mkdirSync(paths.charmDir, { recursive: true });
   mkdirSync(paths.ticketsDir, { recursive: true });
+  // Orchestrator scratchpad for ticket drafts (promoted into ticketsDir via the
+  // `promote` MCP tool) and the proposals tree (feature requests + a finished/
+  // landing zone). Created empty; never clobbered on re-init.
+  mkdirSync(paths.scratchpadDir, { recursive: true });
+  mkdirSync(paths.proposalsDir, { recursive: true });
   mkdirSync(paths.promptsDir, { recursive: true });
   mkdirSync(paths.logsDir, { recursive: true });
 

@@ -11,3 +11,7 @@ dist/
 *.bun-build
 
 testing/
+
+# Rust port lives on the PORT-rust branch; ignore it on main so switching
+# branches doesn't leave the working tree showing it as untracked.
+rust/

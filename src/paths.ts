@@ -73,6 +73,16 @@ export function charmPaths(root: string, sessionId?: string) {
     db: join(charmDir, "db.sqlite"),
     promptsDir: join(charmDir, "prompts"),
     ticketsDir: join(charmDir, "tickets"),
+    // Orchestrator scratchpad for ticket DRAFTS. The orchestrator writes draft
+    // ticket files here directly (cheap local write, no MCP round-trip), each
+    // following normal ticket conventions; the `promote` tool then moves a draft
+    // into ticketsDir and indexes it, which is what makes it a real, spawnable
+    // ticket. Drafts here are NOT indexed and never appear on the board.
+    scratchpadDir: join(charmDir, "scratchpad"),
+    // Design proposals / feature requests (PROP-*.md). list_proposals reads this;
+    // finish_proposal moves an accepted/superseded file into proposals/finished/.
+    proposalsDir: join(charmDir, "proposals"),
+    proposalsFinishedDir: join(charmDir, "proposals", "finished"),
     // The durable, git-tracked knowledge base (the one .charm child that survives
     // across runs). kbIndex is the tiny always-read entry point.
     kbDir: join(charmDir, "kb"),
