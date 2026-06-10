@@ -19,6 +19,11 @@ const MIN_FILES_ROWS = 5;
 // The viewer always keeps at least this many content rows when the list grows.
 const MIN_VIEWER_ROWS = 3;
 
+// Files tab horizontal split: tree panel default/min width in columns (content only).
+const DEFAULT_TREE_COLS = 30;
+const MIN_TREE_COLS = 15;
+const MIN_VIEWER_COLS = 30;
+
 const program = new Command();
 program
   .option("-r, --root <path>", "project root", process.cwd())
@@ -195,12 +200,13 @@ function ViewerPanel(props: {
   scroll: number;
   viewerHeight: number;
   viewerPanelHeight: number;
+  flexGrow?: number;
 }) {
-  const { title, hint, rows, scroll, viewerHeight, viewerPanelHeight } = props;
+  const { title, hint, rows, scroll, viewerHeight, viewerPanelHeight, flexGrow = 0 } = props;
   const slice = rows.slice(scroll, scroll + viewerHeight);
   const pct = rows.length === 0 ? 100 : Math.min(100, Math.round(((scroll + viewerHeight) / rows.length) * 100));
   return (
-    <Box flexDirection="column" height={viewerPanelHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
+    <Box flexDirection="column" height={viewerPanelHeight} flexShrink={0} flexGrow={flexGrow} borderStyle="single" paddingX={1} overflow="hidden">
       <Box flexShrink={0}>
         <Text bold wrap="truncate-end">{title}</Text>
         <Text> </Text>
@@ -309,8 +315,36 @@ function binaryPlaceholder(path: string): string {
 
 function FilesTab({ inputActive }: { inputActive: boolean }) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [filesRows, setFilesRows] = useState(MIN_FILES_ROWS);
-  const layout = useSplitLayout(filesRows);
+  const [treeCols, setTreeCols] = useState(DEFAULT_TREE_COLS);
+
+  // Track terminal resize so dimensions stay live.
+  const { stdout } = useStdout();
+  const [, setResizeTick] = useState(0);
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = () => setResizeTick((n) => n + 1);
+    stdout.on("resize", onResize);
+    return () => { stdout.off("resize", onResize); };
+  }, [stdout]);
+
+  const cols = stdout?.columns ?? 100;
+  const termRows = stdout?.rows ?? 30;
+  const APP_CHROME = 2;          // tabs row + status row
+  const PANEL_BORDER_V = 2;      // top + bottom border
+  const PANEL_CHROME_W = 4;      // left-border + left-pad + right-pad + right-border
+  const TREE_HEADER = 1;         // "Files" header row inside the tree panel
+  const VIEWER_CHROME_V = 2;     // title row + hint row inside the viewer panel
+
+  const rowHeight = Math.max(3, termRows - APP_CHROME);
+  const treeHeight = Math.max(1, rowHeight - PANEL_BORDER_V - TREE_HEADER);
+  const viewerHeight = Math.max(1, rowHeight - PANEL_BORDER_V - VIEWER_CHROME_V);
+
+  // Clamp tree panel width so the viewer always keeps MIN_VIEWER_COLS of content.
+  const maxTreeCols = Math.max(MIN_TREE_COLS, cols - PANEL_CHROME_W * 2 - MIN_VIEWER_COLS);
+  const treeColsEff = Math.min(Math.max(MIN_TREE_COLS, treeCols), maxTreeCols);
+  const treePanelWidth = treeColsEff + PANEL_CHROME_W;
+  // Viewer fills the remainder; its markdown renderer needs the content width.
+  const viewerWidth = Math.max(8, cols - treePanelWidth - PANEL_CHROME_W);
 
   // Sniff only when the selection changes (FileTree dims binary rows with its
   // own cached sniff; this is the viewer's independent check).
@@ -322,7 +356,7 @@ function FilesTab({ inputActive }: { inputActive: boolean }) {
     () => (binary && selected ? binaryPlaceholder(selected) : fileContent),
     [binary, selected, fileContent],
   );
-  const viewer = useViewer(viewerContent, layout.viewerWidth, layout.viewerHeight, selected);
+  const viewer = useViewer(viewerContent, viewerWidth, viewerHeight, selected);
 
   // The Files-tab viewer owns ONLY +/-, page (Space/b), and half-page (^d/^u).
   // It MUST NOT bind j/k/arrows/shift-arrows/enter/right/left/h/r/g/G — those
@@ -330,9 +364,9 @@ function FilesTab({ inputActive }: { inputActive: boolean }) {
   // and FileTree's while the tab is focused, so the key sets must stay disjoint.
   useInput((input, key) => {
     if (input === "+" || input === "=") {
-      setFilesRows((n) => Math.min(layout.maxFilesRows, n + 1));
+      setTreeCols((n) => Math.min(maxTreeCols, n + 2));
     } else if (input === "-" || input === "_") {
-      setFilesRows((n) => Math.max(MIN_FILES_ROWS, n - 1));
+      setTreeCols((n) => Math.max(MIN_TREE_COLS, n - 2));
     } else if (key.ctrl && input === "d") {
       viewer.halfDown();
     } else if (key.ctrl && input === "u") {
@@ -345,18 +379,19 @@ function FilesTab({ inputActive }: { inputActive: boolean }) {
   }, { isActive: inputActive });
 
   return (
-    <Box flexDirection="column" height={layout.rowHeight} flexShrink={0} overflow="hidden">
-      <Box flexDirection="column" height={layout.filesPanelHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
+    <Box flexDirection="row" height={rowHeight} flexShrink={0} overflow="hidden">
+      <Box flexDirection="column" width={treePanelWidth} height={rowHeight} flexShrink={0} borderStyle="single" paddingX={1} overflow="hidden">
         <Text bold wrap="truncate-end">Files</Text>
-        <FileTree root={ROOT} height={layout.filesRowsEff} isActive={inputActive} onOpenFile={setSelected} />
+        <FileTree root={ROOT} height={treeHeight} isActive={inputActive} onOpenFile={setSelected} />
       </Box>
       <ViewerPanel
         title={selected ? relative(ROOT, selected) : "(no file)"}
-        hint="j/k/arrows tree · enter/h open/close · g/G/r tree · wheel/space/b page · ^d/^u half · +/- resize"
+        hint="j/k/arrows tree · enter/right open · h/left close · g/G/r tree · wheel/space/b page · ^d/^u half · +/- resize"
         rows={viewer.rows}
         scroll={viewer.scroll}
-        viewerHeight={layout.viewerHeight}
-        viewerPanelHeight={layout.viewerPanelHeight}
+        viewerHeight={viewerHeight}
+        viewerPanelHeight={rowHeight}
+        flexGrow={1}
       />
     </Box>
   );

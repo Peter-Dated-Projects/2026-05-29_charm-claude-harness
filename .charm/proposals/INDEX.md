@@ -29,3 +29,4 @@ proposal to "clean up". Supersede it and record what replaced it.
 | [PROP-charm-harness-ui-revamp.md](PROP-charm-harness-ui-revamp.md) | Evaluate charm.land (Bubble Tea stack) vs. building a full Electron/Tauri app; two-track recommendation | draft |
 | [PROP-rust-rewrite.md](PROP-rust-rewrite.md) | Ground-up Rust rewrite: component mapping, crate selection, hard parts (async shared state, no official MCP SDK, frontmatter round-trip), effort by crate | draft |
 | [PROP-go-rewrite.md](PROP-go-rewrite.md) | Ground-up Go rewrite: goroutine daemon, Bubble Tea console, component mapping, library choices, effort by package | draft |
+| [PROP-file-explorer-tab.md](PROP-file-explorer-tab.md) | Add a fourth Files tab to the console with VS Code-style collapsible tree and markdown viewer; keyboard-only, pure console change, no daemon deps | draft |
