@@ -2,8 +2,6 @@
 
 Traps, flaky behavior, and non-obvious constraints -- the things that bite you twice.
 
-_No notes yet. Add atomic notes in this directory and list each one in the table below
-(see `../CONTRIBUTING.md`)._
-
 | Note | Summary | Status |
 |---|---|---|
+| [binary-sniff-utf8-truncation.md](binary-sniff-utf8-truncation.md) | A fatal UTF-8 decode of a fixed-size head chunk false-positives valid text files because the chunk boundary can split a multibyte sequence; trim the partial trailing sequence before decoding. | current |
