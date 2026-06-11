@@ -186,19 +186,18 @@ program
     // to relaunch it faithfully. Its own file (not meta.json) keeps it readable
     // across a daemon restart.
     const orchestratorSessionId = randomUUID();
-    writeFileSync(
-      paths.orchestratorSessionFile,
-      JSON.stringify(
-        {
-          claude_session_id: orchestratorSessionId,
-          model: fleetModel,
-          permission_mode: defaultPermissionMode(),
-          mode,
-        },
-        null,
-        2,
-      ) + "\n",
-    );
+    // The orchestrator's resume record. Written now with the launch settings, and
+    // re-written below with the console + orchestrator pane ids once the panes
+    // exist — so `charm resume` can faithfully relaunch the conversation AND, if
+    // the daemon has since died, restart it and re-register those panes.
+    const sessionRecord: Record<string, unknown> = {
+      claude_session_id: orchestratorSessionId,
+      model: fleetModel,
+      permission_mode: defaultPermissionMode(),
+      mode,
+      max_agents: maxAgents,
+    };
+    writeFileSync(paths.orchestratorSessionFile, JSON.stringify(sessionRecord, null, 2) + "\n");
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
@@ -221,6 +220,14 @@ program
       console_pane_id: consolePane,
       agent_pane_ids: [mainPane],
     });
+
+    // Persist the pane ids so `charm resume` can re-register them with a fresh
+    // daemon if the original one has died (the daemon's in-memory pane tracking
+    // is lost on death; these survive on disk). Pane ids are stable for the life
+    // of the tmux session, which outlives the daemon.
+    sessionRecord.console_pane_id = consolePane;
+    sessionRecord.orchestrator_pane_id = mainPane;
+    writeFileSync(paths.orchestratorSessionFile, JSON.stringify(sessionRecord, null, 2) + "\n");
 
     // Bind `:` (no prefix) to a tmux command-prompt that runs `charm ctl`.
     // Works from any pane — console or agent — so the user can quit/detach
@@ -321,7 +328,15 @@ program
     // Read what charm recorded about the orchestrator at start: its Claude-side
     // conversation id plus the model + permission mode it was launched with, so
     // the relaunch is faithful (same MCP config, system prompt, model, perms).
-    let record: { claude_session_id?: string; model?: string; permission_mode?: string; mode?: string } = {};
+    let record: {
+      claude_session_id?: string;
+      model?: string;
+      permission_mode?: string;
+      mode?: string;
+      max_agents?: number;
+      console_pane_id?: string;
+      orchestrator_pane_id?: string;
+    } = {};
     if (existsSync(paths.orchestratorSessionFile)) {
       try { record = JSON.parse(readFileSync(paths.orchestratorSessionFile, "utf8")); }
       catch { /* corrupt — fall through to the missing-id guard below */ }
@@ -344,6 +359,69 @@ program
           `pane inside a live charm window. Start a fresh charm instead.`,
       );
       process.exit(2);
+    }
+
+    // Make sure the daemon backing this session is alive before relaunching the
+    // orchestrator. If it died, its in-memory state (agent registry, pane
+    // tracking) is gone, so a resumed orchestrator's charm MCP tools would have no
+    // backend — it would come up wired to a dead socket. Restart a fresh daemon
+    // and re-register the console + orchestrator panes (persisted at start). Any
+    // sub-agents from before the crash are unrecoverable (their registry state is
+    // gone), so their panes are reaped here; the orchestrator re-derives ticket
+    // state from the on-disk board.
+    let daemonAlive = false;
+    try { await rpcCall(paths.socket, "ping"); daemonAlive = true; } catch { /* daemon down */ }
+    if (!daemonAlive) {
+      if (!record.console_pane_id || !record.orchestrator_pane_id) {
+        console.error(
+          `[charm] the daemon for '${session}' is down and there are no saved pane ids to re-register ` +
+            `(this session predates pane-id persistence). Start a fresh charm instead.`,
+        );
+        process.exit(2);
+      }
+      console.log(`[charm] daemon for '${session}' is down; restarting it and re-registering panes.`);
+      // Reap orphaned sub-agent panes — keep only the console + orchestrator, so
+      // the fresh daemon adopts a clean two-pane layout.
+      for (const p of tmux.listPanes()) {
+        if (p.pane_id !== record.console_pane_id && p.pane_id !== record.orchestrator_pane_id) {
+          await tmux.killPane(p.pane_id);
+        }
+      }
+      // Spawn a fresh daemon, faithful to the original launch settings (mirrors
+      // `charm start`). record.model is exactly the fleet model the daemon ran
+      // with, so passing it reproduces the original fleet model whether or not
+      // -m was used.
+      mkdirSync(paths.logsDir, { recursive: true });
+      const logFd = openSync(join(paths.logsDir, "charmd.log"), "a");
+      const [daemonCmd, ...daemonPrefix] = resolveChild("daemon");
+      const d = spawn(
+        daemonCmd!,
+        [...daemonPrefix, "--root", paths.root, "--session", session, "--uuid", target.sessionId],
+        {
+          stdio: ["ignore", logFd, logFd],
+          detached: true,
+          env: {
+            ...process.env,
+            ...(record.mode ? { CHARM_MODE: record.mode } : {}),
+            ...(record.model ? { CHARM_MODEL: record.model } : {}),
+            ...(record.permission_mode ? { CHARM_PERMISSION_MODE: record.permission_mode } : {}),
+            ...(record.max_agents ? { CHARM_MAX_AGENTS: String(record.max_agents) } : {}),
+          },
+        },
+      );
+      d.unref();
+      try {
+        await waitForSocket(paths.socket, 10_000);
+        await rpcCall(paths.socket, "ping");
+      } catch {
+        console.error(`[charm] restarted daemon did not come up (see ${join(paths.logsDir, "charmd.log")}).`);
+        process.exit(2);
+      }
+      await rpcCall(paths.socket, "register_panes", {
+        console_pane_id: record.console_pane_id,
+        agent_pane_ids: [record.orchestrator_pane_id],
+      });
+      console.log(`[charm] daemon restarted (pid=${d.pid}).`);
     }
 
     // Re-supply the original launch settings. The mode framing isn't reconstructed
