@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { charmPaths, sessionNameForId, type CharmPaths } from "./paths.ts";
 import { SessionMeta } from "./schema.ts";
@@ -106,7 +106,7 @@ program
     // mode — so you can run Opus in research mode or Sonnet in development mode.
     // Resolved up front so a bad alias fails before we spawn anything, and so the
     // daemon receives (via CHARM_MODEL) the exact id it will hand to sub-agents.
-    const { resolveModel, MODE_MODEL, buildClaudeCommand, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
+    const { resolveModel, MODE_MODEL, buildClaudeCommand, defaultPermissionMode, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
     let fleetModel: string;
     try {
       fleetModel = resolveModel(opts.model ?? MODE_MODEL[mode]);
@@ -177,6 +177,28 @@ program
     // fleetModel + buildClaudeCommand + MAIN_AGENT_ID were resolved/imported above.
     const modelNote = opts.model ? "-m override, all agents" : `${mode} default`;
     console.log(`[charm] mode: ${mode} | fleet model: ${fleetModel} (${modelNote}) | max agents: ${maxAgents}${plain ? " | plain window, no goal" : ""}`);
+    // Mint and persist the orchestrator's Claude-side conversation id plus the
+    // launch settings it was spawned with. charm launches the main agent under
+    // `claude --session-id <uuid>` (so it owns the id rather than discovering it),
+    // then records {claude_session_id, model, permission_mode, mode} to
+    // orchestratorSessionFile — the conversation the operator wants back via
+    // `charm resume`, along with the model + permission mode resume must re-supply
+    // to relaunch it faithfully. Its own file (not meta.json) keeps it readable
+    // across a daemon restart.
+    const orchestratorSessionId = randomUUID();
+    writeFileSync(
+      paths.orchestratorSessionFile,
+      JSON.stringify(
+        {
+          claude_session_id: orchestratorSessionId,
+          model: fleetModel,
+          permission_mode: defaultPermissionMode(),
+          mode,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
@@ -184,6 +206,7 @@ program
       interactive: true,
       model: fleetModel,
       plain,
+      claudeSessionId: orchestratorSessionId,
     });
     const consoleArgv = resolveChild("console");
     const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)} --uuid ${shellQuote(sessionId)}`;
@@ -273,6 +296,104 @@ program
       process.exit(2);
     }
     tmux.attach();
+  });
+
+program
+  .command("resume [session]")
+  .description("relaunch the orchestrator pane on its saved conversation (claude --resume), or --continue for the most recent")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
+  .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
+  .option("--continue", "resume the orchestrator's most-recent conversation instead of its saved session id", false)
+  .action(async (sessionArg: string | undefined, opts) => {
+    const root = resolve(opts.root);
+    // The positional `[session]` is a convenience selector: a bare
+    // `charm resume my-session` picks that session by name (or uuid), same as
+    // `--session`/`--uuid`. An explicit flag wins if both are given.
+    const sel = sessionArg
+      ? { ...opts, session: opts.session ?? sessionArg, uuid: opts.uuid }
+      : opts;
+    let target: RunSession;
+    try { target = resolveOneSession(root, sel); }
+    catch (e: any) { console.error(e.message); process.exit(2); }
+    const paths = target.paths;
+
+    // Read what charm recorded about the orchestrator at start: its Claude-side
+    // conversation id plus the model + permission mode it was launched with, so
+    // the relaunch is faithful (same MCP config, system prompt, model, perms).
+    let record: { claude_session_id?: string; model?: string; permission_mode?: string; mode?: string } = {};
+    if (existsSync(paths.orchestratorSessionFile)) {
+      try { record = JSON.parse(readFileSync(paths.orchestratorSessionFile, "utf8")); }
+      catch { /* corrupt — fall through to the missing-id guard below */ }
+    }
+    const useContinue = !!opts.continue;
+    if (!useContinue && !record.claude_session_id) {
+      console.error(
+        `[charm] no saved orchestrator session id for '${target.meta.session_name}' ` +
+          `(${paths.orchestratorSessionFile} missing or unreadable). ` +
+          `Retry with --continue to resume its most-recent conversation, or start a fresh charm.`,
+      );
+      process.exit(2);
+    }
+
+    const session = target.meta.session_name ?? "";
+    const tmux = new Tmux(session);
+    if (!tmux.hasSession()) {
+      console.error(
+        `[charm] tmux session '${session}' is not running; \`charm resume\` relaunches the orchestrator ` +
+          `pane inside a live charm window. Start a fresh charm instead.`,
+      );
+      process.exit(2);
+    }
+
+    // Re-supply the original launch settings. The mode framing isn't reconstructed
+    // (the orchestrator's own conversation history carries it); model + permission
+    // mode are re-applied so the resumed session behaves like the original spawn.
+    const { buildClaudeCommand, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
+    let model: string | undefined;
+    try {
+      model = record.model
+        ? resolveModel(record.model)
+        : record.mode && (record.mode === "research" || record.mode === "development")
+        ? resolveModel(MODE_MODEL[record.mode])
+        : undefined;
+    } catch { model = undefined; }
+    if (record.permission_mode) process.env.CHARM_PERMISSION_MODE = record.permission_mode;
+
+    const resumeCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
+      role: "main",
+      ticket_id: null,
+      prompt: "",
+      interactive: true,
+      model,
+      resume: useContinue ? "continue" : { uuid: record.claude_session_id! },
+    });
+
+    // Relaunch into the orchestrator's existing pane, reusing the same pane id.
+    // Prefer the exact pane id the daemon tracks (robust once sub-agent panes have
+    // shifted index numbering); fall back to the static index-1 target only if the
+    // daemon is unreachable. `respawn-pane -k` kills whatever occupies that pane
+    // (the exited/zombie orchestrator) and runs the resume command in place —
+    // preserving the layout AND the pane id the daemon already tracks as the
+    // orchestrator, so no daemon re-registration is needed while the daemon is up.
+    let orchTarget = `${session}:charm.1`;
+    try {
+      const { pane_id } = await rpcCall<{ pane_id: string | null }>(paths.socket, "orchestrator_pane");
+      if (pane_id) orchTarget = pane_id;
+    } catch { /* daemon unreachable — fall back to the static index-1 target */ }
+    const r = spawnSync("tmux", ["respawn-pane", "-k", "-t", orchTarget, "-c", paths.root, "sh", "-c", resumeCmd], {
+      encoding: "utf8",
+    });
+    if (r.status !== 0) {
+      console.error(`[charm] failed to relaunch orchestrator pane (${orchTarget}): ${r.stderr?.trim() || `exit ${r.status}`}`);
+      process.exit(2);
+    }
+    spawnSync("tmux", ["set-option", "-p", "-t", orchTarget, "allow-passthrough", "on"]);
+    spawnSync("tmux", ["select-pane", "-t", orchTarget]);
+    console.log(
+      `[charm] resumed orchestrator on session '${session}' ` +
+        `(${useContinue ? "--continue" : `--resume ${record.claude_session_id}`}). attach with: charm attach -u ${target.sessionId}`,
+    );
   });
 
 program

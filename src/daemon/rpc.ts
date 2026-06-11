@@ -1,4 +1,5 @@
 import { unlinkSync, existsSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { RpcRequest, RpcResponse } from "../schema.ts";
 
 export type Handler = (method: string, params: unknown) => Promise<unknown>;
@@ -47,8 +48,12 @@ export function startRpcServer(socketPath: string, handler: Handler) {
     unix: socketPath,
     socket: {
       data: async (sock, data) => {
-        const state = (sock.data ?? {}) as { buf?: string };
-        const combined = (state.buf ?? "") + data.toString("utf8");
+        const state = (sock.data ?? {}) as { buf?: string; decoder?: StringDecoder };
+        // Decode through a per-connection StringDecoder so a multibyte UTF-8
+        // codepoint whose bytes straddle two socket reads is carried across the
+        // boundary instead of decoding to U+FFFD on each side and losing bytes.
+        const decoder = state.decoder ?? (state.decoder = new StringDecoder("utf8"));
+        const combined = (state.buf ?? "") + decoder.write(data);
         const lines = combined.split("\n");
         const trailing = lines.pop() ?? "";
         state.buf = trailing;
@@ -59,7 +64,18 @@ export function startRpcServer(socketPath: string, handler: Handler) {
           try {
             req = RpcRequest.parse(JSON.parse(line));
           } catch (e: any) {
-            enqueueWrite(sock as unknown as PendingSocket, JSON.stringify({ id: "?", ok: false, error: `bad request: ${e.message}` }) + "\n");
+            // Reply with the caller's real id when we can recover it, so the
+            // client's strict id-correlation can match the error and reject the
+            // pending call instead of timing out. Fall back to a sentinel only
+            // when the line isn't even parseable JSON or carries no usable id.
+            let id: string = "?";
+            try {
+              const raw = JSON.parse(line) as unknown;
+              if (raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string") {
+                id = (raw as { id: string }).id;
+              }
+            } catch { /* unparseable — keep sentinel */ }
+            enqueueWrite(sock as unknown as PendingSocket, JSON.stringify({ id, ok: false, error: `bad request: ${e.message}` }) + "\n");
             continue;
           }
           try {
@@ -73,7 +89,7 @@ export function startRpcServer(socketPath: string, handler: Handler) {
         }
       },
       open: (sock) => {
-        (sock as any).data = { buf: "" };
+        (sock as any).data = { buf: "", decoder: new StringDecoder("utf8") };
       },
       drain: (sock) => {
         flushSocket(sock as unknown as PendingSocket);
@@ -105,6 +121,9 @@ function attemptCall<T>(socketPath: string, method: string, params: unknown, tim
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return new Promise<T>((resolve, reject) => {
     let buf = "";
+    // Per-connection decoder so a multibyte UTF-8 codepoint split across two
+    // socket reads is reassembled rather than corrupted into U+FFFD.
+    const decoder = new StringDecoder("utf8");
     let settled = false;
     let sock: { end: () => void } | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -134,23 +153,32 @@ function attemptCall<T>(socketPath: string, method: string, params: unknown, tim
       unix: socketPath,
       socket: {
         data(s, data) {
-          buf += data.toString("utf8");
-          const nl = buf.indexOf("\n");
-          if (nl < 0) return;
-          const line = buf.slice(0, nl);
-          let resp: ReturnType<typeof RpcResponse.parse>;
-          try {
-            resp = RpcResponse.parse(JSON.parse(line));
-          } catch (e) {
-            finish(() => { s.end(); reject(e); });
+          buf += decoder.write(data);
+          // Drain every complete newline-framed line this read produced. Each
+          // line is sliced off `buf` BEFORE we inspect it, so an unmatched id
+          // can never wedge the stream: the frame is gone regardless of whether
+          // it's ours.
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            if (!line.trim()) continue;
+            let resp: ReturnType<typeof RpcResponse.parse>;
+            try {
+              resp = RpcResponse.parse(JSON.parse(line));
+            } catch (e) {
+              finish(() => { s.end(); reject(e); });
+              return;
+            }
+            if (resp.id !== id) continue; // not our reply; keep draining
+            // Matched our id — terminal either way: ok resolves, ok:false rejects.
+            finish(() => {
+              s.end();
+              if (resp.ok) resolve(resp.result as T);
+              else reject(new Error(resp.error ?? "rpc error"));
+            });
             return;
           }
-          if (resp.id !== id) return; // not our reply; keep waiting
-          finish(() => {
-            s.end();
-            if (resp.ok) resolve(resp.result as T);
-            else reject(new Error(resp.error ?? "rpc error"));
-          });
         },
         open(s) {
           sock = s;

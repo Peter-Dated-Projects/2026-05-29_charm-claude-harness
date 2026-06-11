@@ -5,14 +5,14 @@ import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { charmPaths, defaultSessionName } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
-import { AgentRegistry } from "./registry.ts";
+import { AgentRegistry, holdsTicketClaim, occupiesLiveSlot } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
 import { Solver, type InFlight } from "./solver.ts";
 import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, resolveModel, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, newClaudeSessionId, resolveModel, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import {
@@ -186,7 +186,16 @@ async function main() {
   ensureDirectoryTrusted(paths.root);
 
   const store = new TicketStore(paths);
-  store.reindexAll();
+  // Rebuild the sqlite index from the ticket .md files on disk. A single corrupt
+  // / unparseable ticket file must not crash the daemon on boot — guard the
+  // rebuild so a bad file is logged and the daemon still comes up with whatever
+  // indexed cleanly. (The per-file skip lives in the store's rebuild loop; this
+  // is the boot-time backstop so a rebuild that still throws can't abort start.)
+  try {
+    store.reindexAll();
+  } catch (e) {
+    console.error("[charmd] reindexAll failed on boot; starting with a partial index:", e);
+  }
   const registry = new AgentRegistry();
   const coord = new CoordinationWriter(paths);
   // A lock file present now is a crash leftover (the pidfile guard above already
@@ -201,10 +210,20 @@ async function main() {
     console.error("[charmd] WARNING: tmux not on PATH; spawning panes will fail.");
   }
 
+  // The set of tickets whose files are currently claimed by a live worker, used
+  // by the solver to defer any candidate whose `touches` overlap. CRITICAL:
+  // `spawning` agents are included, not just running/blocked ones. A freshly
+  // spawned worker sits in `spawning` for the whole splitPane subprocess; if its
+  // claim weren't visible until it flipped to `running`, a concurrent
+  // spawn_workers / request_review could solve against a stale view and pick a
+  // ticket touching the same file — two workers editing one file (BUG: spawn-race
+  // double-spawn). Claiming at `spawning` closes that window, provided the
+  // read-solve-spawn section runs under the same critical section that flips the
+  // new agent to `spawning` (see spawnAgent / the layout lock).
   const inFlight = (): InFlight[] =>
     registry
       .list()
-      .filter((a) => a.role === "worker" && (a.state === "running" || a.state === "blocked") && a.ticket_id)
+      .filter(holdsTicketClaim)
       .map((a) => {
         const t = store.read(a.ticket_id!);
         return { ticket_id: a.ticket_id!, touches: t?.frontmatter.touches ?? [] };
@@ -224,7 +243,7 @@ async function main() {
   // spawning/running/blocked. done/failed agents are reaped and free their slot.
   const liveAgentCount = (): number =>
     (orchestratorPaneId ? 1 : 0) +
-    registry.list().filter((a) => a.state === "spawning" || a.state === "running" || a.state === "blocked").length;
+    registry.list().filter((a) => occupiesLiveSlot(a.state)).length;
 
   // Slots left before the cap. Batch spawners clamp to this so they never spawn
   // past the ceiling (and report the rest as deferred for a later retry).
@@ -238,19 +257,29 @@ async function main() {
   // currently on each ticket. Fully derived, rebuilt and rewritten on every
   // change, so it stays small no matter how long the run.
   const refreshCoordination = () => {
-    const agentByTicket = new Map<string, { id: string; state: string }>();
+    // A ticket can carry more than one non-main agent at once (e.g. a worker plus
+    // a tester/reviewer), so map ticket -> LIST of agents rather than a single
+    // entry. The old single-entry map silently overwrote the first agent with the
+    // second, hiding one of them from the board.
+    const agentsByTicket = new Map<string, { id: string; state: string }[]>();
     for (const a of registry.list()) {
-      if (a.role !== "main" && a.ticket_id) agentByTicket.set(a.ticket_id, { id: a.id, state: a.state });
+      if (a.role !== "main" && a.ticket_id) {
+        const list = agentsByTicket.get(a.ticket_id) ?? [];
+        list.push({ id: a.id, state: a.state });
+        agentsByTicket.set(a.ticket_id, list);
+      }
     }
     const rows = store.queryIndex({ statuses: COORDINATION_STATUSES }).map((t) => {
-      const agent = agentByTicket.get(t.id) ?? null;
+      const agents = agentsByTicket.get(t.id) ?? [];
+      // CoordRow shows one agent slot, so when several share a ticket, join their
+      // ids/states into the rendered cell rather than dropping all but one.
       return {
         ticket_id: t.id,
         about: t.title,
         stage: t.stage,
         status: t.status,
-        agent_id: agent?.id ?? null,
-        agent_state: agent?.state ?? null,
+        agent_id: agents.length === 0 ? null : agents.map((a) => a.id).join(", "),
+        agent_state: agents.length === 0 ? null : agents.map((a) => a.state).join(", "),
       };
     });
     coord.write(rows);
@@ -324,37 +353,58 @@ async function main() {
    *  inside a withLayoutLock section (e.g. register_panes). */
   const relayout = () => withLayoutLock(relayoutLocked);
 
+  // The core spawn, assuming the caller already holds the layout lock. This is
+  // the read-solve-spawn critical section's building block: registry.create()
+  // immediately flips the new agent to `spawning`, and because inFlight() counts
+  // `spawning` agents, the agent's `touches` claim is visible the instant this
+  // returns — to any handler that next acquires the lock. Batch spawners
+  // (spawn_workers/spawn_review_agents) call this inside ONE withLayoutLock that
+  // wraps their whole solve+loop, so a concurrent spawner can't solve against a
+  // pre-claim view and double-spawn onto the same file (BUG: spawn-race
+  // double-spawn). Must NOT take the lock itself — the mutex is a non-reentrant
+  // promise chain, so re-entering it from within a held section would deadlock.
+  async function spawnAgentLocked(spec: SpawnSpec): Promise<string> {
+    // Hard cap guard — the single chokepoint every spawn path flows through, so
+    // no caller can exceed the ceiling even if a batch clamp is wrong. Batch
+    // spawners pre-clamp to remainingAgentSlots() and never reach this throw;
+    // it's the safety net for the single-spawn paths (e.g. request_review).
+    // Inside the lock, so concurrent spawns can't both pass the check and
+    // overshoot the ceiling.
+    if (liveAgentCount() >= maxAgents) {
+      throw new Error(
+        `agent cap reached: ${liveAgentCount()}/${maxAgents} live (incl. orchestrator). ` +
+          `Wait for an agent to finish, or restart with a higher --max-agents.`,
+      );
+    }
+    // Mint the Claude-side conversation id here so charm both passes it to
+    // `claude --session-id` AND records it on the registry entry — the two must
+    // match for a later `claude --resume`/`--continue` to land on this session.
+    const claudeSessionId = newClaudeSessionId();
+    const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id, claude_session_id: claudeSessionId });
+    const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role), claudeSessionId };
+    const cmd = buildClaudeCommand(paths, agent.id, resolved);
+    // Target THIS session's window explicitly. charm runs every session on the
+    // default tmux server, and the daemon is a detached process: a `split-window`
+    // with no `-t` lands in tmux's global "current session", which the daemon does
+    // not control. With two charm sessions live, that can place this session's
+    // sub-agent pane inside the OTHER session's window (breaking this session's
+    // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
+    // the pane in the session that owns the agent.
+    const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
+    registry.attach(agent.id, { pane_id: pane });
+    refreshCoordination();
+    agentPaneIds.push(pane);
+    await relayoutLocked();
+    return agent.id;
+  }
+
+  /** Public single-spawn entry point: takes the layout lock around one
+   *  spawnAgentLocked. Used by single-spawn paths (request_review). Batch
+   *  spawners do NOT use this — they take the lock once around their whole
+   *  solve+loop and call spawnAgentLocked directly, so the solve and every spawn
+   *  in the batch share one critical section. */
   function spawnAgent(spec: SpawnSpec): Promise<string> {
-    return withLayoutLock(async () => {
-      // Hard cap guard — the single chokepoint every spawn path flows through, so
-      // no caller can exceed the ceiling even if a batch clamp is wrong. Batch
-      // spawners pre-clamp to remainingAgentSlots() and never reach this throw;
-      // it's the safety net for the single-spawn paths (e.g. request_review).
-      // Inside the lock, so concurrent spawns can't both pass the check and
-      // overshoot the ceiling.
-      if (liveAgentCount() >= maxAgents) {
-        throw new Error(
-          `agent cap reached: ${liveAgentCount()}/${maxAgents} live (incl. orchestrator). ` +
-            `Wait for an agent to finish, or restart with a higher --max-agents.`,
-        );
-      }
-      const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id });
-      const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role) };
-      const cmd = buildClaudeCommand(paths, agent.id, resolved);
-      // Target THIS session's window explicitly. charm runs every session on the
-      // default tmux server, and the daemon is a detached process: a `split-window`
-      // with no `-t` lands in tmux's global "current session", which the daemon does
-      // not control. With two charm sessions live, that can place this session's
-      // sub-agent pane inside the OTHER session's window (breaking this session's
-      // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
-      // the pane in the session that owns the agent.
-      const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
-      registry.attach(agent.id, { pane_id: pane });
-      refreshCoordination();
-      agentPaneIds.push(pane);
-      await relayoutLocked();
-      return agent.id;
-    });
+    return withLayoutLock(() => spawnAgentLocked(spec));
   }
 
   /** Kill an agent's pane and drop it from the registry, coordination doc, and
@@ -369,10 +419,31 @@ async function main() {
         const i = agentPaneIds.indexOf(a.pane_id);
         if (i >= 0) agentPaneIds.splice(i, 1);
       }
+      // If the dying agent was parked in await_approval, its gate would otherwise
+      // sit in the queue forever — a zombie row on the board and a Promise that
+      // never resolves. Cancel (reject) any gate it owned so the parked call
+      // returns and the board drops the gate.
+      const cancelledGates = approvals.cancelForAgent(agent_id);
+      if (cancelledGates.length > 0) {
+        console.error(`[charmd] tearDownAgent: cancelled ${cancelledGates.length} pending gate(s) owned by ${agent_id}`);
+      }
       registry.remove(agent_id);
       refreshCoordination();
       await relayoutLocked();
     });
+  }
+
+  /** Tear down EVERY non-main agent currently on a ticket, not just the first.
+   *  A ticket can legitimately carry more than one helper at a time (a worker
+   *  plus a tester/reviewer), and the registry's old one-agent-per-ticket lookup
+   *  (`.find`) silently reaped only one, leaking the rest. This filters all of
+   *  them and tears each down. Returns the agent ids it reaped. */
+  function tearDownTicketAgents(ticket_id: string): Promise<string[]> {
+    const ids = registry
+      .list()
+      .filter((a) => a.role !== "main" && a.ticket_id === ticket_id)
+      .map((a) => a.id);
+    return Promise.all(ids.map((id) => tearDownAgent(id))).then(() => ids);
   }
 
   /** Resolve the role of a kill_agent caller. The human operator (Console pane)
@@ -472,25 +543,53 @@ async function main() {
         `[charmd] sweep: reaping dead agent ${a.id} (pane ${a.pane_id}, ticket ${a.ticket_id ?? "-"}); ` +
           `process exited without report_status.`,
       );
-      // Reset the ticket so the system can retry it. Mirrors a self-kill's
-      // terminal state (failed/failed): `failed` stays on the board for
-      // reassignment rather than dropping off like `cancelled`.
+      // Reset the ticket so the system can retry it — but ONLY when failing it is
+      // actually meaningful. A tester/reviewer dying must not clobber a ticket a
+      // worker already drove to complete/reviewed (that would trigger a redundant
+      // retry of finished work). So only a dead WORKER fails its ticket, and even
+      // then we skip the write if the ticket is already in a terminal/handed-off
+      // status. Mirrors a self-kill's terminal state (failed/failed): `failed`
+      // stays on the board for reassignment rather than dropping off like
+      // `cancelled`.
+      let failedTicket = false;
       if (a.ticket_id) {
         try {
-          store.update(a.ticket_id, { status: "failed", stage: "failed" });
-          store.appendLog(a.ticket_id, {
-            agent: a.id,
-            kind: "failed",
-            text: "system: agent pane died without reporting; reaped by the liveness sweep so this ticket can be retried.",
-          });
+          const current = store.read(a.ticket_id);
+          const status = current?.frontmatter.status;
+          const alreadyTerminal = status === "complete" || status === "reviewed" || status === "cancelled";
+          if (a.role === "worker" && !alreadyTerminal) {
+            store.update(a.ticket_id, { status: "failed", stage: "failed" });
+            store.appendLog(a.ticket_id, {
+              agent: a.id,
+              kind: "failed",
+              text: "system: agent pane died without reporting; reaped by the liveness sweep so this ticket can be retried.",
+            });
+            failedTicket = true;
+          } else {
+            // A non-worker died, or the ticket is already done/handed-off: reap the
+            // pane + slot but leave the ticket's status untouched.
+            store.appendLog(a.ticket_id, {
+              agent: a.id,
+              kind: "reaped",
+              text: `system: ${a.role} pane died without reporting; reaped by the liveness sweep (ticket status left as ${status ?? "?"}).`,
+            });
+          }
         } catch {
           /* ignore — a missing/locked ticket must not abort the sweep */
         }
       }
       tearDownAgent(a.id);
-      pingOrchestrator(
-        `${a.id} died on ${a.ticket_id ?? "?"} (pane gone, no report_status) — reaped, ticket reset to failed for retry`,
-      );
+      // Only ping a retry when we actually reset the ticket to failed; reaping a
+      // dead helper off an already-finished ticket isn't retry-worthy news.
+      if (failedTicket) {
+        pingOrchestrator(
+          `${a.id} died on ${a.ticket_id ?? "?"} (pane gone, no report_status) — reaped, ticket reset to failed for retry`,
+        );
+      } else {
+        pingOrchestrator(
+          `${a.id} (${a.role}) died on ${a.ticket_id ?? "?"} (pane gone, no report_status) — reaped; ticket status left unchanged`,
+        );
+      }
     }
     // Forget streak bookkeeping for agents that no longer exist.
     for (const id of [...deadStreak.keys()]) if (!registry.get(id)) deadStreak.delete(id);
@@ -500,6 +599,12 @@ async function main() {
     // silently (e.g. remain-on-exit panes that don't respond normally) — the
     // agent drops from the registry but the zombie pane lingers indefinitely.
     const knownPanes = new Set(agentPaneIds);
+    // The console pane is tracked separately from agentPaneIds and is NOT an
+    // orphan even when it shows up dead — never reap it here. A dead console
+    // pane should be respawned (it's the operator's whole window into the run),
+    // not killed; reaping it would leave the session blind. At minimum, protect
+    // it so the orphan pass can't take it out on the next tick.
+    if (consolePaneId) knownPanes.add(consolePaneId);
     for (const pane of panes) {
       if (!pane.dead) continue;
       if (knownPanes.has(pane.pane_id)) continue;
@@ -581,65 +686,82 @@ async function main() {
       }
       case "spawn_review_agents": {
         const input = SpawnReviewersInput.parse(params);
-        // Clamp to the concurrent-agent cap, same as spawn_workers: spawn up to
-        // the free slots and defer the rest for a later retry.
-        const slots = remainingAgentSlots();
-        const toSpawn = input.ticket_ids.slice(0, slots);
-        const deferred = input.ticket_ids.slice(slots);
-        const ids: string[] = [];
-        for (const tid of toSpawn) {
-          ids.push(await spawnAgent({
-            role: "reviewer",
-            ticket_id: tid,
-            prompt: `Read .charm/tickets/${tid}.md and review it.`,
-            interactive: true,
-          }));
-        }
-        if (deferred.length > 0) {
-          console.error(
-            `[charmd] spawn_review_agents: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
-              `deferred ${deferred.length} ticket(s).`,
-          );
-        }
-        return { agent_ids: ids, ...(deferred.length > 0 ? { deferred, max_agents: maxAgents } : {}) };
+        // One critical section around the slot clamp + spawn loop, so the cap
+        // computation and every spawn it authorizes share a lock — a concurrent
+        // spawner can't pass the same count-only cap check and overshoot the
+        // ceiling between our clamp and our first claim. (Reviewers don't claim
+        // file `touches`, so the touch-conflict race doesn't apply here; the cap
+        // is the shared resource that must be serialized.)
+        return withLayoutLock(async () => {
+          // Clamp to the concurrent-agent cap, same as spawn_workers: spawn up to
+          // the free slots and defer the rest for a later retry.
+          const slots = remainingAgentSlots();
+          const toSpawn = input.ticket_ids.slice(0, slots);
+          const deferred = input.ticket_ids.slice(slots);
+          const ids: string[] = [];
+          for (const tid of toSpawn) {
+            ids.push(await spawnAgentLocked({
+              role: "reviewer",
+              ticket_id: tid,
+              prompt: `Read .charm/tickets/${tid}.md and review it.`,
+              interactive: true,
+            }));
+          }
+          if (deferred.length > 0) {
+            console.error(
+              `[charmd] spawn_review_agents: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
+                `deferred ${deferred.length} ticket(s).`,
+            );
+          }
+          return { agent_ids: ids, ...(deferred.length > 0 ? { deferred, max_agents: maxAgents } : {}) };
+        });
       }
       case "spawn_workers": {
         const input = SpawnWorkersInput.parse(params);
-        const completed = new Set(
-          store.list().filter((t) => t.frontmatter.status === "complete").map((t) => t.frontmatter.id),
-        );
-        const solver = new Solver(store.list());
-        const runnable = solver.nextRunnable({
-          completed,
-          inFlight: inFlight(),
-          candidates: input.ticket_ids,
-        });
-        // Clamp to the concurrent-agent cap: spawn only as many as we have free
-        // slots for, and let the rest fall into `deferred` so the orchestrator
-        // retries them once running agents finish and free their slots.
-        const slots = remainingAgentSlots();
-        const toSpawn = runnable.slice(0, slots);
-        const cappedOut = runnable.length - toSpawn.length;
-        const ids: string[] = [];
-        for (const tid of toSpawn) {
-          ids.push(await spawnAgent({
-            role: "worker",
-            ticket_id: tid,
-            prompt: `Read .charm/tickets/${tid}.md and complete it.`,
-            interactive: true,
-          }));
-          store.update(tid, { status: "running", stage: "in_progress" });
-        }
-        // Deferred = not-yet-runnable (deps/touches) PLUS the ones clamped by the
-        // cap. The orchestrator treats both the same: retry on the next tick.
-        const deferred = input.ticket_ids.filter((id) => !toSpawn.includes(id));
-        if (cappedOut > 0) {
-          console.error(
-            `[charmd] spawn_workers: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
-              `deferred ${cappedOut} runnable ticket(s).`,
+        // The whole read-solve-spawn runs under ONE layout-lock critical section.
+        // Solving (inFlight + nextRunnable) and the spawn loop must share a lock so
+        // a concurrent spawn_workers / request_review can't slip between this
+        // handler's solve and its first claim and pick a ticket touching the same
+        // file (BUG: spawn-race double-spawn). Because spawnAgentLocked flips each
+        // new worker to `spawning` and inFlight() counts `spawning`, every claim is
+        // visible to the next lock holder the instant we spawn it.
+        return withLayoutLock(async () => {
+          const completed = new Set(
+            store.list().filter((t) => t.frontmatter.status === "complete").map((t) => t.frontmatter.id),
           );
-        }
-        return { agent_ids: ids, deferred, ...(cappedOut > 0 ? { capped: cappedOut, max_agents: maxAgents } : {}) };
+          const solver = new Solver(store.list());
+          const runnable = solver.nextRunnable({
+            completed,
+            inFlight: inFlight(),
+            candidates: input.ticket_ids,
+          });
+          // Clamp to the concurrent-agent cap: spawn only as many as we have free
+          // slots for, and let the rest fall into `deferred` so the orchestrator
+          // retries them once running agents finish and free their slots.
+          const slots = remainingAgentSlots();
+          const toSpawn = runnable.slice(0, slots);
+          const cappedOut = runnable.length - toSpawn.length;
+          const ids: string[] = [];
+          for (const tid of toSpawn) {
+            ids.push(await spawnAgentLocked({
+              role: "worker",
+              ticket_id: tid,
+              prompt: `Read .charm/tickets/${tid}.md and complete it.`,
+              interactive: true,
+            }));
+            store.update(tid, { status: "running", stage: "in_progress" });
+          }
+          // Deferred = not-yet-runnable (deps/touches) PLUS the ones clamped by the
+          // cap. The orchestrator treats both the same: retry on the next tick.
+          const deferred = input.ticket_ids.filter((id) => !toSpawn.includes(id));
+          if (cappedOut > 0) {
+            console.error(
+              `[charmd] spawn_workers: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
+                `deferred ${cappedOut} runnable ticket(s).`,
+            );
+          }
+          return { agent_ids: ids, deferred, ...(cappedOut > 0 ? { capped: cappedOut, max_agents: maxAgents } : {}) };
+        });
       }
       case "await_approval": {
         const input = AwaitApprovalInput.parse(params);
@@ -648,6 +770,10 @@ async function main() {
           label: input.label,
           ticket_id: input.ticket_id,
           payload_path: input.payload_path,
+          // Only link the gate to a real, tracked sub-agent. The orchestrator
+          // (main) is protected and never torn down, so linking its stage gates
+          // would only risk cancelling them on a spurious match.
+          agent_id: input.caller_id && registry.get(input.caller_id) ? input.caller_id : null,
         });
         return { decision };
       }
@@ -739,8 +865,11 @@ async function main() {
         // does for a call-off. Non-terminal writes (ready/blocked/stage walks)
         // leave a live agent alone; it's still doing relevant work.
         if (input.status === "complete" || input.status === "failed") {
-          const onTicket = registry.list().find((a) => a.role !== "main" && a.ticket_id === input.ticket_id);
-          if (onTicket) tearDownAgent(onTicket.id);
+          // Tear down ALL agents on the ticket (a worker plus a tester/reviewer
+          // can be on it at once), not just the first one found.
+          void tearDownTicketAgents(input.ticket_id).catch((e) =>
+            console.error(`[charmd] set_ticket_state: tearDownTicketAgents(${input.ticket_id}) failed:`, e),
+          );
         }
         refreshCoordination();
         // An operator writing state from the console is news to the orchestrator;
@@ -834,9 +963,10 @@ async function main() {
           kind: "cancelled",
           text: input.note,
         });
-        // Stop any agent currently on this ticket — its work is moot now.
-        const onTicket = registry.list().find((a) => a.role !== "main" && a.ticket_id === input.ticket_id);
-        if (onTicket) await tearDownAgent(onTicket.id);
+        // Stop ALL agents currently on this ticket — their work is moot now. A
+        // ticket can carry more than one helper (worker + tester/reviewer), so
+        // reap every non-main agent on it, not just the first.
+        await tearDownTicketAgents(input.ticket_id);
         refreshCoordination();
         // A human operator cancelling from the console is news to the orchestrator;
         // a cancel the orchestrator issued itself is not.
@@ -887,6 +1017,13 @@ async function main() {
         refreshCoordination();
         return { ok: true, continued: target.id };
       }
+      case "orchestrator_pane":
+        // The exact pane id the daemon tracks as the orchestrator (main agent).
+        // `charm resume` reads this to relaunch the orchestrator IN its own pane
+        // by id — robust against tmux renumbering pane *indexes* once sub-agent
+        // panes have been added/removed and the grid relaid out (the static
+        // `<session>:charm.1` index is only correct before any sub-agent spawns).
+        return { pane_id: orchestratorPaneId };
       case "list_agents":
         return registry.list().map((a) => ({
           id: a.id,

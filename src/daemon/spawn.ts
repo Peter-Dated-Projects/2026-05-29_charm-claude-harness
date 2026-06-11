@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { CharmPaths } from "../paths.ts";
 import type { AgentRole } from "../schema.ts";
@@ -24,7 +25,30 @@ export type SpawnSpec = {
    *  that's still wired to the charm MCP config and output rules, but carries
    *  no orchestration instructions. Used by `charm start` with no goal. */
   plain?: boolean;
+  /** Claude-side session UUID, passed to `claude --session-id <uuid>` so charm
+   *  owns (rather than discovers) the conversation id. Recorded on the registry
+   *  entry and — for the orchestrator — persisted to its own run-dir file so the
+   *  operator can later `charm resume` that conversation. When omitted,
+   *  buildClaudeCommand mints a fresh one; callers that need to record the id
+   *  should pass it in explicitly (see newClaudeSessionId). */
+  claudeSessionId?: string;
+  /** Relaunch an EXISTING conversation instead of starting a fresh one (used by
+   *  `charm resume`). When set, the command swaps `--session-id <new>` for a
+   *  resume flag and drops the positional prompt (the conversation already has
+   *  its history), while keeping every other flag — model, permission mode,
+   *  --mcp-config, --append-system-prompt — identical to the original spawn:
+   *    - { uuid }     -> `claude --resume <uuid>`   (resume a specific session)
+   *    - "continue"   -> `claude --continue`        (resume the most recent) */
+  resume?: { uuid: string } | "continue";
 };
+
+/** Mint a fresh Claude-side session UUID for a spawn. Callers generate this up
+ *  front (rather than letting buildClaudeCommand default it internally) when they
+ *  need to record the id on the registry / in meta.json — the value passed to
+ *  `--session-id` must match the one charm stores for `charm resume` to work. */
+export function newClaudeSessionId(): string {
+  return randomUUID();
+}
 
 /** User-facing aliases resolved to Claude Code model ids. */
 export const MODEL_ALIASES: Record<string, string> = {
@@ -246,6 +270,20 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const systemPrompt = rolePrompt + CHARM_WORKSPACE + CHARM_RULES + CHARM_SKILLS + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
+  // Conversation identity. A fresh spawn launches under a charm-owned
+  // `--session-id <uuid>` so the id can be resumed later; a resume relaunch
+  // instead reattaches to an existing conversation (`--resume <uuid>` or
+  // `--continue`) and must NOT pass --session-id (claude rejects creating a
+  // session that already exists). Either way every other flag below is identical,
+  // which is the whole point — a resumed orchestrator keeps the same MCP config,
+  // system prompt, model, and permission mode it was first spawned with.
+  if (spec.resume) {
+    if (spec.resume === "continue") flags.push("--continue");
+    else flags.push("--resume", shellQuote(spec.resume.uuid));
+  } else {
+    const claudeSessionId = spec.claudeSessionId ?? newClaudeSessionId();
+    flags.push("--session-id", shellQuote(claudeSessionId));
+  }
   if (spec.model) flags.push("--model", shellQuote(spec.model));
   // Spawned agents run unattended in tmux panes, so they must not stall on permission
   // prompts. Default to `auto` (skips prompts); overridable via CHARM_PERMISSION_MODE.
@@ -275,8 +313,10 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   flags.push("--disallowed-tools", shellQuote("Agent"), shellQuote("Task"), shellQuote("Workflow"));
   flags.push("--append-system-prompt", shellQuote(systemPrompt));
   // An empty prompt means a blank interactive window (e.g. `charm start` with
-  // no goal): omit the positional so Claude opens waiting for user input.
-  if (spec.prompt) flags.push(shellQuote(spec.prompt));
+  // no goal): omit the positional so Claude opens waiting for user input. A
+  // resume relaunch also omits it — the conversation already carries its history,
+  // so re-injecting the original goal would re-run it.
+  if (spec.prompt && !spec.resume) flags.push(shellQuote(spec.prompt));
   // export agent id, then exec claude
   const thinking = defaultThinkingForRole(spec.role);
   return [

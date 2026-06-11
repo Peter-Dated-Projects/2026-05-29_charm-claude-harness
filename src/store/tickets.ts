@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
-import { join, basename } from "node:path";
+import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, openSync, closeSync, fsyncSync, renameSync } from "node:fs";
+import { join, basename, dirname } from "node:path";
 import matter from "gray-matter";
 import { Database } from "bun:sqlite";
 import { TicketFrontmatter, type Ticket, type TicketStatus, type TicketStage } from "../schema.ts";
@@ -83,7 +83,13 @@ export class TicketStore {
   }
 
   nextId(): string {
-    const row = this.db.query("SELECT id FROM tickets ORDER BY id DESC LIMIT 1").get() as { id: string } | null;
+    // Sort numerically on the integer suffix, not lexicographically. `id` is a
+    // TEXT column with ids zero-padded to 3 digits, so a plain `ORDER BY id DESC`
+    // ranks "T-999" above "T-1000" once four-digit ids exist — handing back a
+    // stale max and recomputing an id that overwrites an existing ticket.
+    const row = this.db
+      .query("SELECT id FROM tickets ORDER BY CAST(SUBSTR(id, 3) AS INTEGER) DESC LIMIT 1")
+      .get() as { id: string } | null;
     const n = row ? parseInt(row.id.slice(2), 10) + 1 : 1;
     return `T-${String(n).padStart(3, "0")}`;
   }
@@ -97,8 +103,12 @@ export class TicketStore {
       touches: input.touches ?? [],
     });
     const path = join(this.paths.ticketsDir, `${id}.md`);
+    // Guard against clobbering an existing ticket, mirroring promoteDraft().
+    if (existsSync(path)) {
+      throw new Error(`cannot create ticket ${id}: a ticket with that id already exists`);
+    }
     const text = matter.stringify(input.body, fm);
-    writeFileSync(path, text);
+    this.atomicWriteFile(path, text);
     this.indexOne({ frontmatter: fm, body: input.body, path });
     return { frontmatter: fm, body: input.body, path };
   }
@@ -131,7 +141,7 @@ export class TicketStore {
     if (existsSync(destPath)) {
       throw new Error(`cannot promote ${draftName}: ticket ${fm.id} already exists`);
     }
-    writeFileSync(destPath, matter.stringify(parsed.content, fm));
+    this.atomicWriteFile(destPath, matter.stringify(parsed.content, fm));
     this.indexOne({ frontmatter: fm, body: parsed.content, path: destPath });
     unlinkSync(draftPath);
     return { frontmatter: fm, body: parsed.content, path: destPath };
@@ -156,7 +166,7 @@ export class TicketStore {
     const fm = TicketFrontmatter.parse({ ...t.frontmatter, ...patch });
     const body = patch.body ?? t.body;
     const text = matter.stringify(body, fm);
-    writeFileSync(t.path, text);
+    this.atomicWriteFile(t.path, text);
     this.indexOne({ frontmatter: fm, body, path: t.path });
     return { frontmatter: fm, body, path: t.path };
   }
@@ -207,9 +217,43 @@ export class TicketStore {
   }
 
   reindexAll(): void {
-    const all = this.list();
     this.db.exec("DELETE FROM tickets");
-    for (const t of all) this.indexOne(t);
+    if (!existsSync(this.paths.ticketsDir)) return;
+    // Read filenames directly rather than via list(): list() eagerly parses every
+    // file and throws on the first bad one, which would abort the entire rebuild and
+    // drop ALL tickets from the index because of one corrupt .md. Index each file
+    // under its own try/catch so a single unparseable ticket is skipped (and logged)
+    // while every other ticket still indexes.
+    const files = readdirSync(this.paths.ticketsDir).filter((f) => f.endsWith(".md"));
+    let skipped = 0;
+    for (const f of files) {
+      const path = join(this.paths.ticketsDir, f);
+      try {
+        this.indexOne(this.readPath(path));
+      } catch (e) {
+        skipped++;
+        console.error(`[charm] reindex: skipping unparseable ticket ${f}: ${(e as Error).message}`);
+      }
+    }
+    if (skipped) console.error(`[charm] reindex: skipped ${skipped} unparseable ticket file(s)`);
+  }
+
+  /** Write a ticket .md file atomically: stage into a sibling temp file, fsync to
+   *  flush to disk, then rename over the target (rename is atomic on the same
+   *  filesystem). A bare writeFileSync can leave a half-written file behind if the
+   *  process dies mid-write, which corrupts the file the sqlite index is derived
+   *  from. Mirrors the temp+fsync+rename pattern CoordinationWriter uses; kept as a
+   *  small local helper to avoid coupling the store to the daemon. */
+  private atomicWriteFile(path: string, text: string) {
+    const tmp = join(dirname(path), `.${basename(path)}.tmp.${process.pid}`);
+    const fd = openSync(tmp, "w");
+    try {
+      writeFileSync(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
   }
 
   private indexOne(t: Ticket) {
