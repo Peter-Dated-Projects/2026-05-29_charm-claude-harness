@@ -189,9 +189,9 @@ server.registerTool(
 server.registerTool(
   "report_status",
   {
-    description: "Report this agent's state (running, blocked, done, failed) and an optional note.",
+    description: "Report this agent's state (blocked, done, or failed) and an optional note. running/spawning are daemon-managed and not self-reportable.",
     inputSchema: {
-      state: z.enum(["spawning", "running", "blocked", "done", "failed"]),
+      state: z.enum(["blocked", "done", "failed"]),
       note: z.string().optional(),
     },
   },

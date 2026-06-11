@@ -9,13 +9,27 @@ export function occupiesLiveSlot(state: AgentState): boolean {
   return state === "spawning" || state === "running" || state === "blocked";
 }
 
-/** True when an agent holds a live claim on its ticket's `touches` files: a worker
- *  in a live-slot state with a ticket assigned. The dependency solver subtracts
- *  these claims so two workers never edit the same file concurrently. Exported
- *  (rather than inlined in the daemon) so the spawn-race regression test exercises
- *  the REAL predicate instead of a copy that can silently drift from it. */
+/** True when an agent holds a claim on its ticket's `touches` files: any worker
+ *  with a ticket assigned that is still present in the registry. The dependency
+ *  solver subtracts these claims so two workers never edit the same file
+ *  concurrently.
+ *
+ *  Deliberately NOT gated on occupiesLiveSlot: the claim must outlive the `done`
+ *  state. report_status('done'/'failed') is a lightweight RPC that runs WITHOUT
+ *  the layout lock, so the instant a worker flips to a terminal state its claim
+ *  would otherwise vanish from inFlight() — even though its process may still be
+ *  flushing writes and it hasn't been torn down. A concurrent spawn_workers
+ *  acquiring the lock in that window could then spawn a second worker onto an
+ *  overlapping `touches` set: the spawn-race reopened on the done->teardown tail.
+ *  So the claim is released only by registry.remove() (the actual teardown), not
+ *  by the state transition. The max-agents cap is a separate concern and DOES
+ *  free on done/failed via occupiesLiveSlot — claim lifetime and slot lifetime
+ *  are intentionally decoupled.
+ *
+ *  Exported (rather than inlined in the daemon) so the spawn-race regression test
+ *  exercises the REAL predicate instead of a copy that can silently drift. */
 export function holdsTicketClaim(a: Agent): boolean {
-  return a.role === "worker" && occupiesLiveSlot(a.state) && a.ticket_id !== null;
+  return a.role === "worker" && a.ticket_id !== null;
 }
 
 export class AgentRegistry {

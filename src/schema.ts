@@ -50,6 +50,14 @@ export type AgentRole = z.infer<typeof AgentRole>;
 export const AgentState = z.enum(["spawning", "running", "blocked", "done", "failed"]);
 export type AgentState = z.infer<typeof AgentState>;
 
+/** The subset of states an agent may SELF-report via report_status. `spawning`
+ *  and `running` are daemon-managed (registry.create() / attach() /
+ *  continue_agent), never self-assigned: exposing them let an agent mark itself
+ *  `running` while it was truly blocked, defeating continue_agent's
+ *  blocked-only guard, or report `spawning` to muddy the slot-occupancy model.
+ *  An agent only ever legitimately reports that it is blocked, done, or failed. */
+export const AGENT_REPORTABLE_STATES = ["blocked", "done", "failed"] as const;
+
 export const Agent = z.object({
   id: z.string(),
   role: AgentRole,
@@ -158,7 +166,9 @@ export type UpdatePlanInput = z.infer<typeof UpdatePlanInput>;
 
 export const ReportStatusInput = z.object({
   agent_id: z.string(),
-  state: AgentState,
+  // Only blocked/done/failed are self-reportable; spawning/running are
+  // daemon-managed (see AGENT_REPORTABLE_STATES).
+  state: z.enum(AGENT_REPORTABLE_STATES),
   note: z.string().optional(),
 });
 export type ReportStatusInput = z.infer<typeof ReportStatusInput>;
