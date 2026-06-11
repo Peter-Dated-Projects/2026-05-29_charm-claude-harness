@@ -50,14 +50,24 @@ test("the claim survives the spawning -> running transition", () => {
   expect(registry.list().filter(holdsClaim).map((a) => a.id)).toEqual([agent.id]);
 });
 
-test("a done/failed worker no longer holds a claim (slot freed)", () => {
+test("a done/failed worker STILL holds its claim until removed (writes may be in flight)", () => {
+  // report_status('done'/'failed') runs WITHOUT the layout lock, and the worker's
+  // process may still be flushing writes to its touched files. So the file-claim
+  // must persist past the terminal state transition — released only when the
+  // agent is actually torn down (registry.remove). Otherwise a concurrent
+  // spawn_workers could double-claim the freed files mid-write (spawn-race on the
+  // done->teardown tail). The cap is freed separately via occupiesLiveSlot.
   const registry = new AgentRegistry();
   const agent = registry.create({ role: "worker", ticket_id: "T-001" });
 
   registry.setState(agent.id, "done");
-  expect(registry.list().filter(holdsClaim)).toEqual([]);
+  expect(registry.list().filter(holdsClaim).map((a) => a.id)).toEqual([agent.id]);
 
   registry.setState(agent.id, "failed");
+  expect(registry.list().filter(holdsClaim).map((a) => a.id)).toEqual([agent.id]);
+
+  // Teardown — and only teardown — releases the claim.
+  registry.remove(agent.id);
   expect(registry.list().filter(holdsClaim)).toEqual([]);
 });
 

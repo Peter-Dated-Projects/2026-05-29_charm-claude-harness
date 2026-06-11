@@ -1,6 +1,11 @@
-import { openSync, closeSync, writeFileSync, readFileSync, existsSync, renameSync, fsyncSync, unlinkSync } from "node:fs";
+import { openSync, closeSync, writeFileSync, readFileSync, existsSync, renameSync, fsyncSync, unlinkSync, statSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import type { CharmPaths } from "../paths.ts";
+
+/** A COORDINATION.md lock older than this is treated as stale and stolen. A real
+ *  write holds the lock for microseconds, so any lock lingering this long is a
+ *  leak from a writer that crashed mid-write — not live contention. */
+const LOCK_STALE_MS = 5000;
 
 const HEADER =
   "# COORDINATION.md\n\n" +
@@ -65,10 +70,11 @@ export class CoordinationWriter {
 
   /** Remove a leftover lock file from a prior daemon that crashed mid-write.
    *  The lock is held only for the microseconds of one synchronous write, so a
-   *  lock present at startup can only be stale — and left in place it makes the
-   *  next withLock() busy-spin (Bun.sleepSync) for the full 5s timeout, freezing
-   *  the daemon's event loop and starving every RPC. Safe to call once at
-   *  startup, after the single-daemon pidfile guard has run. */
+   *  lock present at startup can only be stale. withLock() now self-heals a stale
+   *  lock anyway (it steals one older than LOCK_STALE_MS), so this is just a tidy
+   *  boot-time cleanup that lets the very first refresh proceed without waiting
+   *  out the staleness window. Safe to call once at startup, after the
+   *  single-daemon pidfile guard has run. */
   clearStaleLock(): void {
     try { unlinkSync(this.lockPath); } catch { /* nothing to clear */ }
   }
@@ -85,23 +91,44 @@ export class CoordinationWriter {
     renameSync(tmp, path);
   }
 
-  private withLock<T>(fn: () => T): T {
-    const start = Date.now();
-    let fd: number | null = null;
-    while (true) {
+  private withLock(fn: () => void): void {
+    let fd: number;
+    try {
+      fd = openSync(this.lockPath, "wx");
+    } catch (e: any) {
+      if (e.code !== "EEXIST") throw e;
+      // The lock is held. NEVER busy-wait here: COORDINATION.md is written only by
+      // this single-threaded daemon and each write is synchronous (it never yields
+      // mid-write), so two in-process writes can't actually interleave — there is
+      // no real in-process contention to wait out. A held lock therefore means
+      // either a prior writer crashed and leaked it, or (only if some other
+      // process writes this file) a live cross-process writer. A synchronous spin
+      // would freeze the whole event loop and starve every RPC, so instead:
+      // steal a stale lock, otherwise skip this refresh. The board is fully
+      // regenerated on the next change, so a skipped write self-heals.
+      let stale: boolean;
+      try {
+        stale = Date.now() - statSync(this.lockPath).mtimeMs > LOCK_STALE_MS;
+      } catch {
+        stale = true; // lock vanished between open and stat -> treat as free
+      }
+      if (!stale) {
+        console.error("[charmd] COORDINATION.md lock held; skipping this refresh (board self-heals on the next change).");
+        return;
+      }
+      console.error("[charmd] COORDINATION.md lock looks stale; stealing it.");
+      try { unlinkSync(this.lockPath); } catch { /* already gone */ }
       try {
         fd = openSync(this.lockPath, "wx");
-        break;
-      } catch (e: any) {
-        if (e.code !== "EEXIST") throw e;
-        if (Date.now() - start > 5000) throw new Error("COORDINATION.md lock timeout");
-        Bun.sleepSync(20);
+      } catch {
+        console.error("[charmd] could not acquire COORDINATION.md lock after stealing a stale one; skipping refresh.");
+        return;
       }
     }
     try {
-      return fn();
+      fn();
     } finally {
-      if (fd !== null) closeSync(fd);
+      closeSync(fd);
       try { unlinkSync(this.lockPath); } catch { /* ignore */ }
     }
   }
