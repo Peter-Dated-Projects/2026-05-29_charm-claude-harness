@@ -219,7 +219,11 @@ async function main() {
   // ticket touching the same file — two workers editing one file (BUG: spawn-race
   // double-spawn). Claiming at `spawning` closes that window, provided the
   // read-solve-spawn section runs under the same critical section that flips the
-  // new agent to `spawning` (see spawnAgent / the layout lock).
+  // new agent to `spawning` (see spawnAgent / the layout lock). The claim also
+  // OUTLIVES `done`/`failed` (holdsTicketClaim is not gated on occupiesLiveSlot):
+  // a worker reporting done without the lock would otherwise drop its claim while
+  // its process is still flushing writes — the claim releases only on teardown
+  // (registry.remove), closing that tail of the spawn-race.
   const inFlight = (): InFlight[] =>
     registry
       .list()
@@ -727,7 +731,16 @@ async function main() {
               role: "reviewer",
               ticket_id: tid,
               prompt: `Read .charm/tickets/${tid}.md and review it.`,
-              interactive: true,
+              // Headless: a reviewer is a one-shot enrichment pass (reviewer.md:
+              // "do the work and exit"). Interactive, it would finish its turn and
+              // linger idle in the pane — never seen `done` by the liveness sweep
+              // (which only reaps DEAD panes), so the orchestrator was never told
+              // the review finished. Headless (`-p`) makes it run, call
+              // report_status('done') -> ticket `reviewed` + orchestrator ping,
+              // and exit; if it forgets to report, its exit still lets the sweep
+              // reap it and ping. (Workers stay interactive — they're resumable
+              // via continue_agent.)
+              interactive: false,
             }));
           }
           if (deferred.length > 0) {
@@ -1195,7 +1208,10 @@ async function main() {
           role: "tester",
           ticket_id: input.ticket_id,
           prompt: `Read .charm/tickets/${input.ticket_id}.md and validate it.`,
-          interactive: true,
+          // Headless, same as reviewers: a tester is a one-shot validation pass
+          // (tester.md: "do the work and exit") that reports done/failed and
+          // exits. Interactive, it would linger idle and never be seen done.
+          interactive: false,
         });
         return { agent_id: id };
       }
