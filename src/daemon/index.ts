@@ -7,7 +7,7 @@ import { charmPaths, defaultSessionName } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
 import { AgentRegistry, holdsTicketClaim, occupiesLiveSlot } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
-import { Solver, type InFlight } from "./solver.ts";
+import { Solver, type InFlight, liveDependentsOf } from "./solver.ts";
 import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
 import { ApprovalQueue } from "./approvals.ts";
@@ -968,12 +968,32 @@ async function main() {
         // reap every non-main agent on it, not just the first.
         await tearDownTicketAgents(input.ticket_id);
         refreshCoordination();
-        // A human operator cancelling from the console is news to the orchestrator;
-        // a cancel the orchestrator issued itself is not.
+        // Surface the cancel to the orchestrator. Two independent reasons to ping:
+        //   (1) An operator cancelling from the console is news; a cancel the
+        //       orchestrator issued itself is not.
+        //   (2) Regardless of who cancelled, any live ticket that depends on this
+        //       one can no longer satisfy its dependency (only `complete` does).
+        //       Rather than auto-resolving (cancelling them, dropping the edge),
+        //       we report it and let the orchestrator review the workflow and
+        //       decide — the deadlock must be visible, not silently patched.
+        const blockedDependents = liveDependentsOf(store.list(), input.ticket_id);
+        const notes: string[] = [];
         if (callerRole === "operator") {
-          pingOrchestrator(`${input.ticket_id} cancelled by operator${input.note ? `: ${input.note}` : ""}`);
+          notes.push(`${input.ticket_id} cancelled by operator${input.note ? `: ${input.note}` : ""}`);
         }
-        return { ok: true, cancelled: input.ticket_id };
+        if (blockedDependents.length > 0) {
+          const plural = blockedDependents.length === 1 ? "" : "s";
+          notes.push(
+            `${input.ticket_id} is a dependency of ${blockedDependents.join(", ")}, which can no longer run. ` +
+              `Review the workflow and decide: drop the dependency, re-scope, or cancel ${blockedDependents.length === 1 ? "it" : "them"}.`,
+          );
+        }
+        if (notes.length > 0) pingOrchestrator(notes.join(" "));
+        return {
+          ok: true,
+          cancelled: input.ticket_id,
+          ...(blockedDependents.length > 0 ? { blocked_dependents: blockedDependents } : {}),
+        };
       }
       case "continue_agent": {
         const input = ContinueAgentInput.parse(params);

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Ticket } from "../schema.ts";
-import { Solver, type InFlight } from "./solver.ts";
+import { Solver, type InFlight, liveDependentsOf } from "./solver.ts";
 
 /**
  * Regression test for bug #5 ("concurrent spawn double-claims overlapping
@@ -19,12 +19,13 @@ function ticket(opts: {
   id: string;
   touches?: string[];
   depends_on?: string[];
+  status?: Ticket["frontmatter"]["status"];
 }): Ticket {
   return {
     frontmatter: {
       id: opts.id,
       title: opts.id,
-      status: "ready",
+      status: opts.status ?? "ready",
       stage: "approved",
       depends_on: opts.depends_on ?? [],
       touches: opts.touches ?? [],
@@ -245,4 +246,40 @@ test("topoOrder returns dependencies before their dependents", () => {
 
   const order = solver.topoOrder();
   expect(order.indexOf("T-001")).toBeLessThan(order.indexOf("T-002"));
+});
+
+// --- liveDependentsOf: surfacing a cancelled dependency -------------------
+// When a dependency is cancelled, the tickets that depended on it can never
+// satisfy their depends_on (only `complete` does). The daemon surfaces those to
+// the orchestrator to re-plan; this helper computes the set.
+
+test("liveDependentsOf returns live tickets that directly depend on the cancelled one", () => {
+  const tickets = [
+    ticket({ id: "T-001", status: "cancelled" }),
+    ticket({ id: "T-002", depends_on: ["T-001"], status: "ready" }),
+    ticket({ id: "T-003", depends_on: ["T-001"], status: "pending" }),
+    ticket({ id: "T-004", touches: ["x"] }), // unrelated
+  ];
+  expect(liveDependentsOf(tickets, "T-001").sort()).toEqual(["T-002", "T-003"]);
+});
+
+test("liveDependentsOf excludes dependents that are themselves done/cancelled/failed", () => {
+  // A dependent that already completed, was cancelled, or failed is not waiting
+  // on the cancelled dep, so it isn't 'now blocked' and shouldn't be surfaced.
+  const tickets = [
+    ticket({ id: "T-001", status: "cancelled" }),
+    ticket({ id: "T-002", depends_on: ["T-001"], status: "complete" }),
+    ticket({ id: "T-003", depends_on: ["T-001"], status: "cancelled" }),
+    ticket({ id: "T-004", depends_on: ["T-001"], status: "failed" }),
+    ticket({ id: "T-005", depends_on: ["T-001"], status: "blocked" }),
+  ];
+  expect(liveDependentsOf(tickets, "T-001")).toEqual(["T-005"]);
+});
+
+test("liveDependentsOf returns [] when nothing depends on the cancelled ticket", () => {
+  const tickets = [
+    ticket({ id: "T-001", status: "cancelled" }),
+    ticket({ id: "T-002", depends_on: ["T-999"] }),
+  ];
+  expect(liveDependentsOf(tickets, "T-001")).toEqual([]);
 });

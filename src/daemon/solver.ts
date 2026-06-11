@@ -1,8 +1,33 @@
 import { DirectedGraph } from "graphology";
 import { hasCycle, topologicalSort } from "graphology-dag";
-import type { Ticket } from "../schema.ts";
+import type { Ticket, TicketStatus } from "../schema.ts";
 
 export type InFlight = { ticket_id: string; touches: string[] };
+
+/** A dependency is satisfied only when it reaches `complete`; these statuses can
+ *  never become `complete`, so a ticket depending on one of them is stuck. */
+const TERMINAL_NOT_COMPLETE = new Set<TicketStatus>(["cancelled", "failed"]);
+
+/**
+ * Direct dependents of `cancelledId` that are still live (not complete itself,
+ * and not already terminal). When a dependency is cancelled, these tickets can
+ * never satisfy their `depends_on` — the solver only counts `complete` deps — so
+ * they would otherwise defer forever and silently. The daemon surfaces this list
+ * to the orchestrator so it re-plans (drop the edge, re-scope, or cancel them)
+ * rather than retrying them in a loop. Direct dependents only: cancelling one of
+ * these in turn surfaces ITS dependents, so the chain unwinds one decision at a
+ * time under the orchestrator's review.
+ */
+export function liveDependentsOf(tickets: Ticket[], cancelledId: string): string[] {
+  return tickets
+    .filter(
+      (t) =>
+        t.frontmatter.depends_on.includes(cancelledId) &&
+        t.frontmatter.status !== "complete" &&
+        !TERMINAL_NOT_COMPLETE.has(t.frontmatter.status),
+    )
+    .map((t) => t.frontmatter.id);
+}
 
 export class Solver {
   private g: DirectedGraph;
