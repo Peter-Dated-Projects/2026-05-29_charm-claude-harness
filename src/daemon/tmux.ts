@@ -22,6 +22,10 @@ async function tmuxRun(args: string[]): Promise<{ status: number; stdout: string
 export class Tmux {
   constructor(public session: string) {}
 
+  // Monotonic suffix for per-call-unique tmux buffer names in sendText, so two
+  // concurrent sends can never clobber each other's payload.
+  private bufSeq = 0;
+
   static available(): boolean {
     const r = spawnSync("which", ["tmux"]);
     return r.status === 0;
@@ -157,20 +161,35 @@ export class Tmux {
   }
 
   /**
-   * Type a line of text into a specific pane and submit it (Enter). Targeting is
+   * Inject text into a specific pane's input and submit it (Enter). Targeting is
    * by pane id, so this is independent of which pane currently holds focus — the
    * user's cursor never moves and their keystrokes to any other pane are
-   * untouched. Used to wake the orchestrator when a sub-agent changes state.
+   * untouched. Used to message a blocked sub-agent (continue_agent) and to wake
+   * the orchestrator when a sub-agent changes state.
    *
-   * `-l` sends the text literally (no tmux key-name interpretation), so a stray
-   * word like "Enter" or "C-c" in the message can't be read as a keypress. We do
-   * NOT clear the pane's input line first: if a human happens to be typing into
-   * this exact pane, our text appends rather than destroying their in-progress
-   * input. Send the literal text and the Enter as two calls — a trailing "Enter"
-   * inside an `-l` payload would be typed verbatim, not submitted.
+   * Delivery is a tmux buffer + BRACKETED PASTE, not `send-keys -l`. The literal
+   * keystroke approach dropped messages two ways:
+   *   1. Multi-line — `send-keys -l "a\nb"` types the newline literally, and an
+   *      Ink TUI input reads a newline as SUBMIT, so "a" was sent and "b" was
+   *      orphaned in a fresh prompt. An LLM orchestrator routinely emits
+   *      multi-line guidance, so those messages were truncated at the first
+   *      newline.
+   *   2. Keystroke race — a long `-l` blob immediately followed by Enter could be
+   *      submitted before the TUI had ingested the whole blob.
+   * A bracketed paste arrives as one atomic event (no keystroke race) and inserts
+   * newlines as literal input rather than submitting, so the message lands intact
+   * and the explicit Enter below submits the whole thing. We do NOT clear the
+   * pane's input first: if a human is mid-type in this exact pane, the paste
+   * appends rather than destroying their in-progress input.
    */
   async sendText(paneId: string, text: string): Promise<void> {
-    await tmuxRun(["send-keys", "-t", paneId, "-l", text]);
+    const buf = `charm-paste-${++this.bufSeq}`;
+    // `--` stops option parsing so a message beginning with `-` is safe.
+    await tmuxRun(["set-buffer", "-b", buf, "--", text]);
+    // `-p` wraps the payload in bracketed-paste markers; `-d` deletes the buffer
+    // after pasting so buffers don't accumulate over a long-lived session.
+    await tmuxRun(["paste-buffer", "-t", paneId, "-b", buf, "-d", "-p"]);
+    // Submit the now-complete (possibly multi-line) input.
     await tmuxRun(["send-keys", "-t", paneId, "Enter"]);
   }
 

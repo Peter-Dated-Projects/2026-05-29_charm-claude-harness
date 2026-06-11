@@ -4,14 +4,16 @@ import { tmpdir } from "node:os";
 import { Tmux } from "./tmux.ts";
 
 /**
- * Regression test for sub-agent pane placement (daemon/index.ts spawnAgent ->
- * tmux.splitPane). charm runs every session on the DEFAULT tmux server and the
- * daemon is a detached process, so a `split-window` with no `-t` lands in tmux's
- * global "current session" rather than the one the daemon owns. With two charm
- * sessions live, that misplaces a session's sub-agent pane into the OTHER
- * session's window. The fix pins the split to `${this.session}` (an explicit
- * target, with a default-safe backstop in splitPane). This test recreates the
- * two-session race and asserts the pane lands in the owning session.
+ * Pane-placement tests for Tmux.splitPane. charm runs every session on the
+ * DEFAULT tmux server and the daemon is a detached process, so targeting is
+ * load-bearing in two ways:
+ *   - Untargeted (cli.ts main-pane spawn): a `split-window` with no `-t` lands
+ *     in tmux's global "current session", which may be another live charm
+ *     session. splitPane defaults the target to `${this.session}` so the pane
+ *     stays in the session this Tmux instance owns. (First test.)
+ *   - Explicit target (daemon/index.ts spawnAgent passes `${session}:${WINDOW}`):
+ *     the sub-agent pane must land in the targeted window, not whatever window
+ *     happens to be current. (Second test — this is the primary sub-agent path.)
  *
  * Isolation note: the Tmux class always uses the default tmux server, so we use
  * uniquely-named sessions and tear down ONLY those by name. We never call
@@ -31,15 +33,25 @@ function killSession(name: string): void {
 
 /** Which session owns a given pane id, or null if the pane is gone. */
 function sessionOfPane(paneId: string): string | null {
+  return paneField(paneId, "#{session_name}");
+}
+
+/** The server-global window id (`@N`) that contains a pane, or null if gone. */
+function windowOfPane(paneId: string): string | null {
+  return paneField(paneId, "#{window_id}");
+}
+
+/** Read one tmux format field for a pane by scanning all panes on the server. */
+function paneField(paneId: string, field: string): string | null {
   const r = spawnSync(
     "tmux",
-    ["list-panes", "-a", "-F", "#{pane_id}\t#{session_name}"],
+    ["list-panes", "-a", "-F", `#{pane_id}\t${field}`],
     { encoding: "utf8" },
   );
   if (r.status !== 0) return null;
   for (const line of r.stdout.trim().split("\n")) {
-    const [id, session] = line.split("\t");
-    if (id === paneId) return session ?? null;
+    const [id, value] = line.split("\t");
+    if (id === paneId) return value ?? null;
   }
   return null;
 }
@@ -75,9 +87,72 @@ test.skipIf(!tmuxAvailable)(
     expect(baseline.status).toBe(0);
     expect(sessionOfPane(baseline.stdout.trim())).toBe(DECOY);
 
-    // The real call path: spawnAgent uses splitPane with direction "h" and no
-    // explicit target, relying on the class to scope to its own session.
+    // The untargeted call path: the CLI's main-pane spawn (cli.ts) calls
+    // splitPane with no explicit target, relying on the class to scope to its
+    // own session. (spawnAgent passes an explicit target instead — covered by
+    // the next test.)
     const pane = await tmux.splitPane({ cmd: "sh -c 'sleep 30'", cwd, direction: "h" });
     expect(sessionOfPane(pane)).toBe(OWN);
   },
 );
+
+test.skipIf(!tmuxAvailable)(
+  "splitPane honors an explicit target window (the spawnAgent path)",
+  async () => {
+    const cwd = tmpdir();
+    const tmux = new Tmux(OWN);
+
+    // Window 1 ("charm") is created first; a second window is created last so it
+    // becomes the session's CURRENT window. An untargeted split would land in
+    // the current (second) window — so targeting window 1 explicitly is the
+    // behavior under test (this is what spawnAgent relies on: index.ts targets
+    // `${session}:${WINDOW}`).
+    tmux.newSession("charm", cwd);
+    const firstWindow = windowOfPane(
+      spawnSync("tmux", ["display-message", "-p", "-t", `${OWN}:charm`, "#{pane_id}"], { encoding: "utf8" }).stdout.trim(),
+    );
+    expect(firstWindow).not.toBeNull();
+    tmux.newWindow({ name: "second", cmd: "sh -c 'sleep 30'", cwd });
+
+    const pane = await tmux.splitPane({
+      cmd: "sh -c 'sleep 30'",
+      cwd,
+      direction: "h",
+      target: `${OWN}:charm`,
+    });
+
+    // The pane lands in the explicitly targeted first window, not the current
+    // (second) one. A regression that ignored opts.target would fail here.
+    expect(windowOfPane(pane)).toBe(firstWindow);
+  },
+);
+
+test.skipIf(!tmuxAvailable)(
+  "listPanes reports a remain-on-exit pane as dead once its command exits",
+  async () => {
+    const cwd = tmpdir();
+    const tmux = new Tmux(OWN);
+    // newSession turns on session-level remain-on-exit, so a pane whose command
+    // exits stays listed with dead:true — the exact signal the daemon's liveness
+    // sweep keys off to reap agents that exited without reporting.
+    tmux.newSession("charm", cwd);
+
+    const pane = await tmux.splitPane({ cmd: "sh -c 'exit 0'", cwd, direction: "h" });
+
+    // Poll briefly for the command to exit and the pane to flip to dead.
+    let entry: { pane_id: string; dead: boolean } | undefined;
+    for (let i = 0; i < 50; i++) {
+      entry = tmux.listPanes().find((p) => p.pane_id === pane);
+      if (entry?.dead) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(entry).toBeDefined();
+    expect(entry!.dead).toBe(true);
+  },
+);
+
+test("listPanes returns [] for a session that does not exist", () => {
+  // The status!==0 fallback: querying a nonexistent session must not throw.
+  const tmux = new Tmux(`charm-test-absent-${STAMP}`);
+  expect(tmux.listPanes()).toEqual([]);
+});

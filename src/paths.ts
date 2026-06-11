@@ -114,6 +114,14 @@ export function charmPaths(root: string, sessionId?: string) {
     // line. Per-session so `:q`/`stop` reaps only THIS session's viewers, and so
     // `charm stop` can reap them even if the daemon is gone.
     graphPids: join(runDir, "graph-viewers.pids"),
+    // The orchestrator's resume record: a small JSON ({ claude_session_id, model,
+    // permission_mode, mode }) capturing what charm passed to `claude` when it
+    // spawned the main agent. Persisted to its own file (rather than meta.json,
+    // whose schema lives elsewhere) so it survives a daemon restart and lets
+    // `charm resume` relaunch the SAME conversation with `claude --resume <uuid>`
+    // re-supplying the same model + permission mode. Per-session, under the run
+    // dir.
+    orchestratorSessionFile: join(runDir, "orchestrator-session.json"),
     // Per-session MCP config with CHARM_SOCKET baked into the env block.
     // Using a per-session file (rather than the shared .charm/charm.json) ensures
     // that each session's agents start their own charm-mcp instance. Without this,

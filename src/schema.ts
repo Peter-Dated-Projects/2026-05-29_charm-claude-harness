@@ -67,6 +67,10 @@ export const ApprovalGate = z.object({
   label: z.string(),
   payload_path: z.string().nullable(),
   ticket_id: z.string().nullable(),
+  // The agent parked on this gate (waiting in await_approval), if any. Lets the
+  // daemon cancel a gate whose owner is torn down so it doesn't linger as a
+  // zombie on the board. Null for gates not tied to a single waiting agent.
+  agent_id: z.string().nullable().default(null),
   resolved: z.boolean().default(false),
   decision: z.enum(["approve", "reject"]).optional(),
   created_at: z.number(),
@@ -138,6 +142,11 @@ export const AwaitApprovalInput = z.object({
   label: z.string(),
   ticket_id: z.string().nullable().default(null),
   payload_path: z.string().nullable().default(null),
+  // The agent parking on this gate, folded in by the MCP shim from CHARM_AGENT_ID.
+  // Lets tearDownAgent cancel a gate its dying owner was waiting on instead of
+  // leaving a zombie gate on the board. Absent for a caller that isn't a tracked
+  // agent (e.g. the orchestrator's own stage gates).
+  caller_id: z.string().nullable().default(null),
 });
 export type AwaitApprovalInput = z.infer<typeof AwaitApprovalInput>;
 

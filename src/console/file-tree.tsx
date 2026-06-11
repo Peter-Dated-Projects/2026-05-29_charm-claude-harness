@@ -294,6 +294,12 @@ export function FileTree(props: {
     if (!didInit.current) {
       didInit.current = true;
       exp = defaultExpanded(root);
+      // Drop gitignored .charm subdirs: defaultExpanded only checks the
+      // filesystem, but readDir filters gitignored dirs out of their parent's
+      // child list — keeping them expanded would watch dirs that never render.
+      if (gitAllowed !== null) {
+        exp = new Set([...exp].filter((p) => gitAllowed.has(p)));
+      }
       expandedRef.current = exp;
       setExpanded(exp);
     }

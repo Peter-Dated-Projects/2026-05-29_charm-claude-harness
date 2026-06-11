@@ -137,7 +137,10 @@ server.registerTool(
   },
   // No timeout: this blocks until a human resolves the gate in the Console pane,
   // which can legitimately take minutes — a default timeout would abort the wait.
-  async (args) => ok(await call("await_approval", args, { timeoutMs: 0 })),
+  // Fold in CHARM_AGENT_ID as caller_id so the daemon can link the gate to the
+  // waiting agent and cancel it if that agent is torn down (the orchestrator's id
+  // resolves to no tracked sub-agent, so the daemon simply leaves it unlinked).
+  async (args) => ok(await call("await_approval", { caller_id: AGENT_ID ?? null, ...args }, { timeoutMs: 0 })),
 );
 
 server.registerTool(
