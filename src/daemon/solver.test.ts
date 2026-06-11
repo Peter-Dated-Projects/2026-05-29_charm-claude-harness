@@ -248,6 +248,23 @@ test("topoOrder returns dependencies before their dependents", () => {
   expect(order.indexOf("T-001")).toBeLessThan(order.indexOf("T-002"));
 });
 
+test("nextRunnable dedupes a duplicated candidate id (no double-spawn)", () => {
+  // input.ticket_ids is only validated as a non-empty string array, so the same
+  // id can appear twice. With EMPTY touches the newlyClaimed conflict guard
+  // can't dedupe it, so without explicit candidate dedup the id would be emitted
+  // (and a worker spawned) twice for one ticket.
+  const tickets = [ticket({ id: "T-001", touches: [] })];
+  const solver = new Solver(tickets);
+
+  const runnable = solver.nextRunnable({
+    completed: new Set(),
+    inFlight: [],
+    candidates: ["T-001", "T-001"],
+  });
+
+  expect(runnable).toEqual(["T-001"]);
+});
+
 // --- liveDependentsOf: surfacing a cancelled dependency -------------------
 // When a dependency is cancelled, the tickets that depended on it can never
 // satisfy their depends_on (only `complete` does). The daemon surfaces those to

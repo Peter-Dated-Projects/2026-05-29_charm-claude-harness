@@ -67,8 +67,12 @@ export class Solver {
     const claimed = new Set<string>();
     for (const f of opts.inFlight) for (const path of f.touches) claimed.add(path);
 
+    // Dedupe candidates: input.ticket_ids is only validated as a non-empty
+    // string array, so a duplicate id could otherwise be emitted twice (and
+    // spawn a second worker on the same ticket). new Set preserves first-seen
+    // order.
     const candidates = opts.candidates
-      ? opts.candidates.filter((id) => this.byId.has(id))
+      ? [...new Set(opts.candidates)].filter((id) => this.byId.has(id))
       : [...this.byId.keys()];
 
     const out: string[] = [];

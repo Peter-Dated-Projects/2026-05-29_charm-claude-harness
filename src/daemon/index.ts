@@ -381,21 +381,42 @@ async function main() {
     // match for a later `claude --resume`/`--continue` to land on this session.
     const claudeSessionId = newClaudeSessionId();
     const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id, claude_session_id: claudeSessionId });
-    const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role), claudeSessionId };
-    const cmd = buildClaudeCommand(paths, agent.id, resolved);
-    // Target THIS session's window explicitly. charm runs every session on the
-    // default tmux server, and the daemon is a detached process: a `split-window`
-    // with no `-t` lands in tmux's global "current session", which the daemon does
-    // not control. With two charm sessions live, that can place this session's
-    // sub-agent pane inside the OTHER session's window (breaking this session's
-    // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
-    // the pane in the session that owns the agent.
-    const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
-    registry.attach(agent.id, { pane_id: pane });
-    refreshCoordination();
-    agentPaneIds.push(pane);
-    await relayoutLocked();
-    return agent.id;
+    try {
+      const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role), claudeSessionId };
+      const cmd = buildClaudeCommand(paths, agent.id, resolved);
+      // Target THIS session's window explicitly. charm runs every session on the
+      // default tmux server, and the daemon is a detached process: a `split-window`
+      // with no `-t` lands in tmux's global "current session", which the daemon does
+      // not control. With two charm sessions live, that can place this session's
+      // sub-agent pane inside the OTHER session's window (breaking this session's
+      // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
+      // the pane in the session that owns the agent.
+      const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
+      registry.attach(agent.id, { pane_id: pane });
+      refreshCoordination();
+      agentPaneIds.push(pane);
+      await relayoutLocked();
+      return agent.id;
+    } catch (e) {
+      // Roll back the just-created registry entry. registry.create() flips it to
+      // `spawning` immediately (so its touches-claim is visible), but if the spawn
+      // throws before/at splitPane the entry would otherwise sit in `spawning`
+      // forever — occupiesLiveSlot counts it against maxAgents, and the dead-pane
+      // sweep skips any agent with no pane_id, so the slot is never reclaimed. If a
+      // pane was already created before the failure, kill it so it doesn't dangle.
+      const stranded = registry.get(agent.id);
+      if (stranded?.pane_id) {
+        try {
+          await tmux.killPane(stranded.pane_id);
+        } catch {
+          /* best effort */
+        }
+        const i = agentPaneIds.indexOf(stranded.pane_id);
+        if (i >= 0) agentPaneIds.splice(i, 1);
+      }
+      registry.remove(agent.id);
+      throw e;
+    }
   }
 
   /** Public single-spawn entry point: takes the layout lock around one
@@ -473,8 +494,10 @@ async function main() {
       pingPending = [];
       pingTimer = null;
       try {
-        // The pane may have vanished (orchestrator exited) during the window.
-        if (!orchestratorPaneId || (await tmux.paneIndex(orchestratorPaneId)) === null) return;
+        // The pane may have vanished OR died (orchestrator exited) during the
+        // window. paneAlive — not paneIndex — because remain-on-exit keeps a dead
+        // pane indexable; sending into a corpse would be a silent no-op.
+        if (!orchestratorPaneId || !(await tmux.paneAlive(orchestratorPaneId))) return;
         // One line only: literal newlines typed into the pane would submit early.
         const line =
           `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
@@ -726,10 +749,21 @@ async function main() {
         // new worker to `spawning` and inFlight() counts `spawning`, every claim is
         // visible to the next lock holder the instant we spawn it.
         return withLayoutLock(async () => {
+          const all = store.list();
+          // Fail loud on a ticket id that names no real ticket. The solver
+          // silently drops unknown candidates, so without this a typo'd id would
+          // never spawn and never error — it'd just sit in `deferred` forever and
+          // the orchestrator would retry it in a loop. Mirrors the Solver
+          // constructor's loud-failure stance on a dangling depends_on.
+          const known = new Set(all.map((t) => t.frontmatter.id));
+          const unknown = input.ticket_ids.filter((id) => !known.has(id));
+          if (unknown.length > 0) {
+            throw new Error(`spawn_workers: unknown ticket id(s): ${unknown.join(", ")}`);
+          }
           const completed = new Set(
-            store.list().filter((t) => t.frontmatter.status === "complete").map((t) => t.frontmatter.id),
+            all.filter((t) => t.frontmatter.status === "complete").map((t) => t.frontmatter.id),
           );
-          const solver = new Solver(store.list());
+          const solver = new Solver(all);
           const runnable = solver.nextRunnable({
             completed,
             inFlight: inFlight(),
@@ -752,15 +786,31 @@ async function main() {
             store.update(tid, { status: "running", stage: "in_progress" });
           }
           // Deferred = not-yet-runnable (deps/touches) PLUS the ones clamped by the
-          // cap. The orchestrator treats both the same: retry on the next tick.
+          // cap. The orchestrator retries these on the next tick — EXCEPT any that
+          // are blocked by a cancelled dependency, which can never become runnable
+          // (only a `complete` dep satisfies the solver). Surface those separately
+          // so the orchestrator re-plans them instead of retrying forever — the
+          // same deadlock cancel_ticket pings about, caught here for the case where
+          // the orchestrator probes after the fact (e.g. a daemon restart).
           const deferred = input.ticket_ids.filter((id) => !toSpawn.includes(id));
+          const byId = new Map(all.map((t) => [t.frontmatter.id, t]));
+          const blockedByCancelledDep = deferred.filter((id) =>
+            (byId.get(id)?.frontmatter.depends_on ?? []).some(
+              (d) => byId.get(d)?.frontmatter.status === "cancelled",
+            ),
+          );
           if (cappedOut > 0) {
             console.error(
               `[charmd] spawn_workers: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
                 `deferred ${cappedOut} runnable ticket(s).`,
             );
           }
-          return { agent_ids: ids, deferred, ...(cappedOut > 0 ? { capped: cappedOut, max_agents: maxAgents } : {}) };
+          return {
+            agent_ids: ids,
+            deferred,
+            ...(blockedByCancelledDep.length > 0 ? { blocked_by_cancelled_dependency: blockedByCancelledDep } : {}),
+            ...(cappedOut > 0 ? { capped: cappedOut, max_agents: maxAgents } : {}),
+          };
         });
       }
       case "await_approval": {
@@ -1022,7 +1072,12 @@ async function main() {
           );
         }
         if (!target.pane_id) throw new Error(`agent ${target.id} has no pane to message`);
-        if (!tmuxAvailable || (await tmux.paneIndex(target.pane_id)) === null) {
+        // paneAlive, not paneIndex: under session-level remain-on-exit a pane
+        // whose claude has EXITED stays listed and still has a pane_index, so
+        // paneIndex would report it present and we'd sendText into a dead pane,
+        // then flip the registry to `running` — resurrecting a zombie. paneAlive
+        // checks #{pane_dead}, so a retained-but-dead pane is correctly rejected.
+        if (!tmuxAvailable || !(await tmux.paneAlive(target.pane_id))) {
           throw new Error(`agent ${target.id}'s pane is gone — it may have exited; kill_agent and respawn instead`);
         }
         // Wake the blocked agent with the orchestrator's guidance (one line — a
@@ -1097,7 +1152,7 @@ async function main() {
         // no-op for sub-agents.
         delete process.env.CHARM_MODEL;
         const model = resolveModel(MODE_MODEL[mode]);
-        if (tmuxAvailable && orchestratorPaneId && (await tmux.paneIndex(orchestratorPaneId)) !== null) {
+        if (tmuxAvailable && orchestratorPaneId && (await tmux.paneAlive(orchestratorPaneId))) {
           try {
             await tmux.sendText(orchestratorPaneId, `/model ${model}`);
             await tmux.sendText(

@@ -3,7 +3,7 @@ import { join, basename, dirname } from "node:path";
 import matter from "gray-matter";
 import { Database } from "bun:sqlite";
 import { TicketFrontmatter, type Ticket, type TicketStatus, type TicketStage } from "../schema.ts";
-import type { CharmPaths } from "../paths.ts";
+import { assertPlainName, type CharmPaths } from "../paths.ts";
 
 // Markers delimiting the daemon-managed activity log inside a ticket body. Plans,
 // status changes, and orchestrator messages are appended here as timestamped
@@ -132,6 +132,10 @@ export class TicketStore {
    *  ticket with the resolved id already exists (no silent clobber). */
   promoteDraft(name: string): Ticket {
     const draftName = name.endsWith(".md") ? name.slice(0, -3) : name;
+    // The name comes from the orchestrator via the `promote` MCP tool; reject
+    // path traversal before joining it into scratchpadDir, or a name like
+    // `../../x` would read/delete a .md file anywhere on disk.
+    assertPlainName(draftName);
     const draftPath = join(this.paths.scratchpadDir, `${draftName}.md`);
     if (!existsSync(draftPath)) throw new Error(`no draft in scratchpad: ${draftName}`);
     const parsed = matter(readFileSync(draftPath, "utf8"));
@@ -246,14 +250,26 @@ export class TicketStore {
    *  small local helper to avoid coupling the store to the daemon. */
   private atomicWriteFile(path: string, text: string) {
     const tmp = join(dirname(path), `.${basename(path)}.tmp.${process.pid}`);
-    const fd = openSync(tmp, "w");
     try {
-      writeFileSync(fd, text);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+      const fd = openSync(tmp, "w");
+      try {
+        writeFileSync(fd, text);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, path);
+    } catch (e) {
+      // On any failure (write, fsync, or rename) remove the temp file so a
+      // partial write never litters ticketsDir/proposalsDir. Best-effort: if
+      // openSync itself threw there's nothing to unlink.
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* nothing to remove */
+      }
+      throw e;
     }
-    renameSync(tmp, path);
   }
 
   private indexOne(t: Ticket) {
