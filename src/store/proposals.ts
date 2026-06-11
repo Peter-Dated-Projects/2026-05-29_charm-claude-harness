@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { join, basename } from "node:path";
-import type { CharmPaths } from "../paths.ts";
+import { assertPlainName, type CharmPaths } from "../paths.ts";
 
 /**
  * Proposals are big feature-request documents in .charm/proposals/ (PROP-*.md).
@@ -117,6 +117,11 @@ export function listProposals(paths: CharmPaths): ProposalEntry[] {
  *  surfaced rather than silently swallowed. */
 export function finishProposal(paths: CharmPaths, name: string): ProposalEntry {
   const base = name.endsWith(".md") ? name.slice(0, -3) : name;
+  // The name comes from the agent via the `finish_proposal` MCP tool; reject
+  // path traversal before joining it, or a name like `../../x` would rename an
+  // arbitrary .md file on disk. (createProposal is already safe — it runs the
+  // name through proposalSlug.)
+  assertPlainName(base);
   const src = join(paths.proposalsDir, `${base}.md`);
   if (!existsSync(src)) throw new Error(`no proposal: ${base}`);
   const dest = join(paths.proposalsFinishedDir, `${base}.md`);

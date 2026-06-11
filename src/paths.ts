@@ -136,6 +136,31 @@ export function charmPaths(root: string, sessionId?: string) {
 export type CharmPaths = ReturnType<typeof charmPaths>;
 
 /**
+ * Assert that `name` is a single, plain path segment — no directory separators,
+ * no `..`, not absolute. Used to guard caller-supplied draft/proposal names
+ * before they're joined into a directory: the names arrive from an LLM agent via
+ * MCP tools, and an un-guarded `join(dir, name + ".md")` with `name` like
+ * `../../x` would escape the intended directory and let the agent read, move, or
+ * delete arbitrary files. Throws with a clear message rather than sanitizing, so
+ * a malformed name surfaces instead of silently resolving somewhere unexpected.
+ */
+export function assertPlainName(name: string): void {
+  if (
+    !name ||
+    name === "." ||
+    name === ".." ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    name.includes("\0") ||
+    basename(name) !== name
+  ) {
+    throw new Error(
+      `invalid name (must be a plain file name with no path separators): ${JSON.stringify(name)}`,
+    );
+  }
+}
+
+/**
  * Deterministic, tmux-safe default session name for a project root. Two charms
  * in different directories must not collide on the global tmux session
  * namespace, so the default name is derived from the absolute root path rather

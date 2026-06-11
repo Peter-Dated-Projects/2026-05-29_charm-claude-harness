@@ -151,6 +151,32 @@ test.skipIf(!tmuxAvailable)(
   },
 );
 
+test.skipIf(!tmuxAvailable)(
+  "paneAlive is true for a running pane, false for a dead or absent one",
+  async () => {
+    const cwd = tmpdir();
+    const tmux = new Tmux(OWN);
+    tmux.newSession("charm", cwd);
+
+    const live = await tmux.splitPane({ cmd: "sh -c 'sleep 30'", cwd, direction: "h" });
+    expect(await tmux.paneAlive(live)).toBe(true);
+
+    // A pane whose command exits is retained (remain-on-exit) but dead — paneIndex
+    // would still see it, paneAlive must not. Poll for the exit to land.
+    const dead = await tmux.splitPane({ cmd: "sh -c 'exit 0'", cwd, direction: "h" });
+    let alive = true;
+    for (let i = 0; i < 50; i++) {
+      alive = await tmux.paneAlive(dead);
+      if (!alive) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(alive).toBe(false);
+
+    // A pane id that never existed reads as not-alive.
+    expect(await tmux.paneAlive("%999999")).toBe(false);
+  },
+);
+
 test("listPanes returns [] for a session that does not exist", () => {
   // The status!==0 fallback: querying a nonexistent session must not throw.
   const tmux = new Tmux(`charm-test-absent-${STAMP}`);

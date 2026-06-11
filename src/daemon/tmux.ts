@@ -242,6 +242,20 @@ export class Tmux {
     return { w: Number(m[1]), h: Number(m[2]) };
   }
 
+  /** True iff the pane exists in this session AND its process is still alive.
+   *  Under session-level `remain-on-exit on`, a pane whose command has exited
+   *  stays listed — so `paneIndex` still returns a finite index for it — which
+   *  makes paneIndex a false proxy for "process alive". This scans `listPanes()`
+   *  (scoped to this session) and checks the `dead` flag: a pane that is absent
+   *  (killed/never-existed) or present-but-dead reads as not-alive. Scoped-scan
+   *  rather than `display-message -t <id>`, which falls back to a current pane
+   *  for an unknown id instead of erroring. Use this (not paneIndex) to decide
+   *  whether it's safe to send input to a pane. */
+  async paneAlive(paneId: string): Promise<boolean> {
+    const p = this.listPanes().find((x) => x.pane_id === paneId);
+    return p !== undefined && !p.dead;
+  }
+
   /** Look up the current pane_index for a stable pane_id. Returns null if the pane no longer exists. */
   async paneIndex(paneId: string): Promise<number | null> {
     const r = await tmuxRun(["display-message", "-p", "-t", paneId, "#{pane_index}"]);

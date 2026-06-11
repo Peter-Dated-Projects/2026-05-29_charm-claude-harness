@@ -118,7 +118,7 @@ server.registerTool(
 server.registerTool(
   "spawn_workers",
   {
-    description: "Spawn interactive worker agents. The daemon enforces dep + file-scope conflicts; conflicting tickets are returned as 'deferred'.",
+    description: "Spawn interactive worker agents. The daemon enforces dep + file-scope conflicts; conflicting tickets are returned as 'deferred' (retry on the next tick). Tickets in 'blocked_by_cancelled_dependency' depend on a cancelled ticket and can NEVER run — do not retry them; re-plan (drop the dependency, re-scope, or cancel them).",
     inputSchema: { ticket_ids: z.array(z.string()) },
   },
   async (args) => ok(await call("spawn_workers", args)),
