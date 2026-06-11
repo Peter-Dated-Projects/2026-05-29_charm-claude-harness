@@ -483,6 +483,20 @@ async function main() {
     return a.role;
   }
 
+  // Lock fan-out + ticket-authoring tools (spawn_workers, spawn_review_agents,
+  // request_review, create_tickets, promote) to the orchestrator. Only the
+  // orchestrator spawns sub-agents and authors tickets; a worker/reviewer/tester
+  // calling these is a confused agent fanning out its own fleet. The human
+  // operator (console/CLI, no caller_id -> "operator") is always allowed.
+  function assertOrchestrator(caller_id: string | undefined, tool: string): void {
+    const role = resolveCaller(caller_id);
+    if (role !== "operator" && role !== "main") {
+      throw new Error(
+        `agent ${caller_id} (${role}) may not call ${tool}; only the orchestrator spawns sub-agents and authors tickets`,
+      );
+    }
+  }
+
   // Wake the orchestrator when sub-agents change state, so it can reap finished
   // panes and advance the workflow. Bursts are coalesced into a single wake: if
   // five workers finish at once the orchestrator (on Opus) takes one turn, not
@@ -685,6 +699,7 @@ async function main() {
       // ---- MCP-facing tools ----
       case "create_tickets": {
         const input = CreateTicketsInput.parse(params);
+        assertOrchestrator(input.caller_id, "create_tickets");
         const created = input.tickets.map((t) => store.create(t).frontmatter);
         return created;
       }
@@ -695,6 +710,7 @@ async function main() {
         // round-tripping the whole body through create_tickets. With no `tickets`
         // arg, promote every draft currently in the scratchpad.
         const input = PromoteInput.parse(params ?? {});
+        assertOrchestrator(input.caller_id, "promote");
         const names = input.tickets ?? store.listDrafts();
         const promoted = names.map((n) => store.promoteDraft(n).frontmatter);
         // Newly promoted tickets belong on the board immediately.
@@ -713,6 +729,7 @@ async function main() {
       }
       case "spawn_review_agents": {
         const input = SpawnReviewersInput.parse(params);
+        assertOrchestrator(input.caller_id, "spawn_review_agents");
         // One critical section around the slot clamp + spawn loop, so the cap
         // computation and every spawn it authorizes share a lock — a concurrent
         // spawner can't pass the same count-only cap check and overshoot the
@@ -754,6 +771,7 @@ async function main() {
       }
       case "spawn_workers": {
         const input = SpawnWorkersInput.parse(params);
+        assertOrchestrator(input.caller_id, "spawn_workers");
         // The whole read-solve-spawn runs under ONE layout-lock critical section.
         // Solving (inFlight + nextRunnable) and the spawn loop must share a lock so
         // a concurrent spawn_workers / request_review can't slip between this
@@ -1204,6 +1222,7 @@ async function main() {
       }
       case "request_review": {
         const input = RequestReviewInput.parse(params);
+        assertOrchestrator(input.caller_id, "request_review");
         const id = await spawnAgent({
           role: "tester",
           ticket_id: input.ticket_id,

@@ -17,7 +17,14 @@ export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "runni
 /** Statuses a worker may set on its own ticket via set_ticket_status. `cancelled`
  *  is intentionally excluded: cancelling is a deliberate operator/orchestrator
  *  call-off (it flows from kill_agent), not something a worker decides about its
- *  own work — a worker that hits a wall reports `failed`, not `cancelled`. */
+ *  own work — a worker that hits a wall reports `failed`, not `cancelled`.
+ *
+ *  `complete` IS intentionally worker-settable, by design — not an oversight. A
+ *  worker can mark its own ticket complete (so can report_status('done')) without
+ *  a mandatory tester/reviewer gate, because the real gate is the human: the
+ *  common path to completion is the operator stepping into the session and
+ *  telling the agent it's done. Testing stays optional and orchestrator-driven
+ *  (request_review) rather than forced on every ticket. */
 export const WORKER_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "complete", "failed"];
 
 /** Statuses the orchestrator/operator may write onto any ticket via set_ticket_state.
@@ -101,6 +108,9 @@ export const RpcResponse = z.object({
 export type RpcResponse = z.infer<typeof RpcResponse>;
 
 export const CreateTicketsInput = z.object({
+  // Orchestrator-only (folded in by the MCP shim); a sub-agent cannot author
+  // tickets. Absent => human operator (console/CLI), also allowed.
+  caller_id: z.string().optional(),
   tickets: z.array(z.object({
     title: z.string(),
     body: z.string(),
@@ -116,6 +126,7 @@ export type CreateTicketsInput = z.infer<typeof CreateTicketsInput>;
 // ticket. `tickets` names the drafts to promote (with or without the .md suffix);
 // omit it to promote every draft currently in the scratchpad.
 export const PromoteInput = z.object({
+  caller_id: z.string().optional(),
   tickets: z.array(z.string()).optional(),
 });
 export type PromoteInput = z.infer<typeof PromoteInput>;
@@ -136,11 +147,13 @@ export const FinishProposalInput = z.object({
 export type FinishProposalInput = z.infer<typeof FinishProposalInput>;
 
 export const SpawnReviewersInput = z.object({
+  caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
 });
 export type SpawnReviewersInput = z.infer<typeof SpawnReviewersInput>;
 
 export const SpawnWorkersInput = z.object({
+  caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
 });
 export type SpawnWorkersInput = z.infer<typeof SpawnWorkersInput>;
@@ -214,6 +227,7 @@ export const SetTicketStateInput = z
 export type SetTicketStateInput = z.infer<typeof SetTicketStateInput>;
 
 export const RequestReviewInput = z.object({
+  caller_id: z.string().optional(),
   ticket_id: z.string(),
 });
 export type RequestReviewInput = z.infer<typeof RequestReviewInput>;

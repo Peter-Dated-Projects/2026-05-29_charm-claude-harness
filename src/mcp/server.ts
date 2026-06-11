@@ -45,7 +45,7 @@ server.registerTool(
       })).min(1).max(3, "create_tickets accepts at most 3 tickets per call; split larger batches across multiple calls"),
     },
   },
-  async (args) => ok(await call("create_tickets", args)),
+  async (args) => ok(await call("create_tickets", { caller_id: AGENT_ID, ...args })),
 );
 
 server.registerTool(
@@ -62,7 +62,7 @@ server.registerTool(
       "every draft in the scratchpad.",
     inputSchema: { tickets: z.array(z.string()).optional() },
   },
-  async (args) => ok(await call("promote", args)),
+  async (args) => ok(await call("promote", { caller_id: AGENT_ID, ...args })),
 );
 
 server.registerTool(
@@ -112,7 +112,7 @@ server.registerTool(
     description: "Spawn one headless reviewer agent per ticket id.",
     inputSchema: { ticket_ids: z.array(z.string()) },
   },
-  async (args) => ok(await call("spawn_review_agents", args)),
+  async (args) => ok(await call("spawn_review_agents", { caller_id: AGENT_ID, ...args })),
 );
 
 server.registerTool(
@@ -121,7 +121,7 @@ server.registerTool(
     description: "Spawn interactive worker agents. The daemon enforces dep + file-scope conflicts; conflicting tickets are returned as 'deferred' (retry on the next tick). Tickets in 'blocked_by_cancelled_dependency' depend on a cancelled ticket and can NEVER run — do not retry them; re-plan (drop the dependency, re-scope, or cancel them).",
     inputSchema: { ticket_ids: z.array(z.string()) },
   },
-  async (args) => ok(await call("spawn_workers", args)),
+  async (args) => ok(await call("spawn_workers", { caller_id: AGENT_ID, ...args })),
 );
 
 server.registerTool(
@@ -264,7 +264,7 @@ server.registerTool(
     description: "Worker-only: spawn a tester agent on a finished ticket.",
     inputSchema: { ticket_id: z.string() },
   },
-  async (args) => ok(await call("request_review", args)),
+  async (args) => ok(await call("request_review", { caller_id: AGENT_ID, ...args })),
 );
 
 server.registerTool(
