@@ -37,7 +37,7 @@ with these scopes (so the solver has real work to do):
 Declare touches: accurately and set the T-C dependency. T-D's overlap with T-A must force
 the solver to SERIALIZE them, not run both at once.
 
-STAGE 2 — Review: Call spawn_review_agents so a headless reviewer enriches each ticket.
+STAGE 2 — Review: Call spawn_review_agents so a reviewer enriches each ticket.
 Report when they finish, then call await_approval for my ticket-approval gate. STOP.
 
 STAGE 3 — Development: After I approve, call spawn_workers. Confirm in your narration that
@@ -68,7 +68,7 @@ paper over it. Do not advance past an await_approval until I approve.
 | Stage 0 discovery + `PROJECT.md` authoring | discovery pass writes the brief |
 | `await_approval` (×3 gates) | blocking stops at stages 0, 2, 4 |
 | `create_tickets` + ticket store + sqlite index | four `.md` tickets written |
-| `spawn_review_agents` (headless) | Stage 2 reviewer enrichment |
+| `spawn_review_agents` (interactive) | Stage 2 reviewer enrichment |
 | `spawn_workers` + dep/scope solver | T-A‖T-B parallel, T-C dep-gated, **T-D serialized behind T-A** |
 | `update_plan` / `read_coordination` | workers populate `COORDINATION.md` |
 | `report_status` / `set_ticket_status` | worker-driven state transitions |

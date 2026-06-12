@@ -30,9 +30,9 @@ approved.
 |---|---|---|---|
 | 0 — Discovery | main agent + human, interactively | interactive | human approves `.charm/PROJECT.md` |
 | 1 — Planning / ticket generation | main agent | interactive | none → auto into Stage 2 |
-| 2 — Ticket review & enrichment | N reviewer agents | headless | human approves the enriched tickets |
+| 2 — Ticket review & enrichment | N reviewer agents | interactive | human approves the enriched tickets |
 | 3 — Development | M worker agents | interactive, coordinated | none → each ticket advances on its own |
-| 4 — Test & review | tester agents, one per ticket | headless | human approves the diff before merge |
+| 4 — Test & review | tester agents, one per ticket | interactive | human approves the diff before merge |
 
 Gates are blocking: the daemon halts the pipeline until the human approves in the Console
 pane (or via `charm approve <gate_id>`). The hard rule baked into the orchestrator prompt
@@ -100,7 +100,7 @@ was pressed in.
 | Tool | Typical caller | Effect |
 |---|---|---|
 | `create_tickets` | main | write `.charm/tickets/*.md` + index (capped at 3/call) |
-| `spawn_review_agents` | main | spawn one headless reviewer per ticket id |
+| `spawn_review_agents` | main | spawn one interactive reviewer per ticket id |
 | `spawn_workers` | main | enforce dep + scope, spawn interactive workers |
 | `request_review` | main/worker | spawn a tester on a finished ticket |
 | `await_approval` | main | block on a human gate in the Console |
@@ -152,6 +152,13 @@ execs its siblings and every `claude` resolves `charm-mcp` by name.
   `npm install -g @anthropic-ai/claude-code`
 - **tmux** on PATH at runtime.
 - **Bun** ≥ 1.1 to build or run from source (not needed once binaries are installed).
+
+## Documentation
+
+Full docs live in [docs/](docs/README.md), organized by audience — operating charm
+(getting started, running a session, modes, the CLI, keybindings, troubleshooting),
+developing charm (architecture, MCP tools, build, the knowledge base, preflight), and the
+design notes behind the harness.
 
 ## Quick start
 
@@ -207,7 +214,7 @@ templates/            prompts, kb skeleton, skills, CLAUDE.md, settings — copi
                       into a project's .charm/ on init
 frieren.sh            project lifecycle (setup/build/test/install/kill)
 charm.sh              run-from-source wrapper (forwards to src/cli.ts)
-docs/                 design notes (parallelization, sequencing, KB design)
+docs/                 full docs, organized by audience (see docs/README.md)
 ```
 
 `.charm/` (created in a target project, not this repo) holds `PROJECT.md`, `tickets/`,
@@ -216,6 +223,6 @@ under `run/<uuid>/`.
 
 ## Build
 
-See [BUILD.md](BUILD.md) for the full build matrix: host-arch builds, cross-compiling both
+See [docs/developing/build.md](docs/developing/build.md) for the full build matrix: host-arch builds, cross-compiling both
 Mac architectures, `lipo` universal binaries, packaging, and macOS Gatekeeper handling. The
 short version is `./frieren.sh build` (binaries → `dist/`) or `./frieren.sh install`.
