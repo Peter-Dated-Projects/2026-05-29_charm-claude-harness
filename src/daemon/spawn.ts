@@ -225,7 +225,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "You are connected to the `charm-mcp` server. Call the ones your task needs; the daemon enforces the hard constraints noted below. The fan-out and ticket-authoring tools (create_tickets, promote, spawn_review_agents, spawn_workers, request_review) are ORCHESTRATOR-ONLY — only the main agent spawns sub-agents and authors tickets; a sub-agent calling them is rejected by the daemon.",
     "- create_tickets — (orchestrator only) create one or more tickets (each: title, body, depends_on, touches file globs).",
     "- promote — (orchestrator only) promote hand-authored ticket drafts from .charm/scratchpad/ into real, spawnable tickets.",
-    "- spawn_review_agents — (orchestrator only) spawn one headless reviewer agent per ticket id. Capped like spawn_workers (see below); ids over the cap come back in `deferred` — retry them as agents finish.",
+    "- spawn_review_agents — (orchestrator only) spawn one interactive reviewer agent per ticket id. Reviewers are resumable: a blocked reviewer waits in its pane for you to continue_agent it with guidance. Capped like spawn_workers (see below); ids over the cap come back in `deferred` — retry them as agents finish.",
     "- spawn_workers — (orchestrator only) spawn interactive worker agents; the daemon defers any ticket whose deps or `touches` conflict with running work, AND any that would exceed the concurrent-agent cap (a fixed ceiling on how many agents — including you, the orchestrator — run at once). Deferred ids are returned in `deferred`; simply call spawn_workers again for them once running agents finish and free slots. A `capped` count in the result means the cap (not deps/touches) was the reason.",
     "- request_review — (orchestrator only) spawn a tester agent on one finished ticket id. Errors with 'agent cap reached' if no slot is free; retry once an agent finishes.",
     "- await_approval — block until a human approves or rejects a gate (stage 0, 2, or 4) in the Console pane.",
@@ -265,10 +265,32 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const CHARM_WORKSPACE = existsSync(paths.charmMd)
     ? "\n\n" + readFileSync(paths.charmMd, "utf8").trim() + "\n"
     : "";
+  // Shared coordination ethos for every sub-agent (worker / reviewer / tester) —
+  // NOT the orchestrator (which carries the other side of this in orchestrator.md)
+  // and NOT plain windows. Injected from this single place so the three roles stay
+  // in sync rather than drifting across their separate prompt files. It does two
+  // things on purpose: (1) gives explicit psychological safety to escalate —
+  // surfacing a blocker/failure early is the job, not a failure of it — because the
+  // system's main failure mode is an agent burying a problem and rubber-stamping
+  // broken work forward; (2) sets a clarity norm for talking to the orchestrator so
+  // escalations are terse and decision-first. The "clarity is not silence" line
+  // reconciles the two so "be terse" never collapses into "stay quiet."
+  const CHARM_COORDINATION =
+    spec.role !== "main" && !spec.plain
+      ? "\n\n" +
+        [
+          "## Working with the orchestrator",
+          "You are one agent in a fleet. The orchestrator (the `main` agent) scoped your ticket and handed it to you with the best context it had. Your job is to do that work well and to tell the orchestrator what it could not have known.",
+          "- Surfacing a problem early is doing your job well, not failing it. The orchestrator WANTS your blockers, ambiguities, and bad news the moment you have them — a clear early signal saves a wasted downstream run. Never bury a problem or rubber-stamp work to avoid bothering it.",
+          "- When you report to the orchestrator (a status note, a block, a failure), be clear and terse: lead with the decision you need or the fact it is missing, give the one specific detail that matters, then stop. Do not make it dig for the point.",
+          "- Clarity is not silence. A precise, early blocker respects the orchestrator's time far more than a quiet rubber-stamp that pushes broken work forward.",
+        ].join("\n") +
+        "\n"
+      : "";
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
-  const systemPrompt = rolePrompt + CHARM_WORKSPACE + CHARM_RULES + CHARM_SKILLS + modelLine;
+  const systemPrompt = rolePrompt + CHARM_WORKSPACE + CHARM_RULES + CHARM_COORDINATION + CHARM_SKILLS + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   // Conversation identity. A fresh spawn launches under a charm-owned
