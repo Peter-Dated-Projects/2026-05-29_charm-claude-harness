@@ -944,7 +944,43 @@ function scaffoldCharmDir(
     );
   }
 
+  ensureGitignoreRules(paths);
   scaffoldClaudeSettings(paths);
+}
+
+/**
+ * Ensure the project's root .gitignore carries the rules charm's tracking model
+ * depends on: `.charm/*` ignores the ephemeral run state, and the `!` re-includes
+ * keep the durable surfaces (kb, proposals, tickets, scratchpad) tracked so the
+ * daemon's session-close commit can capture them.
+ *
+ * Check-and-append, never clobber: we look for each required line and append only
+ * the ones that are absent, so a user's existing .gitignore is preserved and
+ * re-running init/start never duplicates rules. The file is created if it does
+ * not exist. Appended lines go to the end in canonical order — the negations land
+ * after `.charm/*`, which is what makes the re-includes take effect.
+ */
+function ensureGitignoreRules(paths: ReturnType<typeof charmPaths>) {
+  const gitignore = join(paths.root, ".gitignore");
+  const header = "# charm: track durable .charm surfaces, ignore ephemeral run state";
+  const required = [
+    ".charm/*",
+    "!.charm/kb/",
+    "!.charm/proposals/",
+    "!.charm/tickets/",
+    "!.charm/scratchpad/",
+  ];
+  const existing = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
+  const present = new Set(existing.split("\n").map((l) => l.trim()));
+  const missing = required.filter((line) => !present.has(line));
+  if (missing.length === 0) return;
+  const block = present.has(header) ? missing : [header, ...missing];
+  let out = existing;
+  if (out.length > 0 && !out.endsWith("\n")) out += "\n"; // finish a dangling last line
+  if (out.length > 0) out += "\n"; // blank separator before our block
+  out += block.join("\n") + "\n";
+  writeFileSync(gitignore, out);
+  console.log(`  gitignore: appended ${missing.length} charm rule(s) to ${gitignore}`);
 }
 
 /**
