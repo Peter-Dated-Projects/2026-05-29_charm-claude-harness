@@ -748,16 +748,17 @@ async function main() {
               role: "reviewer",
               ticket_id: tid,
               prompt: `Read .charm/tickets/${tid}.md and review it.`,
-              // Headless: a reviewer is a one-shot enrichment pass (reviewer.md:
-              // "do the work and exit"). Interactive, it would finish its turn and
-              // linger idle in the pane — never seen `done` by the liveness sweep
-              // (which only reaps DEAD panes), so the orchestrator was never told
-              // the review finished. Headless (`-p`) makes it run, call
-              // report_status('done') -> ticket `reviewed` + orchestrator ping,
-              // and exit; if it forgets to report, its exit still lets the sweep
-              // reap it and ping. (Workers stay interactive — they're resumable
-              // via continue_agent.)
-              interactive: false,
+              // Interactive (like workers), NOT headless. A reviewer that hits an
+              // ambiguous or incoherent ticket must be able to report_status('blocked')
+              // and WAIT for the orchestrator to message guidance into its pane via
+              // continue_agent (which sends keystrokes into a live REPL — impossible
+              // for a one-shot `claude -p` whose process has already exited). The cost
+              // is the idle-pane problem: a reviewer that finishes normally lingers
+              // alive in its pane and the dead-pane sweep (which only reaps DEAD panes)
+              // won't reclaim it. The mitigation is the same as workers': the prompt
+              // requires a terminal report_status('done') on completion, which marks
+              // the ticket `reviewed`, pings the orchestrator, and lets it reap the pane.
+              interactive: true,
             }));
           }
           if (deferred.length > 0) {
@@ -1227,10 +1228,14 @@ async function main() {
           role: "tester",
           ticket_id: input.ticket_id,
           prompt: `Read .charm/tickets/${input.ticket_id}.md and validate it.`,
-          // Headless, same as reviewers: a tester is a one-shot validation pass
-          // (tester.md: "do the work and exit") that reports done/failed and
-          // exits. Interactive, it would linger idle and never be seen done.
-          interactive: false,
+          // Interactive, same as reviewers (and workers): a tester that can't run
+          // the validation — unclear acceptance criteria, the diff doesn't match the
+          // ticket, a broken environment — must report_status('blocked') and WAIT
+          // for the orchestrator to message guidance into its live pane via
+          // continue_agent. A one-shot `claude -p` couldn't be resumed. As with
+          // reviewers, the prompt requires a terminal report_status('done'/'failed')
+          // so the orchestrator is pinged and reaps the otherwise-idle pane.
+          interactive: true,
         });
         return { agent_id: id };
       }
@@ -1239,8 +1244,54 @@ async function main() {
     }
   });
 
+  // Session-close git sync. On shutdown the daemon commits the durable charm
+  // surfaces (KB, proposals, tickets, scratchpad) so a session's work product
+  // travels with the repo instead of sitting dirty in the working tree forever.
+  // Deliberately simple: one commit at close, when the daemon is the SOLE git
+  // writer (agents are being reaped), which sidesteps index-lock contention on
+  // the shared tree. Two safety properties matter:
+  //   - PATH-SCOPED: we `git add`/`git commit` only the four charm surfaces, so
+  //     this can never sweep an operator's or agent's unrelated staged/unstaged
+  //     work into the commit (the partial-commit discipline).
+  //   - NON-FATAL: any git failure (not a repo, detached HEAD, hook rejection,
+  //     a lingering lock) is logged and swallowed — it must never block shutdown.
+  // Opt out with CHARM_NO_AUTOCOMMIT=1. Commits land on the active branch.
+  const commitSessionArtifacts = () => {
+    if (process.env.CHARM_NO_AUTOCOMMIT) return;
+    const surfaces = [paths.kbDir, paths.proposalsDir, paths.ticketsDir, paths.scratchpadDir]
+      .filter((d) => existsSync(d));
+    if (surfaces.length === 0) return;
+    const git = (args: string[]) =>
+      spawnSync("git", args, { cwd: paths.root, encoding: "utf8" });
+    const inRepo = git(["rev-parse", "--is-inside-work-tree"]);
+    if (inRepo.status !== 0 || inRepo.stdout.trim() !== "true") return;
+    // Stage only the charm surfaces (picks up new, modified, and deleted files
+    // within them; leaves everything else in the index untouched).
+    const add = git(["add", "--", ...surfaces]);
+    if (add.status !== 0) {
+      console.error(`[charmd] session-close commit: git add failed: ${add.stderr?.trim() ?? ""}`);
+      return;
+    }
+    // `git diff --cached --quiet` exits 0 when nothing is staged among these
+    // paths -> nothing changed this session, so skip the empty commit.
+    if (git(["diff", "--cached", "--quiet", "--", ...surfaces]).status === 0) return;
+    const label = paths.sessionId ? paths.sessionId.slice(0, 8) : session;
+    const msg = `charm session ${label}: sync KB, proposals, tickets, scratchpad`;
+    // Pathspec on commit keeps it a partial commit: only the surfaces land, even
+    // if the operator had other paths staged.
+    const commit = git(["commit", "-m", msg, "--", ...surfaces]);
+    if (commit.status !== 0) {
+      console.error(`[charmd] session-close commit failed: ${commit.stderr?.trim() ?? ""}`);
+      return;
+    }
+    console.error(`[charmd] session-close commit: ${(commit.stdout ?? "").trim().split("\n")[0] ?? "committed"}`);
+  };
+
   const cleanup = (code = 0) => {
     if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+    try { commitSessionArtifacts(); } catch (e) {
+      console.error(`[charmd] session-close commit threw: ${e instanceof Error ? e.message : String(e)}`);
+    }
     try { server.stop(); } catch { /* ignore */ }
     // Reap any standalone graph viewers we spawned before we exit, so they don't
     // linger as orphans (covers SIGINT/SIGTERM, the shutdown RPC, and crashes).

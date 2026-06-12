@@ -109,7 +109,7 @@ server.registerTool(
 server.registerTool(
   "spawn_review_agents",
   {
-    description: "Spawn one headless reviewer agent per ticket id.",
+    description: "Spawn one interactive reviewer agent per ticket id. Reviewers are resumable: a blocked reviewer waits in its pane for the orchestrator to continue_agent it with guidance.",
     inputSchema: { ticket_ids: z.array(z.string()) },
   },
   async (args) => ok(await call("spawn_review_agents", { caller_id: AGENT_ID, ...args })),

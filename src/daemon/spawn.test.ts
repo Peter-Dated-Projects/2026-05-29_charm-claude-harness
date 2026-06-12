@@ -4,12 +4,14 @@ import { charmPaths } from "../paths.ts";
 import { buildClaudeCommand } from "./spawn.ts";
 
 /**
- * The headless/interactive contract. Reviewers and testers are one-shot roles
- * spawned headless (`-p`) so they run, report, and EXIT — an interactive spawn
- * would linger idle in its pane and never be seen `done` by the liveness sweep
- * (the original reviewer bug). Workers stay interactive so the orchestrator can
- * resume them with continue_agent. These pin that `interactive` maps to the
- * presence/absence of the `-p` flag in the launched command.
+ * The headless/interactive contract for buildClaudeCommand: `interactive: false`
+ * adds the `-p` (one-shot print) flag, `interactive: true` omits it (a resumable
+ * session). These pin that pure mapping regardless of role. NOTE: the daemon now
+ * spawns ALL sub-agent roles — reviewers and testers included — interactively, so
+ * they can report_status('blocked') and be resumed via continue_agent when stuck;
+ * the trade-off is that an interactive agent must self-report a terminal state so
+ * the orchestrator reaps its otherwise-idle pane. The `false` cases below exercise
+ * the flag mapping, not how any role is actually launched.
  */
 
 const paths = charmPaths(tmpdir());

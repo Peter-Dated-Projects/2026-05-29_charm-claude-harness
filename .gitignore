@@ -1,13 +1,18 @@
 node_modules/
 dist/
-# Charm run state is ephemeral and ignored, EXCEPT the durable, git-tracked
-# surfaces: the knowledge base and the proposal corpus. `.charm/*` ignores the
-# run-state children (tickets, scratchpad, db.sqlite, run/, logs/ — all rebuilt
-# per session); `!.charm/kb/` and `!.charm/proposals/` re-include the two that
-# must travel with the repo. (Works only because `.charm/` itself is not excluded.)
+# Charm run state is ephemeral and ignored, EXCEPT the durable surfaces that
+# must travel with the repo: the knowledge base, the proposal corpus, the
+# canonical tickets, and the orchestrator scratchpad. The daemon commits these
+# on session close, so they are git-tracked. `.charm/*` ignores the genuinely
+# ephemeral children (db.sqlite — a rebuilt index over the tickets — plus run/,
+# logs/, prompts/, skills/, and the per-session control-plane files); the `!`
+# lines re-include the durable ones. (Works only because `.charm/` itself is not
+# excluded.)
 .charm/*
 !.charm/kb/
 !.charm/proposals/
+!.charm/tickets/
+!.charm/scratchpad/
 *.log
 .DS_Store
 # bun --compile leaves orphaned temp files; never commit them
