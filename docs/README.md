@@ -14,6 +14,7 @@ These docs are organized by what you are trying to do.
 - [CLI reference](operating/cli.md) — every `charm` subcommand and flag.
 - [Console keybindings](operating/keybindings.md) — every keystroke the console TUI responds to.
 - [Troubleshooting](operating/troubleshooting.md) — wedged sessions, the panic button, recovery, common failure modes.
+- [Worktrees](operating/worktrees.md) — when and how to use branch-isolated worktrees alongside the default shared-tree model.
 
 ## Developing charm (you hack on it)
 
