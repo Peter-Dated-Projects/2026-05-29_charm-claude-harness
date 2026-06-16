@@ -13,6 +13,9 @@ dist/
 !.charm/proposals/
 !.charm/tickets/
 !.charm/scratchpad/
+# .charm/worktrees/ is ephemeral run state (ignored by .charm/.gitignore), but
+# that nested gitignore itself must travel with the repo, so re-include it.
+!.charm/.gitignore
 *.log
 .DS_Store
 # bun --compile leaves orphaned temp files; never commit them

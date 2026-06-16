@@ -7,10 +7,13 @@ workspace facts and guardrails every agent shares.
 
 ## Guardrails
 
-- **Respect your file scope.** There are no worktrees — all agents share one
-  tree. Each ticket declares `touches:`; the daemon serializes overlapping scopes
-  and agents coordinate through `.charm/COORDINATION.md`. Read it before editing,
-  and stay inside your declared scope.
+- **Respect your file scope.** By default all agents share one tree: each ticket
+  declares `touches:`, the daemon serializes overlapping scopes, and agents
+  coordinate through `.charm/COORDINATION.md`. Read it before editing, and stay
+  inside your declared scope. Separately, the orchestrator may open isolated git
+  worktrees under `.charm/worktrees/<name>/` (a side tool) to run parallel or
+  non-overlapping lines of work, each on its own branch — if your cwd is one of
+  those, you're on an isolated checkout, not the shared tree.
 - **Never hand-edit or delete tickets.** `.charm/tickets/*.md` are canonical and
   `.charm/db.sqlite` is a rebuilt index over them — touching either by hand
   desyncs them. Ticket changes go through charm's MCP tools; to wipe the backlog,

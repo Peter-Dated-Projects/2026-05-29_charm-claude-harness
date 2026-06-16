@@ -69,6 +69,11 @@ export const Agent = z.object({
   id: z.string(),
   role: AgentRole,
   ticket_id: z.string().nullable(),
+  // The orchestrator-managed git worktree this agent is isolated in
+  // (.charm/worktrees/<name>/), or null for the default shared-tree execution.
+  // Nullable like ticket_id: most agents run in the shared tree, and the daemon
+  // sets the real value later via setWorktree once a worktree is opened.
+  worktree_name: z.string().nullable(),
   pane_id: z.string().nullable(),
   pid: z.number().nullable(),
   state: AgentState,
@@ -157,6 +162,34 @@ export const SpawnWorkersInput = z.object({
   ticket_ids: z.array(z.string()).min(1),
 });
 export type SpawnWorkersInput = z.infer<typeof SpawnWorkersInput>;
+
+// Worktree management tools. A worktree is an orchestrator-managed side resource
+// (a parallel line of work on its own branch under .charm/worktrees/<name>/), so
+// every tool is caller-gated to the orchestrator like spawn_workers. `name` is a
+// plain segment (assertPlainName guards it daemon-side before it's joined into a
+// path). branch/base steer create(); delete_branch steers close().
+export const CreateWorktreeInput = z.object({
+  caller_id: z.string().optional(),
+  name: z.string(),
+  // Existing branch to check out (Graphite-stack case); omit to cut a fresh
+  // charm/<name> branch off `base` (default HEAD).
+  branch: z.string().optional(),
+  base: z.string().optional(),
+});
+export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInput>;
+
+export const ListWorktreesInput = z.object({
+  caller_id: z.string().optional(),
+});
+export type ListWorktreesInput = z.infer<typeof ListWorktreesInput>;
+
+export const CloseWorktreeInput = z.object({
+  caller_id: z.string().optional(),
+  name: z.string(),
+  // Also `git branch -D charm/<name>` after removing the worktree (best-effort).
+  delete_branch: z.boolean().optional(),
+});
+export type CloseWorktreeInput = z.infer<typeof CloseWorktreeInput>;
 
 export const AwaitApprovalInput = z.object({
   stage: z.union([z.literal(0), z.literal(2), z.literal(4)]),

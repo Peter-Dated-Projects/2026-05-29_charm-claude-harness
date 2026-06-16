@@ -48,6 +48,10 @@ export class AgentRegistry {
       id,
       role: opts.role,
       ticket_id: opts.ticket_id,
+      // Defaults to the shared tree; the daemon sets a real worktree later via
+      // setWorktree() once one is opened for this agent (create()'s signature is
+      // intentionally unchanged — null is the right default at spawn time).
+      worktree_name: null,
       pane_id: null,
       pid: null,
       state: "spawning",
@@ -79,6 +83,16 @@ export class AgentRegistry {
   setState(id: string, state: AgentState, _note?: string): Agent {
     const a = this.require(id);
     a.state = state;
+    return a;
+  }
+
+  /** Record the git worktree this agent is isolated in (the subdir name under
+   *  .charm/worktrees/), or null to mark it back on the shared tree. Set by the
+   *  daemon after a worktree is opened for the agent — create() always starts at
+   *  null since most agents run in the shared tree. */
+  setWorktree(id: string, name: string | null): Agent {
+    const a = this.require(id);
+    a.worktree_name = name;
     return a;
   }
 

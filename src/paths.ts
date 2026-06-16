@@ -79,6 +79,13 @@ export function charmPaths(root: string, sessionId?: string) {
     // into ticketsDir and indexes it, which is what makes it a real, spawnable
     // ticket. Drafts here are NOT indexed and never appear on the board.
     scratchpadDir: join(charmDir, "scratchpad"),
+    // Orchestrator-managed git worktrees, one subdir per parallel line of work
+    // (.charm/worktrees/<name>/), each a checkout of its own branch. This is a
+    // side resource, not part of the default shared-tree execution model: charm
+    // opens worktrees via MCP tools and must close them by session end, and the
+    // daemon owns the git plumbing + a prune safety-net. Gitignored (see
+    // .charm/.gitignore) — a worktree is ephemeral run state, never committed.
+    worktreesDir: join(charmDir, "worktrees"),
     // Design proposals / feature requests (PROP-*.md). list_proposals reads this;
     // finish_proposal moves an accepted/superseded file into proposals/finished/.
     proposalsDir: join(charmDir, "proposals"),
@@ -158,6 +165,18 @@ export function assertPlainName(name: string): void {
       `invalid name (must be a plain file name with no path separators): ${JSON.stringify(name)}`,
     );
   }
+}
+
+/**
+ * Resolve the on-disk path for a named worktree under .charm/worktrees/. The
+ * name arrives from an LLM agent via MCP tools, so it is run through
+ * assertPlainName (the same path-injection guard used for draft/proposal names)
+ * before being joined — an un-guarded `../../x` would let the agent stand up a
+ * git worktree anywhere on disk.
+ */
+export function worktreePathFor(p: CharmPaths, name: string): string {
+  assertPlainName(name);
+  return join(p.worktreesDir, name);
 }
 
 /**

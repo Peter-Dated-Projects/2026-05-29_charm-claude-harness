@@ -71,12 +71,31 @@ Once the graph is clear, write one ticket per node.
 
 - **Small tickets.** A ticket should be implementable in one focused pass.
 - **`touches` must be precise and narrow.** If you can't predict the files, the ticket is too big — split it. Avoid wildcards like `src/**`; prefer concrete paths or narrow globs.
-- **Verify `touches` are disjoint within each wave** before calling `create_tickets`. Two tickets in the same wave with overlapping `touches` cannot run in parallel — the daemon will defer one. Fix the split, not the dep graph.
+- **Verify `touches` are disjoint within each wave** before calling `create_tickets`. Two tickets in the same wave with overlapping `touches` cannot run in parallel — the daemon will defer one. Fix the split, not the dep graph. For shared-tree work this disjointness remains the race-safety gate; genuinely parallel work that must overlap can instead be split into separate git worktrees by the orchestrator, where each branch is isolated and `touches` overlap no longer races.
 - **`depends_on` must reflect real ordering only.** The dep graph must be acyclic.
 - **Ticket bodies should contain:** motivation, acceptance criteria, and edge cases known so far. Keep them short — reviewers enrich them in Stage 2.
 - **Reference authoritative docs by path; never inline them.** When a ticket's work is governed by a spec, contract, or design doc (e.g. `docs/design/<contract>.md`), point the worker at it — "read `<path>` first; it is the authoritative interface" — instead of pasting its contents into the body. Inlining a large document into each ticket bloats the `create_tickets` call to the point where generating it stalls and looks frozen, and it duplicates a source that will drift out of sync. A ticket body carries only what is specific to that ticket: its scope, its file ownership, and its acceptance criteria.
 
-After `create_tickets`, call `spawn_review_agents(ticket_ids=...)` to fan out Stage 2. Then stop and let reviewers + the human approval loop run.
+---
+
+## Step 3 — Show the ticket tree, then fan out
+
+Once every ticket is written, **finalize the plan by rendering the dependency tree** before you spawn anything. Follow the `charm-ticket-tree` skill (`.charm/skills/charm-ticket-tree/SKILL.md`): run `charm tree` (from a source checkout, `./charm.sh tree`) and show its output. It prints the whole backlog as an ASCII spanning tree of the `depends_on` DAG — a status glyph per ticket, with extra dependencies shown inline as `(← …)` cross-edges:
+
+```
+T-212 ✓  get_post pitch data
+  ├─ T-214 ·  backend: create_post + slide CRUD
+  ├─ T-215 ·  orchestrator: launch_run + custom vars
+  │   └─ T-217 ·  agent_mcp: run_processing
+  ├─ T-216 ·  prompts: operator-notes + no-pitch
+  └─ T-218 ·  agent.rs: teach tools + no-delete       (← T-214, T-217)
+      └─ T-219 ·  cleanup: vestigial context plumbing
+          └─ T-220 ·  cleanup: dead-code sweep
+```
+
+This is the hand-off view: it lets the human take in the shape of the plan — the waves you built, what blocks what, where branches join — in one glance before reviewers fan out. Show it every time you finish planning, not only when asked. Use it to gut-check your own graph too: a chain that should have been a fan-out, or a cross-edge you didn't intend, jumps out here.
+
+Then call `spawn_review_agents(ticket_ids=...)` to fan out Stage 2, and stop — let reviewers + the human approval loop run.
 
 ---
 

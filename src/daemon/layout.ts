@@ -1,16 +1,27 @@
 // Builds a tmux custom-layout string for the charm window.
 //
 // Window shape:
-//   [ console column | agent region ]
+//   [ console column | orchestrator column | sub-agent region ]
 //
-// Agent region (n = agent count) follows a VS-Code-like editor-group grid:
-//   n=1: single pane fills the region
-//   n>=2: top row over bottom row (1-col horizontal divider between)
-//         top row    = ceil(n/2) panes side-by-side
-//         bottom row = floor(n/2) panes side-by-side
+// The orchestrator (agentPaneIndexes[0], always registered first and never
+// reordered) gets its own pinned column, guaranteed at least
+// ORCHESTRATOR_MIN_FRACTION of the agent region's width so it can't be squeezed
+// to a sliver as sub-agents spawn. A wider manual resize is preserved.
+//
+// The sub-agents (agentPaneIndexes[1..]) fill the remaining space as a
+// VS-Code-like editor-group grid (m = sub-agent count):
+//   m=0: orchestrator fills the whole agent region (no column split)
+//   m=1: single pane fills the sub region
+//   m>=2: top row over bottom row (1-col horizontal divider between)
+//         top row    = ceil(m/2) panes side-by-side
+//         bottom row = floor(m/2) panes side-by-side
 //
 // Pane indexes are tmux #{pane_index} values at the moment of relayout — caller
 // is responsible for looking them up fresh, since tmux renumbers on pane kills.
+
+// The orchestrator column never drops below this fraction of the agent region
+// (the window width minus the console/sidebar column). It can be dragged wider.
+const ORCHESTRATOR_MIN_FRACTION = 0.3;
 
 export type LayoutInputs = {
   windowWidth: number;
@@ -32,7 +43,32 @@ export function buildLayoutString(inp: LayoutInputs): string {
   const agentX = cw + 1;
   const agentW = W - cw - 1;
   const consoleNode = leaf(cw, H, 0, 0, cIdx);
-  const agentNode = buildAgentRegion(agentW, H, agentX, 0, a, inp.agentPaneWidths);
+
+  // Orchestrator-only: it fills the whole agent region (full width, full height).
+  if (a.length === 1) {
+    const agentNode = leaf(agentW, H, agentX, 0, a[0]!);
+    return wrapChecksum(leftRight(W, H, 0, 0, [consoleNode, agentNode]));
+  }
+
+  // Pin the orchestrator (a[0]) to a full-height left column of at least
+  // ORCHESTRATOR_MIN_FRACTION of the agent region; the sub-agents grid fills the
+  // rest. agentPaneWidths is in agentPaneIndexes order, so [0] is the
+  // orchestrator's current width — honor a wider manual drag, floor at the min.
+  const subIdxs = a.slice(1);
+  const orchMin = Math.max(1, Math.ceil(agentW * ORCHESTRATOR_MIN_FRACTION));
+  const orchHint = inp.agentPaneWidths?.[0] ?? 0;
+  // Leave room for the divider plus the sub-grid's widest row (its top row needs
+  // ceil(m/2) cells + their dividers), so the orchestrator can't starve it.
+  const topCount = Math.ceil(subIdxs.length / 2);
+  const subMin = Math.max(1, 2 * topCount - 1);
+  const maxOrch = Math.max(1, agentW - 1 - subMin);
+  const orchW = Math.min(Math.max(orchMin, orchHint > 0 ? orchHint : orchMin), maxOrch);
+
+  const orchNode = leaf(orchW, H, agentX, 0, a[0]!);
+  const subX = agentX + orchW + 1;
+  const subW = agentW - orchW - 1;
+  const subNode = buildAgentRegion(subW, H, subX, 0, subIdxs, inp.agentPaneWidths?.slice(1));
+  const agentNode = leftRight(agentW, H, agentX, 0, [orchNode, subNode]);
   return wrapChecksum(leftRight(W, H, 0, 0, [consoleNode, agentNode]));
 }
 

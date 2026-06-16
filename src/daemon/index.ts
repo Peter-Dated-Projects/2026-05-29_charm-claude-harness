@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { charmPaths, defaultSessionName } from "../paths.ts";
@@ -10,6 +10,7 @@ import { CoordinationWriter } from "./coord.ts";
 import { Solver, type InFlight, liveDependentsOf } from "./solver.ts";
 import { Tmux } from "./tmux.ts";
 import { buildLayoutString } from "./layout.ts";
+import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
 import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, newClaudeSessionId, resolveModel, type SpawnSpec } from "./spawn.ts";
@@ -32,6 +33,9 @@ import {
   KillAgentInput,
   CancelTicketInput,
   ContinueAgentInput,
+  CreateWorktreeInput,
+  ListWorktreesInput,
+  CloseWorktreeInput,
   SessionMeta,
   COORDINATION_STATUSES,
   type AgentRole,
@@ -197,6 +201,17 @@ async function main() {
     console.error("[charmd] reindexAll failed on boot; starting with a partial index:", e);
   }
   const registry = new AgentRegistry();
+  // Owns the git plumbing for orchestrator-managed worktrees (the side-resource
+  // model: parallel branches checked out under .charm/worktrees/<name>/) plus the
+  // prune safety-net for orphans a crashed daemon left behind.
+  const worktrees = new WorktreeManager({ root: paths.root, worktreesDir: paths.worktreesDir });
+  // Prune-on-boot safety-net: a daemon that crashed mid-session may have left
+  // orphan worktrees (registry entries whose dir vanished, or dirs git no longer
+  // tracks) under .charm/worktrees/. Reconcile them now so a fresh session starts
+  // clean. Best-effort: a non-repo or transient git failure must not abort boot.
+  try { worktrees.prune(); } catch (e) {
+    console.error(`[charmd] worktree prune on boot failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+  }
   const coord = new CoordinationWriter(paths);
   // A lock file present now is a crash leftover (the pidfile guard above already
   // proved no other daemon is live) — clear it so withLock doesn't freeze the
@@ -388,6 +403,11 @@ async function main() {
     try {
       const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role), claudeSessionId };
       const cmd = buildClaudeCommand(paths, agent.id, resolved);
+      // Pre-approve the agent's working directory BEFORE launching. NON-NEGOTIABLE:
+      // an unattended agent in an untrusted dir hangs forever on Claude Code's "Do
+      // you trust this directory?" dialog — `--permission-mode auto` does NOT skip
+      // it. paths.root is already trusted at boot, so only a worktree cwd needs it.
+      if (spec.cwd && spec.cwd !== paths.root) ensureDirectoryTrusted(spec.cwd);
       // Target THIS session's window explicitly. charm runs every session on the
       // default tmux server, and the daemon is a detached process: a `split-window`
       // with no `-t` lands in tmux's global "current session", which the daemon does
@@ -395,8 +415,12 @@ async function main() {
       // sub-agent pane inside the OTHER session's window (breaking this session's
       // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
       // the pane in the session that owns the agent.
-      const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
+      const pane = await tmux.splitPane({ cmd, cwd: spec.cwd ?? paths.root, direction: "h", target: `${session}:${WINDOW}` });
       registry.attach(agent.id, { pane_id: pane });
+      // Record which worktree this agent is isolated in (the subdir name under
+      // .charm/worktrees/), so list_worktrees can annotate each worktree with its
+      // occupying agent. A non-worktree spawn (cwd === root) leaves it null.
+      if (spec.cwd && spec.cwd !== paths.root) registry.setWorktree(agent.id, basename(spec.cwd));
       refreshCoordination();
       agentPaneIds.push(pane);
       await relayoutLocked();
@@ -519,7 +543,7 @@ async function main() {
         // One line only: literal newlines typed into the pane would submit early.
         const line =
           `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
-          `blocked agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
+          `agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
           `one either resolve what it was waiting on and resume it with continue_agent or abandon it with kill_agent, ` +
           `then advance the workflow per your orchestrator instructions.`;
         await tmux.sendText(orchestratorPaneId, line);
@@ -843,6 +867,44 @@ async function main() {
             ...(blockedByCancelledDep.length > 0 ? { blocked_by_cancelled_dependency: blockedByCancelledDep } : {}),
             ...(cappedOut > 0 ? { capped: cappedOut, max_agents: maxAgents } : {}),
           };
+        });
+      }
+      case "create_worktree": {
+        const input = CreateWorktreeInput.parse(params);
+        assertOrchestrator(input.caller_id, "create_worktree");
+        // Mutates the worktree set, so it runs under the layout lock — same
+        // discipline as spawn_workers. create() is itself serialized internally
+        // (its promise-chain mutex), but taking the lock here keeps the worktree
+        // set and the pane grid changing under one critical section.
+        return withLayoutLock(() => worktrees.create(input.name, { branch: input.branch, base: input.base }));
+      }
+      case "list_worktrees": {
+        const input = ListWorktreesInput.parse(params);
+        assertOrchestrator(input.caller_id, "list_worktrees");
+        // Read-only: no layout lock needed. Annotate each worktree with the live
+        // agent (if any) whose worktree_name matches, so the orchestrator can see
+        // which lines of work are occupied vs. closeable. Keyed by the plain name,
+        // which is the last path segment of the worktree's checkout dir.
+        const byName = new Map<string, string>();
+        for (const a of registry.list()) {
+          if (a.worktree_name) byName.set(a.worktree_name, a.id);
+        }
+        return {
+          worktrees: worktrees.list().map((w) => ({
+            ...w,
+            agent_id: byName.get(basename(w.path)) ?? null,
+          })),
+        };
+      }
+      case "close_worktree": {
+        const input = CloseWorktreeInput.parse(params);
+        assertOrchestrator(input.caller_id, "close_worktree");
+        // Mutates the worktree set -> layout lock. force:true so a dirty/locked
+        // tree can't wedge the close (charm does no merge-back; the branch keeps
+        // any committed work, deleted only when delete_branch is set).
+        return withLayoutLock(async () => {
+          worktrees.remove(input.name, { deleteBranch: input.delete_branch, force: true });
+          return { closed: input.name };
         });
       }
       case "await_approval": {
@@ -1252,7 +1314,9 @@ async function main() {
   // the shared tree. Two safety properties matter:
   //   - PATH-SCOPED: we `git add`/`git commit` only the four charm surfaces, so
   //     this can never sweep an operator's or agent's unrelated staged/unstaged
-  //     work into the commit (the partial-commit discipline).
+  //     work into the commit (the partial-commit discipline). This stays
+  //     path-scoped on purpose — it is NOT worktree-aware, so a worktree's branch
+  //     work can never be swept into the main worktree's session-close commit.
   //   - NON-FATAL: any git failure (not a repo, detached HEAD, hook rejection,
   //     a lingering lock) is logged and swallowed — it must never block shutdown.
   // Opt out with CHARM_NO_AUTOCOMMIT=1. Commits land on the active branch.
@@ -1296,6 +1360,24 @@ async function main() {
     // Reap any standalone graph viewers we spawned before we exit, so they don't
     // linger as orphans (covers SIGINT/SIGTERM, the shutdown RPC, and crashes).
     try { killGraphViewers(paths.graphPids); } catch { /* ignore */ }
+    // Worktree teardown safety-net. The orchestrator is supposed to close every
+    // worktree it opened (close_worktree) by session end; this catches the ones
+    // it didn't. Any LINKED worktree still present here (every list() entry but
+    // the main worktree at paths.root) is a leak — name them loudly so the operator
+    // knows what was swept, then prune to reclaim the dirs. Best-effort: a git
+    // failure must never block shutdown.
+    try {
+      const linked = worktrees.list().filter((w) => w.path !== paths.root);
+      if (linked.length > 0) {
+        console.error(
+          `[charmd] session shutdown: ${linked.length} worktree(s) left open by the orchestrator; pruning: ` +
+            linked.map((w) => w.path).join(", "),
+        );
+      }
+      worktrees.prune();
+    } catch (e) {
+      console.error(`[charmd] worktree prune on shutdown failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    }
     try { unlinkSync(paths.socket); } catch { /* ignore */ }
     try { unlinkSync(paths.pidFile); } catch { /* ignore */ }
     try { unlinkSync(paths.sessionMcpConfig); } catch { /* ignore */ }

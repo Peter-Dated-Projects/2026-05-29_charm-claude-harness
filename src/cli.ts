@@ -499,6 +499,78 @@ program
   });
 
 program
+  .command("tree")
+  .description("print the ticket dependency tree — an ASCII DAG view of .charm/tickets/ (reads the board directly; no daemon required)")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .action(async (opts) => {
+    const root = resolve(opts.root);
+    const paths = charmPaths(root);
+    if (!existsSync(paths.ticketsDir)) {
+      console.error(`[charm] no .charm/tickets/ under ${root}; nothing to show. Run \`charm init\` or \`charm start\` first.`);
+      process.exit(1);
+    }
+    // Read straight off the .md files (the source of truth) rather than the
+    // sqlite index, so the tree is correct even with no daemon running and never
+    // writes to a db the daemon may have open. TicketStore.list() parses and
+    // sorts the ticket files; we map down to the narrow shape the renderer wants.
+    const { TicketStore } = await import("./store/tickets.ts");
+    const { renderTicketTree, TREE_LEGEND } = await import("./tree.ts");
+    const store = new TicketStore(paths);
+    try {
+      const tickets = store.list().map((t) => ({
+        id: t.frontmatter.id,
+        title: t.frontmatter.title,
+        status: t.frontmatter.status,
+        depends_on: t.frontmatter.depends_on,
+      }));
+      console.log(renderTicketTree(tickets));
+      if (tickets.length) console.log(`\n${TREE_LEGEND}`);
+    } finally {
+      store.close();
+    }
+  });
+
+// `charm worktree` groups the read-only worktree views. Open/close live ONLY on
+// the orchestrator's MCP surface (create_worktree/close_worktree): those mutate
+// git plumbing the daemon owns, so exposing them on the CLI would let an operator
+// race the daemon's worktree set. The CLI stays read-only.
+const worktreeCmd = program
+  .command("worktree")
+  .description("inspect the git worktrees a charm session is managing (.charm/worktrees/<name>/)");
+
+worktreeCmd
+  .command("list")
+  .description("list the orchestrator-managed git worktrees (asks a live daemon for the annotated view; falls back to `git worktree list` when no daemon is up)")
+  .option("-r, --root <path>", "project root", process.cwd())
+  .action(async (opts) => {
+    const root = resolve(opts.root);
+    // Prefer a live daemon: its list_worktrees annotates each tree with the agent
+    // (if any) occupying it — richer than raw git. We don't resolveOneSession here
+    // (worktrees are project-wide, not per-session run-state), so just probe the
+    // newest live session's socket; absent one, fall back to reading git directly.
+    const live = listRunSessions(root).find((s) => s.alive);
+    if (live) {
+      try {
+        const res = await rpcCall<any>(live.paths.socket, "list_worktrees");
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      } catch {
+        // Daemon flagged alive but unreachable (mid-shutdown / stale pid) — drop to
+        // the git fallback rather than erroring; the question is read-only.
+      }
+    }
+    // No daemon: shell `git worktree list` under the root, same no-daemon-required
+    // ethos as `tree`. Lists every worktree git knows about; charm's live under
+    // .charm/worktrees/.
+    const r = spawnSync("git", ["worktree", "list"], { cwd: root, encoding: "utf8" });
+    if (r.status !== 0) {
+      console.error(`[charm] git worktree list failed under ${root}: ${(r.stderr || r.error?.message || "").trim()}`);
+      process.exit(1);
+    }
+    process.stdout.write(r.stdout);
+  });
+
+program
   .command("approve <gate_id>")
   .description("resolve a pending approval gate")
   .option("-r, --root <path>", "project root", process.cwd())

@@ -5,7 +5,7 @@ description: Stage 3 interactive role. Check the coordination board and KB, call
 
 # Worker (Stage 3)
 
-You are a **worker agent** implementing one ticket on a shared git tree alongside other workers. The charm enforces hard scope rules (`touches`), but you are responsible for the soft layer: keeping everyone aware of what you're doing.
+You are a **worker agent** implementing one ticket. By default you share the git tree with other workers; if the orchestrator delegated you into a worktree, your cwd is an isolated checkout of your own branch — commit and push that branch normally. Either way, the charm enforces hard scope rules (`touches`), and you are responsible for the soft layer: keeping everyone aware of what you're doing.
 
 ## Mandatory protocol
 
@@ -18,7 +18,7 @@ You are a **worker agent** implementing one ticket on a shared git tree alongsid
 
 ## Finishing
 
-`report_status(state="done")` is your single finish line, and it does two things at once: it marks your ticket `complete` AND pings the orchestrator to reap your pane. It is **not** interchangeable with `set_ticket_status(status="complete")` — that only repaints the board, so if you stop there the orchestrator never learns you are done and your pane lingers open. Always end with `report_status(state="done")`; the done report already sets the ticket complete, so you do **not** also need a separate `set_ticket_status(status="complete")`. (`set_ticket_status` is for the intermediate `stage` transitions while you work — `in_progress` / `review` / `testing` — not the terminal signal.)
+End with `report_status(state="done")` — your single finish line. It marks the ticket `complete` AND pings the orchestrator to reap your pane. Do **not** use `set_ticket_status(status="complete")` for this: it only repaints the board, so the orchestrator never learns you finished and your pane lingers. (`set_ticket_status` is only for intermediate `stage` transitions while you work — `in_progress` / `review` / `testing`.)
 
 Committing is part of the protocol: the tester validates your ticket by diffing your commit, so commit your finished ticket changes when done — even if your general habit is to commit only when explicitly asked. Here, the workflow is the ask.
 
