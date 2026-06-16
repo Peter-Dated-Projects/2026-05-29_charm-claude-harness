@@ -2,8 +2,6 @@
 
 Glossary -- what the project's terms actually mean.
 
-_No notes yet. Add atomic notes in this directory and list each one in the table below
-(see `../CONTRIBUTING.md`)._
-
 | Note | Summary | Status |
 |---|---|---|
+| [../research-cli-doc-practices.md](../research-cli-doc-practices.md) | Research findings on CLI/developer-tool documentation best practices, synthesized from tmux/docker/kubectl/gh with specific recommendations for charm's docs. | current |
