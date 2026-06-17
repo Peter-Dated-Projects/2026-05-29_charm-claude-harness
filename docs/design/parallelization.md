@@ -1,5 +1,9 @@
 # Parallelization Strategies for LLM Orchestration Skills
 
+> **Design note — non-normative.** This document captures rationale and research, not a
+> specification of current harness behavior. Where anything here conflicts with the code or
+> the operating docs, the code wins.
+
 A reference for skill authors deciding how to structure multi-agent fan-out, pipeline stages, and dependency ordering. Written for the charm harness but applicable to any LLM orchestration framework.
 
 ---

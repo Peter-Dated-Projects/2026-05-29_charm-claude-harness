@@ -1,7 +1,10 @@
 # Phasing and Sequencing Strategies for Orchestration Skill Design
 
-Research output for T-002. Covers principles, failure modes, and prompt fragments for
-defining phases in a skill spec.
+> **Design note — non-normative.** This document captures rationale and research, not a
+> specification of current harness behavior. Where anything here conflicts with the code or
+> the operating docs, the code wins.
+
+Covers principles, failure modes, and prompt fragments for defining phases in a skill spec.
 
 ---
 

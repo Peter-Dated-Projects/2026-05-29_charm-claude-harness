@@ -40,6 +40,26 @@ charm start --research -m opus-4.7 "..."   # research mode, but force Opus 4.7
 The pin applies to the orchestrator and every sub-agent equally — there is no per-agent model
 selection.
 
+**Accepted raw model IDs.** In addition to the short aliases listed above, `-m` accepts any
+raw `claude-*` model identifier (e.g. `claude-haiku-4-5-20251001`). This is useful for
+low-cost runs: the [preflight sweep](../developing/preflight.md) uses `haiku-4.5` to smoke-test
+the harness cheaply.
+
+## Per-role model defaults
+
+When no `-m` pin is given, model defaults differ by role:
+
+| Role | Development mode | Research mode |
+|---|---|---|
+| Orchestrator (main agent) | `opus-4.8` | `sonnet-4.6` |
+| Sub-agents (worker, reviewer, tester) | `sonnet-4.6` | `sonnet-4.6` |
+
+The orchestrator always stays on the heavier model in development mode — it holds the full
+session plan and coordinates all sub-agent spawns, so the extra capability is consistently
+worthwhile. Sub-agents default to Sonnet regardless of mode because their scopes are tighter.
+The `:dev` / `:research` swap commands and any `-m` pin override all of the above for new
+spawns.
+
 ## Swapping mid-session
 
 Inside a running session, the `:` command prompt swaps the fleet's model without restarting:
