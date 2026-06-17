@@ -38,6 +38,9 @@ resolves `charm-mcp` by name.
                                                      each in its own tmux pane
 
   tmux window:  console pane (left)  +  agent grid (right)
+
+  charm-graph  <- standalone animated force-directed graph viewer,
+                  opened in its own terminal window via the `open_graph` tool
 ```
 
 Every `claude` process is a real, first-class agent you can watch stream in its own pane and
@@ -64,11 +67,21 @@ Test files sit next to the modules they cover (`*.test.ts`).
 
 ## Coordination on one tree
 
-There are no git worktrees — a deliberate rejection. All agents work on one tree, and safety
-comes from two layers, described in full in [Running a session](../operating/running-a-session.md):
+All agents work on one shared tree by default. Safety comes from two layers, described in
+full in [Running a session](../operating/running-a-session.md):
 
 1. **Hard layer** — the solver refuses overlapping `touches` scopes and unmet `depends_on`.
 2. **Soft layer** — every worker reads and writes `COORDINATION.md` before touching anything.
+
+### Worktrees (optional, orchestrator-managed)
+
+Git worktrees are an opt-in side tool for non-overlapping parallel branches that need full
+checkout isolation — for example, separate feature branches or Graphite stacked PRs. The
+orchestrator creates and tears them down via `create_worktree` / `list_worktrees` /
+`close_worktree`; they live under `.charm/worktrees/<name>/` on their own branch. Worktrees
+are not the default execution model: the shared-tree approach covers the common case, and
+worktrees are added only when the orchestrator explicitly decides a line of work needs its
+own isolated checkout. See [docs/operating/worktrees.md](../operating/worktrees.md).
 
 ## The ticket store
 

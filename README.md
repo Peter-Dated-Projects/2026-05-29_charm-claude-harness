@@ -16,7 +16,7 @@ Charm is that harness. The main agent decomposes a goal into tickets, then fans 
 tickets out to worker agents — each a separate `claude` running in its own tmux pane on
 the same repository. The human stays in the loop at staged approval gates, and the agents
 stay out of each other's way through two coordination layers (hard file-scope locking +
-a soft shared coordination file) instead of git worktrees.
+a soft shared coordination file) on one shared git tree.
 
 ## How it works
 
@@ -40,14 +40,19 @@ is that no parallel work is fanned out before discovery and planning are approve
 
 ### Parallelism on one shared tree
 
-All agents work on **one git tree** — no worktrees (a deliberate rejection). Safety comes
-from two layers:
+All agents work on **one git tree** by default. Safety comes from two layers:
 
 1. **Hard layer** — each ticket declares its file scope (`touches:` in frontmatter), and
    the daemon's dependency + scope solver refuses to run two workers whose scopes overlap.
    Overlapping tickets are serialized automatically.
 2. **Soft layer** — every worker reads and writes a shared `.charm/COORDINATION.md` so it
    knows what other in-flight agents are doing and why, before it touches anything.
+
+Git worktrees are available as an optional orchestrator-side tool for non-overlapping
+parallel branches that need full isolation (e.g. separate feature branches or Graphite
+stacked PRs). The orchestrator manages them via `create_worktree` / `list_worktrees` /
+`close_worktree`; they live under `.charm/worktrees/<name>/` and are not the default
+execution model. See [docs/operating/worktrees.md](docs/operating/worktrees.md).
 
 A concurrent-agent cap (`--max-agents`, default 10, counting the orchestrator) bounds how
 many `claude` processes run at once.
@@ -104,7 +109,7 @@ was pressed in.
 | `spawn_workers` | main | enforce dep + scope, spawn interactive workers |
 | `request_review` | main/worker | spawn a tester on a finished ticket |
 | `await_approval` | main | block on a human gate in the Console |
-| `update_plan` | worker | upsert this agent's entry in `COORDINATION.md` |
+| `update_plan` | worker | append to the ticket's activity log (`.charm/tickets/<id>.md`); `COORDINATION.md` is refreshed as a side effect |
 | `read_coordination` | any | fetch current `COORDINATION.md` |
 | `list_tickets` / `list_agents` | any | inspect board / fleet state |
 | `report_status` | any | mark self spawning/running/blocked/done/failed |
@@ -120,6 +125,13 @@ was pressed in.
 conventions, gotchas, domain glossary) that survives between runs. It's the one part of
 `.charm/` that the optional `.gitignore` setup keeps tracked — everything else under
 `.charm/` is ephemeral run state.
+
+## Evaluating charm
+
+If you're deciding whether charm fits your workflow, the design notes in
+[docs/design/](docs/design/) explain the core tradeoffs — why first-class tmux panes
+instead of hidden subagents, how the scope-solver handles parallelism safely, and the
+deliberate choices behind the staged pipeline and human gates.
 
 ## Tech stack
 

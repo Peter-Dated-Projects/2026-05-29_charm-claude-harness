@@ -1,7 +1,6 @@
 # Project Knowledge Base — Design Spec
 
-> Status: **design** (file/dir layout + schema only). Prompt wiring and `charm init`
-> integration are deliberately out of scope here and tracked as follow-ups.
+> Status: **current**
 
 ## Why this exists
 
@@ -176,7 +175,7 @@ Each root's `_index.md` — lists that root's notes by summary:
 Never bulk-read the KB. If you find yourself opening more than a couple of notes, the index
 summaries aren't doing their job — fix the summaries.
 
-## Write-back loop (principles only — prompt wiring is a follow-up)
+## Write-back loop
 
 A KB that nothing maintains rots, and a KB the agent trusts but that lies is **worse than no
 KB**. The discipline that keeps it alive:
@@ -187,9 +186,6 @@ KB**. The discipline that keeps it alive:
   known. Workers (Stage 3) **append** gotchas and decisions they hit during implementation.
 - Reversing a decision: flip the old note to `status: superseded`, point its `related` at the
   replacement — don't delete.
-
-The exact prompt changes that enforce this loop are intentionally deferred to the prompts
-phase.
 
 ## What we deliberately dropped
 
@@ -202,9 +198,13 @@ its keep for an agent-managed, repo-scoped KB:
 - **Title Case naming** — replaced with machine-friendly kebab-case.
 - **Daily Notes / Backlog / Goals roots** — those organize a human's life, not a codebase.
 
-## Open follow-ups (out of scope for this spec)
+## Implementation status
 
-1. Apply the gitignore negation.
-2. Scaffold `kb/` (the five roots + seeded `INDEX.md`) in `charm init`; add KB paths to
-   `src/paths.ts`.
-3. Wire the read/write-back loop into the discovery, planner, and worker prompts.
+All three original follow-ups are shipped:
+
+1. **Apply the gitignore negation** — done. `charm start` calls `maybeConfigureGitignore()` on
+   first run, which appends `.charm/*` / `!.charm/kb/` to the project's `.gitignore`.
+2. **Scaffold `kb/` on `charm init`** — done. `scaffoldCharmDir()` in `src/cli.ts` copies the
+   KB template on `charm init` and `charm start` (first run only; never clobbered on re-init).
+3. **Wire the read/write-back loop into prompts** — done. The discovery, planner, and worker
+   prompts all reference `.charm/kb/INDEX.md` and specify when to read and write KB notes.

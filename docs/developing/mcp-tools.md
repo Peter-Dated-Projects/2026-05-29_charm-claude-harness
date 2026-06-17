@@ -70,6 +70,23 @@ A lightweight design-doc surface under `.charm/proposals/`, separate from the ti
 | `list_proposals` | any | List the proposals in `.charm/proposals/`, each with its metadata. |
 | `finish_proposal` | any | Mark a proposal finished by moving it into `.charm/proposals/finished/`. |
 
+## Worktrees
+
+Worktrees let the orchestrator run parallel, non-overlapping lines of work on isolated git branches
+checked out under `.charm/worktrees/<name>/`. Each worktree is a fully independent checkout; agents
+spawned into one see only that branch, so their changes don't race with the shared tree. All three
+tools are orchestrator-only — the daemon rejects calls from workers and reviewers.
+
+Use worktrees when two tickets touch the same files (scope conflict) or when you want to stack
+Graphite PRs in parallel. The default shared-tree model is simpler and covers most cases; reach for
+worktrees only when isolation or separate branches are genuinely needed.
+
+| Tool | Caller | Effect |
+|---|---|---|
+| `create_worktree` | orchestrator | Creates an isolated git worktree under `.charm/worktrees/<name>/` on a new `charm/<name>` branch cut from HEAD (or a named `base`). Pass `branch` to check out an existing branch instead (e.g. for a Graphite-stack PR). Every opened worktree must be closed before session end. |
+| `list_worktrees` | orchestrator | Lists all open worktrees for this session — name, path, branch, and the live agent (if any) occupying each one. |
+| `close_worktree` | orchestrator | Closes and removes a worktree by `name`. Pass `delete_branch: true` to also drop the branch (charm does no merge-back, so any committed work on that branch is gone with it). Must be called when the work is merged or abandoned. |
+
 ## Viewers
 
 | Tool | Caller | Effect |
