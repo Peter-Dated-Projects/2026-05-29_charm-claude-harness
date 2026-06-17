@@ -12,3 +12,4 @@ the KB. See `CONTRIBUTING.md` before adding or editing a note.
 | [conventions](conventions/_index.md)   | 0 | Repo patterns and idioms |
 | [gotchas](gotchas/_index.md)           | 0 | Traps and non-obvious constraints |
 | [domain](domain/_index.md)             | 0 | Glossary of project terms |
+| tracks/                                | — | Per-worktree scratchpad and track-specific notes (see CONTRIBUTING.md) |

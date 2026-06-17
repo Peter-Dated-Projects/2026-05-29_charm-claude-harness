@@ -5,7 +5,8 @@ Keep it accurate: a note the next agent trusts but that lies is worse than no no
 
 ## How to add a note
 
-1. Pick the right root: `architecture`, `decisions`, `conventions`, `gotchas`, or `domain`.
+1. Pick the right root: `architecture`, `decisions`, `conventions`, `gotchas`, `domain`,
+   or `tracks/<name>` (see below).
    Only add a new root directory if nothing genuinely fits -- and if you do, give it an
    `_index.md` and add a row to `INDEX.md`.
 2. Write **one concept per note** (atomic). Filename is lowercase-kebab (`spawn-model.md`);
@@ -41,6 +42,24 @@ updated: YYYY-MM-DD
 
 Use ordinary markdown relative links in note bodies, and KB-relative paths in `related`.
 Not Obsidian `[[wikilinks]]` -- this KB is read with file tools, not a graph UI.
+
+## Track notes (`tracks/<name>/`)
+
+Some lines of work live on their own git branch (worktrees) and produce notes that only
+make sense in that context -- research output, scratchpad, in-progress ideas, or
+track-specific design decisions that would clutter the shared KB.
+
+Use `tracks/<name>/` for these. Convention:
+
+- `<name>` matches the worktree name (e.g. `tracks/native-ui/`, `tracks/go-rewrite/`).
+- Each track directory gets an `INDEX.md` listing what is there and a one-line description
+  of the track's goal.
+- Frontmatter is optional here -- scratchpad format is fine.
+- Notes that turn out to be durable and cross-cutting should be promoted to one of the
+  shared roots and removed from the track folder.
+
+Track notes live on the worktree's branch, not on main. The shared KB roots are
+branch-agnostic; track notes are branch-specific.
 
 ## Navigation (how the KB is meant to be read)
 
