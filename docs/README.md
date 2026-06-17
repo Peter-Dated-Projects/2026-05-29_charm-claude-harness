@@ -8,6 +8,7 @@ These docs are organized by what you are trying to do.
 
 ## Operating charm (you run it on your projects)
 
+- [Concepts](operating/concepts.md) — definitions for every term charm uses: session, ticket, stage, gate, fleet, worker, KB, and more. Read this first.
 - [Getting started](operating/getting-started.md) — install, then drive your first session end to end.
 - [Running a session](operating/running-a-session.md) — the five-stage pipeline, the approval gates, and what you do at each one.
 - [Modes and models](operating/modes-and-models.md) — research vs. development, the per-fleet model pin, and swapping mid-session.

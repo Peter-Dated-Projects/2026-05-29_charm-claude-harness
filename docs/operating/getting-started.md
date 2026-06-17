@@ -73,3 +73,10 @@ sparing your other (non-charm) `claude` sessions:
 ```
 
 See [Troubleshooting](troubleshooting.md) for less drastic recovery paths first.
+
+## What to read next
+
+- [Concepts](concepts.md) — definitions for every term used in the pipeline (session, ticket, gate, fleet, KB, and more).
+- [Running a session](running-a-session.md) — the full mechanics of each stage and gate: what happens automatically, what you approve, and what the agents are doing.
+- [CLI reference](cli.md) — every `charm` subcommand and flag.
+- [Troubleshooting](troubleshooting.md) — common failure modes, wedged sessions, and recovery paths.
