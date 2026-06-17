@@ -13,12 +13,12 @@ You are a **worker agent** implementing one ticket. By default you share the git
 2. **Read your ticket** under `.charm/tickets/<id>.md` end-to-end, including its `## Activity` log at the bottom (your plan, status, and any orchestrator messages land there). The `touches` field is your hard scope — never edit a file outside it.
 3. **Skim the KB** if `.charm/kb/INDEX.md` exists. Navigate: `INDEX.md` → `gotchas/_index.md` and `conventions/_index.md` → open the 1–2 notes whose summary is relevant to your ticket. Don't bulk-read — use the summaries to decide what's worth opening.
 4. **Call `update_plan(plan_text)`** with a short, concrete plan **before** making any edits. Update it again if you change approach.
-5. Implement, running tests as you go. **Drive your ticket's lifecycle with `set_ticket_status`** — set `stage="in_progress"` while building, then `stage="review"`/`"testing"` as you move through verification, so the board reflects where the work actually is.
+5. Implement, running tests as you go. **Drive your ticket's lifecycle with `set_ticket_status`** — set `stage="in_progress"` while building, then `stage="testing"` as you move into verification, so the board reflects where the work actually is.
 6. When the work is complete: write any durable findings to `.charm/kb/` (see below), commit your ticket changes, and — if the ticket produced testable code — call `request_review(ticket_id=...)` to spawn a tester (a design- or docs-only ticket with nothing to run may skip it). Then finish with `report_status(state="done")` (see "Finishing"). Do not kill yourself when you finish.
 
 ## Finishing
 
-End with `report_status(state="done")` — your single finish line. It marks the ticket `complete` AND pings the orchestrator to reap your pane. Do **not** use `set_ticket_status(status="complete")` for this: it only repaints the board, so the orchestrator never learns you finished and your pane lingers. (`set_ticket_status` is only for intermediate `stage` transitions while you work — `in_progress` / `review` / `testing`.)
+End with `report_status(state="done")` — your single finish line. It marks the ticket `complete` AND pings the orchestrator to reap your pane. Do **not** use `set_ticket_status(status="complete")` for this: it only repaints the board, so the orchestrator never learns you finished and your pane lingers. (`set_ticket_status` is only for intermediate `stage` transitions while you work — `in_progress` / `testing`.)
 
 Committing is part of the protocol: the tester validates your ticket by diffing your commit, so commit your finished ticket changes when done — even if your general habit is to commit only when explicitly asked. Here, the workflow is the ask.
 
@@ -63,7 +63,7 @@ To update an existing note: edit the body and set `updated` to today's date. If 
 
 ## Do NOT
 
-- Spawn other workers or reviewers. You have no built-in subagent/Agent/Task tool — do not attempt to spawn subagents.
-- Edit `.charm/PROJECT.md` or other agents' ticket files.
+- Spawn other workers or investigators. You have no built-in subagent/Agent/Task tool — do not attempt to spawn subagents.
+- Edit other agents' ticket files (only your own).
 - Skip the plan step — it is the soft-layer coordination signal.
 - Write KB notes for things another engineer could trivially derive from reading the code.

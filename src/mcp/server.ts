@@ -35,11 +35,16 @@ const server = new McpServer({ name: "charm-mcp", version: "0.0.1" });
 server.registerTool(
   "create_tickets",
   {
-    description: "Create one to three tickets per call. Each ticket needs a title, body, depends_on, and touches (file globs). To create more than 3, make multiple calls.",
+    description:
+      "Create one to three tickets per call. Each ticket needs a title, body, type, depends_on, and touches (file globs). " +
+      "`type` is \"investigation\" for a Phase-A context-gathering ticket (worked by an investigator: gather context, " +
+      "propose a fix, write findings into the body) or \"implementation\" (default) for a Phase-B build ticket (worked by a " +
+      "worker). To create more than 3, make multiple calls.",
     inputSchema: {
       tickets: z.array(z.object({
         title: z.string(),
         body: z.string(),
+        type: z.enum(["investigation", "implementation"]).default("implementation"),
         depends_on: z.array(z.string()).default([]),
         touches: z.array(z.string()).default([]),
       })).min(1).max(3, "create_tickets accepts at most 3 tickets per call; split larger batches across multiple calls"),
@@ -107,12 +112,12 @@ server.registerTool(
 );
 
 server.registerTool(
-  "spawn_review_agents",
+  "spawn_investigators",
   {
-    description: "Spawn one interactive reviewer agent per ticket id. Reviewers are resumable: a blocked reviewer waits in its pane for the orchestrator to continue_agent it with guidance.",
+    description: "Spawn one interactive investigator agent per investigation-ticket id. An investigator gathers context, identifies the real problem, proposes a fix (or several options), and writes its findings into the ticket body. Investigators are resumable: a blocked investigator waits in its pane for the orchestrator to continue_agent it with an answer.",
     inputSchema: { ticket_ids: z.array(z.string()) },
   },
-  async (args) => ok(await call("spawn_review_agents", { caller_id: AGENT_ID, ...args })),
+  async (args) => ok(await call("spawn_investigators", { caller_id: AGENT_ID, ...args })),
 );
 
 server.registerTool(
@@ -165,7 +170,7 @@ server.registerTool(
   {
     description: "Block until a human approves or rejects this gate in the Console pane.",
     inputSchema: {
-      stage: z.union([z.literal(0), z.literal(2), z.literal(4)]),
+      stage: z.union([z.literal(2), z.literal(4)]),
       label: z.string(),
       ticket_id: z.string().nullable().default(null),
       payload_path: z.string().nullable().default(null),
@@ -215,7 +220,7 @@ server.registerTool(
       ".charm/tickets/<id>.md.",
     inputSchema: {
       statuses: z
-        .array(z.enum(["pending", "ready", "running", "blocked", "reviewed", "complete", "failed", "cancelled"]))
+        .array(z.enum(["pending", "ready", "running", "blocked", "complete", "failed", "cancelled"]))
         .optional(),
     },
   },
@@ -263,7 +268,7 @@ server.registerTool(
   {
     description:
       "Orchestrator-only: write a ticket's lifecycle directly, addressed by ticket_id. Set `status` " +
-      "(pending/ready/running/blocked/reviewed/complete/failed) and/or `stage` (generated/review/approved/in_progress/" +
+      "(pending/ready/running/blocked/complete/failed) and/or `stage` (generated/investigating/approved/in_progress/" +
       "testing/done/failed) on ANY ticket — unlike set_ticket_status, which only drives a worker's own ticket. " +
       "Use it to schedule the backlog (flip a generated ticket to `ready`), walk a stage forward, or mark a " +
       "ticket complete/failed out of band. Writing a terminal status (complete/failed) tears down any sub-agent " +
@@ -271,8 +276,8 @@ server.registerTool(
       "transition is recorded in the ticket's activity log (.charm/tickets/<id>.md) and the coordination board.",
     inputSchema: {
       ticket_id: z.string(),
-      status: z.enum(["pending", "ready", "running", "blocked", "reviewed", "complete", "failed"]).optional(),
-      stage: z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]).optional(),
+      status: z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]).optional(),
+      stage: z.enum(["generated", "investigating", "approved", "in_progress", "testing", "done", "failed"]).optional(),
       note: z.string().optional(),
     },
   },
@@ -287,8 +292,8 @@ server.registerTool(
   {
     description:
       "Main-agent: set or update a one-sentence (≤80 char) human-readable description of this session, " +
-      "shown by `charm list`. Call this once near the end of Stage 0 (after PROJECT.md firms up) " +
-      "and again any time you realize the framing has materially changed (e.g. scope pivot).",
+      "shown by `charm list`. Call this once early (once the feature request and investigation scope " +
+      "are clear) and again any time you realize the framing has materially changed (e.g. scope pivot).",
     inputSchema: { description: z.string().min(1).max(80) },
   },
   async (args) => ok(await call("set_session_description", args)),
@@ -323,7 +328,7 @@ server.registerTool(
       "mid-ticket, the ticket's terminal status depends on who killed it: a sub-agent killing " +
       "ITSELF marks the ticket `failed` (it couldn't finish); the orchestrator/operator killing " +
       "another agent marks it `cancelled` (a deliberate call-off).\n" +
-      "- Orchestrator (main agent): may kill ANY sub-agent (reviewer/worker/tester) by id.\n" +
+      "- Orchestrator (main agent): may kill ANY sub-agent (investigator/worker/tester) by id.\n" +
       "- Sub-agent: may kill ONLY ITSELF — omit agent_id (or pass your own id) to abort your " +
       "own ticket when you are stuck and cannot make progress.\n" +
       "The orchestrator can never be killed by anyone. Call list_agents first to get valid ids.",

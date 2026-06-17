@@ -12,7 +12,7 @@ yourself" never take an explicit agent id.
 ## Caller roles
 
 - **orchestrator** — the single main agent. Owns ticket authoring and all fan-out.
-- **worker** — an interactive sub-agent spawned on one ticket.
+- **worker** — an interactive sub-agent spawned on one implementation ticket.
 - **any** — callable by any agent.
 
 The fan-out and ticket-authoring tools are orchestrator-only by daemon enforcement: a
@@ -22,7 +22,7 @@ sub-agent calling them is rejected.
 
 | Tool | Caller | Effect |
 |---|---|---|
-| `create_tickets` | orchestrator | Create one to three tickets per call (each: `title`, `body`, `depends_on`, `touches` file globs). To create more than three, make multiple calls. |
+| `create_tickets` | orchestrator | Create one to three tickets per call (each: `title`, `body`, `type` (`investigation` or `implementation`, default `implementation`), `depends_on`, `touches` file globs). To create more than three, make multiple calls. |
 | `promote` | orchestrator | Promote hand-authored ticket drafts from `.charm/scratchpad/<name>.md` into real, spawnable tickets. Pass `tickets` (draft names) to promote specific drafts, or omit to promote all. |
 | `set_ticket_state` | orchestrator | Write any ticket's lifecycle directly, addressed by `ticket_id`: set `status` and/or `stage`. Use it to schedule the backlog (flip a `generated` ticket to `ready`), walk a stage forward, or mark a ticket. A terminal status reaps the ticket's agent. |
 | `set_ticket_status` | worker | Drive your **own** ticket's lifecycle (`running` while you work, `complete`/`failed` when terminal) and/or its `stage`. Always self-scoped — never another agent's ticket. `cancelled` is not settable here. |
@@ -31,15 +31,15 @@ sub-agent calling them is rejected.
 
 | Tool | Caller | Effect |
 |---|---|---|
-| `spawn_review_agents` | orchestrator | Spawn one interactive reviewer agent per ticket id (resumable; a blocked reviewer waits in its pane for `continue_agent`). |
-| `spawn_workers` | orchestrator | Spawn interactive worker agents. The daemon enforces dep + file-scope conflicts; conflicting tickets come back as `deferred` (retry on a later tick). Tickets marked `blocked_by_cancelled_dependency` can never run — re-plan rather than retry them. |
+| `spawn_investigators` | orchestrator | Spawn one interactive investigator agent per investigation-ticket id (resumable; a blocked investigator waits in its pane for `continue_agent`). Investigators are read-only on code — they gather context, propose a fix, and write findings into the ticket body. |
+| `spawn_workers` | orchestrator | Spawn interactive worker agents on implementation tickets. The daemon enforces dep + file-scope conflicts; conflicting tickets come back as `deferred` (retry on a later tick). Tickets marked `blocked_by_cancelled_dependency` can never run — re-plan rather than retry them. |
 | `request_review` | worker | Spawn a tester agent on a finished ticket. |
 
 ## Approvals and coordination
 
 | Tool | Caller | Effect |
 |---|---|---|
-| `await_approval` | orchestrator | Block until a human approves or rejects this gate (stage 0, 2, or 4) in the Console pane. |
+| `await_approval` | orchestrator | Block until a human approves or rejects this gate (stage 2 — the worker-ticket plan, or stage 4 — the merge diff) in the Console pane. |
 | `update_plan` | worker | Record your current plan before editing files. The daemon appends it to your ticket's activity log (`.charm/tickets/<id>.md`), **not** to `COORDINATION.md`. |
 | `read_coordination` | any | Return the live coordination board (the rendered `COORDINATION.md`): one row per ticket not yet in a terminal state. |
 | `list_tickets` | any | Query the sqlite ticket index. Returns id, title, status, and stage; takes an optional status filter. |
@@ -75,7 +75,7 @@ A lightweight design-doc surface under `.charm/proposals/`, separate from the ti
 Worktrees let the orchestrator run parallel, non-overlapping lines of work on isolated git branches
 checked out under `.charm/worktrees/<name>/`. Each worktree is a fully independent checkout; agents
 spawned into one see only that branch, so their changes don't race with the shared tree. All three
-tools are orchestrator-only — the daemon rejects calls from workers and reviewers.
+tools are orchestrator-only — the daemon rejects calls from investigators and workers.
 
 Use worktrees when two tickets touch the same files (scope conflict) or when you want to stack
 Graphite PRs in parallel. The default shared-tree model is simpler and covers most cases; reach for

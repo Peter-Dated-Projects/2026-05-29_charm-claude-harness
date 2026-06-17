@@ -19,7 +19,6 @@ const STATUS_GLYPH: Record<TicketStatus, string> = {
   failed: "✗",
   running: "●",
   blocked: "⊘",
-  reviewed: "◑",
   ready: "○",
   pending: "·",
   cancelled: "⊗",
@@ -34,7 +33,6 @@ const TAGGED: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
   "ready",
   "running",
   "blocked",
-  "reviewed",
   "failed",
   "cancelled",
 ]);
@@ -42,7 +40,7 @@ const TAGGED: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
 /** The legend printed beneath the tree, kept next to the glyph map it documents
  *  so the two never drift. */
 export const TREE_LEGEND =
-  "status:  ✓ complete   ✗ failed   ● running   ⊘ blocked   ◑ reviewed   ○ ready   · pending   ⊗ cancelled\n" +
+  "status:  ✓ complete   ✗ failed   ● running   ⊘ blocked   ○ ready   · pending   ⊗ cancelled\n" +
   "(← …)   extra dependencies beyond the tree parent";
 
 /** Numeric-aware id ordering ("T-009" before "T-010"), matching the store's

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, unlink
 import { join, basename, dirname } from "node:path";
 import matter from "gray-matter";
 import { Database } from "bun:sqlite";
-import { TicketFrontmatter, type Ticket, type TicketStatus, type TicketStage } from "../schema.ts";
+import { TicketFrontmatter, type Ticket, type TicketStatus, type TicketStage, type TicketType } from "../schema.ts";
 import { assertPlainName, type CharmPaths } from "../paths.ts";
 
 // Markers delimiting the daemon-managed activity log inside a ticket body. Plans,
@@ -19,6 +19,7 @@ const LOG_END = "<!-- /CHARM:LOG -->";
 export type IndexedTicket = {
   id: string;
   title: string;
+  type: TicketType;
   status: TicketStatus;
   stage: TicketStage;
   depends_on: string[];
@@ -30,6 +31,7 @@ export type IndexedTicket = {
 type IndexRow = {
   id: string;
   title: string;
+  type: string;
   status: string;
   stage: string;
   depends_on: string;
@@ -66,6 +68,7 @@ export class TicketStore {
       CREATE TABLE IF NOT EXISTS tickets (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'implementation',
         status TEXT NOT NULL,
         stage TEXT NOT NULL,
         depends_on TEXT NOT NULL,
@@ -76,6 +79,14 @@ export class TicketStore {
       CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
       CREATE INDEX IF NOT EXISTS idx_tickets_stage ON tickets(stage);
     `);
+    // Migration for an index.db created before the `type` column existed: add it
+    // (defaulting to implementation) so INSERTs that bind `type` don't fail on a
+    // pre-existing database. CREATE TABLE IF NOT EXISTS above is a no-op on an old
+    // db, so the column has to be added explicitly.
+    const cols = this.db.query("PRAGMA table_info(tickets)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "type")) {
+      this.db.exec("ALTER TABLE tickets ADD COLUMN type TEXT NOT NULL DEFAULT 'implementation'");
+    }
   }
 
   close() {
@@ -94,11 +105,12 @@ export class TicketStore {
     return `T-${String(n).padStart(3, "0")}`;
   }
 
-  create(input: { title: string; body: string; depends_on?: string[]; touches?: string[] }): Ticket {
+  create(input: { title: string; body: string; type?: TicketType; depends_on?: string[]; touches?: string[] }): Ticket {
     const id = this.nextId();
     const fm = TicketFrontmatter.parse({
       id,
       title: input.title,
+      type: input.type ?? "implementation",
       depends_on: input.depends_on ?? [],
       touches: input.touches ?? [],
     });
@@ -204,6 +216,7 @@ export class TicketStore {
     return rows.map((r) => ({
       id: r.id,
       title: r.title,
+      type: (r.type ?? "implementation") as TicketType,
       status: r.status as TicketStatus,
       stage: r.stage as TicketStage,
       depends_on: JSON.parse(r.depends_on) as string[],
@@ -274,10 +287,11 @@ export class TicketStore {
 
   private indexOne(t: Ticket) {
     this.db.query(`
-      INSERT INTO tickets (id, title, status, stage, depends_on, touches, path, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tickets (id, title, type, status, stage, depends_on, touches, path, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
+        type=excluded.type,
         status=excluded.status,
         stage=excluded.stage,
         depends_on=excluded.depends_on,
@@ -287,6 +301,7 @@ export class TicketStore {
     `).run(
       t.frontmatter.id,
       t.frontmatter.title,
+      t.frontmatter.type,
       t.frontmatter.status,
       t.frontmatter.stage,
       JSON.stringify(t.frontmatter.depends_on),

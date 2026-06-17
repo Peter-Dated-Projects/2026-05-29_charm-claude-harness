@@ -84,10 +84,10 @@ test("a blocked worker still holds its claim", () => {
 });
 
 test("a non-worker in a live slot does NOT hold a ticket-touch claim", () => {
-  // Only workers edit files, so only workers stake a touches-claim. A reviewer
+  // Only workers edit files, so only workers stake a touches-claim. An investigator
   // or tester assigned a ticket must not, or the solver would defer real workers
   // behind it.
-  for (const role of ["reviewer", "tester", "main"] as const) {
+  for (const role of ["investigator", "tester", "main"] as const) {
     const registry = new AgentRegistry();
     registry.create({ role, ticket_id: "T-001" });
     expect(registry.list().filter(holdsClaim)).toEqual([]);

@@ -40,15 +40,15 @@ for the full build matrix.
 `charm start "<goal>"` opens a tmux session with the console on the left and the main agent on
 the right. From there:
 
-1. **Discovery (Stage 0)** — the main agent interviews you and drafts `.charm/PROJECT.md`.
-   Read it in the console's Artifacts tab and approve it when the brief is right.
-2. **Planning (Stage 1)** — the main agent decomposes the goal into tickets. This flows
-   automatically into review.
-3. **Ticket review (Stage 2)** — reviewer agents enrich the tickets (scope, dependencies,
-   file globs). Approve the enriched tickets when they look right.
-4. **Development (Stage 3)** — worker agents fan out, each in its own pane, coordinating
+1. **Investigation (Stage 1)** — the main agent opens investigation tickets and fans out
+   investigator agents that gather context and propose a fix, writing their findings into
+   each ticket. This stage has no human gate.
+2. **Planning / synthesis (Stage 2)** — the main agent reads the findings and authors
+   worker (implementation) tickets with scope, dependencies, and file globs, then renders
+   the plan. Approve the worker-ticket plan when it looks right.
+3. **Development (Stage 3)** — worker agents fan out, each in its own pane, coordinating
    through `.charm/COORDINATION.md`.
-5. **Test and review (Stage 4)** — tester agents check each finished ticket's diff. Approve
+4. **Test and review (Stage 4)** — tester agents check each finished ticket's diff. Approve
    the diff before it merges.
 
 The full mechanics of each stage and gate are in [Running a session](running-a-session.md).

@@ -5,14 +5,14 @@
 ## Why this exists
 
 Today every per-project file Charm writes lives under `.charm/` and is **ephemeral run
-state**: `PROJECT.md` (this session's brief), `tickets/`, `COORDINATION.md`, `prompts/`,
-`db.sqlite`, `logs/`. All of it describes *the current run* and goes stale the moment the
-session ends.
+state**: `tickets/` (the session's investigation and implementation tickets),
+`COORDINATION.md`, `prompts/`, `db.sqlite`, `logs/`. All of it describes *the current run*
+and goes stale the moment the session ends.
 
 There is no layer that **accumulates across sessions** — no place where durable
-understanding of the project lives and survives. So every planning session starts cold:
-the discovery agent re-interviews the human, re-derives the architecture, and re-learns the
-same constraints it learned last time, burning context to rebuild knowledge it already had.
+understanding of the project lives and survives. So every session starts cold: the
+investigators re-derive the architecture and re-learn the same constraints they learned
+last time, burning context to rebuild knowledge they already had.
 
 The Knowledge Base (KB) is the missing **durable layer**. It sits beside the ephemeral run
 state and grows as Charm works the repo. The longer Charm operates on a project, the more it
@@ -39,8 +39,7 @@ The KB is nested under `.charm/` but is the one durable child. Run state stays e
 
 ```
 .charm/
-├── PROJECT.md            # ephemeral — this session's brief
-├── tickets/              # ephemeral
+├── tickets/              # ephemeral — investigation + implementation tickets
 ├── COORDINATION.md       # ephemeral
 ├── prompts/              # ephemeral (regenerated)
 ├── db.sqlite             # ephemeral
@@ -182,8 +181,9 @@ KB**. The discipline that keeps it alive:
 
 - When an agent learns something durable, it writes/updates one atomic note, updates that
   root's `_index.md` row, and bumps `updated`.
-- Discovery (Stage 0) **seeds** the KB and **reads** it to avoid re-asking what's already
-  known. Workers (Stage 3) **append** gotchas and decisions they hit during implementation.
+- Investigators (Stage 1) **read** the KB to avoid re-discovering what's already known and
+  **seed** it with what they learn. Workers (Stage 3) **append** gotchas and decisions they
+  hit during implementation.
 - Reversing a decision: flip the old note to `status: superseded`, point its `related` at the
   replacement — don't delete.
 
@@ -206,5 +206,5 @@ All three original follow-ups are shipped:
    first run, which appends `.charm/*` / `!.charm/kb/` to the project's `.gitignore`.
 2. **Scaffold `kb/` on `charm init`** — done. `scaffoldCharmDir()` in `src/cli.ts` copies the
    KB template on `charm init` and `charm start` (first run only; never clobbered on re-init).
-3. **Wire the read/write-back loop into prompts** — done. The discovery, planner, and worker
+3. **Wire the read/write-back loop into prompts** — done. The planner, investigator, and worker
    prompts all reference `.charm/kb/INDEX.md` and specify when to read and write KB notes.

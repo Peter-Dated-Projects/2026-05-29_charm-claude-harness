@@ -21,7 +21,7 @@ import {
   CreateProposalInput,
   PromoteInput,
   FinishProposalInput,
-  SpawnReviewersInput,
+  SpawnInvestigatorsInput,
   SpawnWorkersInput,
   AwaitApprovalInput,
   UpdatePlanInput,
@@ -277,7 +277,7 @@ async function main() {
   // change, so it stays small no matter how long the run.
   const refreshCoordination = () => {
     // A ticket can carry more than one non-main agent at once (e.g. a worker plus
-    // a tester/reviewer), so map ticket -> LIST of agents rather than a single
+    // a tester), so map ticket -> LIST of agents rather than a single
     // entry. The old single-entry map silently overwrote the first agent with the
     // second, hiding one of them from the board.
     const agentsByTicket = new Map<string, { id: string; state: string }[]>();
@@ -377,7 +377,7 @@ async function main() {
   // immediately flips the new agent to `spawning`, and because inFlight() counts
   // `spawning` agents, the agent's `touches` claim is visible the instant this
   // returns — to any handler that next acquires the lock. Batch spawners
-  // (spawn_workers/spawn_review_agents) call this inside ONE withLayoutLock that
+  // (spawn_workers/spawn_investigators) call this inside ONE withLayoutLock that
   // wraps their whole solve+loop, so a concurrent spawner can't solve against a
   // pre-claim view and double-spawn onto the same file (BUG: spawn-race
   // double-spawn). Must NOT take the lock itself — the mutex is a non-reentrant
@@ -484,7 +484,7 @@ async function main() {
 
   /** Tear down EVERY non-main agent currently on a ticket, not just the first.
    *  A ticket can legitimately carry more than one helper at a time (a worker
-   *  plus a tester/reviewer), and the registry's old one-agent-per-ticket lookup
+   *  plus a tester), and the registry's old one-agent-per-ticket lookup
    *  (`.find`) silently reaped only one, leaking the rest. This filters all of
    *  them and tears each down. Returns the agent ids it reaped. */
   function tearDownTicketAgents(ticket_id: string): Promise<string[]> {
@@ -507,16 +507,16 @@ async function main() {
     return a.role;
   }
 
-  // Lock fan-out + ticket-authoring tools (spawn_workers, spawn_review_agents,
+  // Lock fan-out + ticket-authoring tools (spawn_workers, spawn_investigators,
   // request_review, create_tickets, promote) to the orchestrator. Only the
-  // orchestrator spawns sub-agents and authors tickets; a worker/reviewer/tester
+  // orchestrator spawns sub-agents and authors tickets; a worker/investigator/tester
   // calling these is a confused agent fanning out its own fleet. The human
   // operator (console/CLI, no caller_id -> "operator") is always allowed.
   function assertOrchestrator(caller_id: string | undefined, tool: string): void {
     const role = resolveCaller(caller_id);
-    if (role !== "operator" && role !== "main") {
+    if (role !== "operator" && role !== "main" && role !== "suborchestrator") {
       throw new Error(
-        `agent ${caller_id} (${role}) may not call ${tool}; only the orchestrator spawns sub-agents and authors tickets`,
+        `agent ${caller_id} (${role}) may not call ${tool}; only the orchestrator or suborchestrator spawns sub-agents and authors tickets`,
       );
     }
   }
@@ -541,11 +541,10 @@ async function main() {
         // pane indexable; sending into a corpse would be a silent no-op.
         if (!orchestratorPaneId || !(await tmux.paneAlive(orchestratorPaneId))) return;
         // One line only: literal newlines typed into the pane would submit early.
+        // Keep it short — the full reap/resume/abandon protocol lives in the
+        // orchestrator prompt; this is just the wake + what changed.
         const line =
-          `[charm] ${events.join("; ")}. Check list_agents() (read the ticket file .charm/tickets/<id>.md for the ` +
-          `agent's note and activity log): reap done/failed sub-agents with kill_agent, and for each blocked ` +
-          `one either resolve what it was waiting on and resume it with continue_agent or abandon it with kill_agent, ` +
-          `then advance the workflow per your orchestrator instructions.`;
+          `[charm] ${events.join("; ")}. Reap finished panes, resolve any blocks, and advance per your orchestrator instructions.`;
         await tmux.sendText(orchestratorPaneId, line);
       } catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
     }, 1200);
@@ -609,19 +608,18 @@ async function main() {
           `process exited without report_status.`,
       );
       // Reset the ticket so the system can retry it — but ONLY when failing it is
-      // actually meaningful. A tester/reviewer dying must not clobber a ticket a
-      // worker already drove to complete/reviewed (that would trigger a redundant
+      // actually meaningful. A tester (or any non-worker) dying must not clobber a
+      // ticket a worker already drove to complete (that would trigger a redundant
       // retry of finished work). So only a dead WORKER fails its ticket, and even
-      // then we skip the write if the ticket is already in a terminal/handed-off
-      // status. Mirrors a self-kill's terminal state (failed/failed): `failed`
-      // stays on the board for reassignment rather than dropping off like
-      // `cancelled`.
+      // then we skip the write if the ticket is already in a terminal status.
+      // Mirrors a self-kill's terminal state (failed/failed): `failed` stays on the
+      // board for reassignment rather than dropping off like `cancelled`.
       let failedTicket = false;
       if (a.ticket_id) {
         try {
           const current = store.read(a.ticket_id);
           const status = current?.frontmatter.status;
-          const alreadyTerminal = status === "complete" || status === "reviewed" || status === "cancelled";
+          const alreadyTerminal = status === "complete" || status === "cancelled";
           if (a.role === "worker" && !alreadyTerminal) {
             store.update(a.ticket_id, { status: "failed", stage: "failed" });
             store.appendLog(a.ticket_id, {
@@ -724,6 +722,8 @@ async function main() {
       case "create_tickets": {
         const input = CreateTicketsInput.parse(params);
         assertOrchestrator(input.caller_id, "create_tickets");
+        // `t` carries `type` ("investigation" | "implementation"); store.create
+        // threads it into the frontmatter and the index.
         const created = input.tickets.map((t) => store.create(t).frontmatter);
         return created;
       }
@@ -751,13 +751,13 @@ async function main() {
         const input = FinishProposalInput.parse(params);
         return finishProposal(paths, input.name);
       }
-      case "spawn_review_agents": {
-        const input = SpawnReviewersInput.parse(params);
-        assertOrchestrator(input.caller_id, "spawn_review_agents");
+      case "spawn_investigators": {
+        const input = SpawnInvestigatorsInput.parse(params);
+        assertOrchestrator(input.caller_id, "spawn_investigators");
         // One critical section around the slot clamp + spawn loop, so the cap
         // computation and every spawn it authorizes share a lock — a concurrent
         // spawner can't pass the same count-only cap check and overshoot the
-        // ceiling between our clamp and our first claim. (Reviewers don't claim
+        // ceiling between our clamp and our first claim. (Investigators don't claim
         // file `touches`, so the touch-conflict race doesn't apply here; the cap
         // is the shared resource that must be serialized.)
         return withLayoutLock(async () => {
@@ -769,25 +769,25 @@ async function main() {
           const ids: string[] = [];
           for (const tid of toSpawn) {
             ids.push(await spawnAgentLocked({
-              role: "reviewer",
+              role: "investigator",
               ticket_id: tid,
-              prompt: `Read .charm/tickets/${tid}.md and review it.`,
-              // Interactive (like workers), NOT headless. A reviewer that hits an
-              // ambiguous or incoherent ticket must be able to report_status('blocked')
+              prompt: `Read .charm/tickets/${tid}.md and investigate it.`,
+              // Interactive (like workers), NOT headless. An investigator that needs
+              // a decision it can't make must be able to report_status('blocked')
               // and WAIT for the orchestrator to message guidance into its pane via
               // continue_agent (which sends keystrokes into a live REPL — impossible
               // for a one-shot `claude -p` whose process has already exited). The cost
-              // is the idle-pane problem: a reviewer that finishes normally lingers
+              // is the idle-pane problem: an investigator that finishes normally lingers
               // alive in its pane and the dead-pane sweep (which only reaps DEAD panes)
               // won't reclaim it. The mitigation is the same as workers': the prompt
               // requires a terminal report_status('done') on completion, which marks
-              // the ticket `reviewed`, pings the orchestrator, and lets it reap the pane.
+              // the ticket `complete`, pings the orchestrator, and lets it reap the pane.
               interactive: true,
             }));
           }
           if (deferred.length > 0) {
             console.error(
-              `[charmd] spawn_review_agents: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
+              `[charmd] spawn_investigators: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
                 `deferred ${deferred.length} ticket(s).`,
             );
           }
@@ -937,11 +937,11 @@ async function main() {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
         if (input.state === "done" && a.ticket_id) {
-          // Reviewers enrich a ticket and hand off to workers — mark it `reviewed`
-          // (ready for a worker to spawn) rather than `complete` (fully done). Only
-          // worker/tester done signals genuine completion.
-          const ticketDone = a.role === "reviewer" ? { status: "reviewed", stage: "review" } : { status: "complete", stage: "done" };
-          store.update(a.ticket_id, ticketDone);
+          // Every role's `done` completes its ticket. An investigation ticket
+          // complete means the findings are written into its body (ready for the
+          // orchestrator to synthesize into worker tickets); a worker/tester done
+          // means the build/validation is finished. Same terminal state either way.
+          store.update(a.ticket_id, { status: "complete", stage: "done" });
         } else if (input.state === "failed" && a.ticket_id) {
           store.update(a.ticket_id, { status: "failed", stage: "failed" });
         }
@@ -1009,7 +1009,7 @@ async function main() {
         // does for a call-off. Non-terminal writes (ready/blocked/stage walks)
         // leave a live agent alone; it's still doing relevant work.
         if (input.status === "complete" || input.status === "failed") {
-          // Tear down ALL agents on the ticket (a worker plus a tester/reviewer
+          // Tear down ALL agents on the ticket (a worker plus a tester
           // can be on it at once), not just the first one found.
           void tearDownTicketAgents(input.ticket_id).catch((e) =>
             console.error(`[charmd] set_ticket_state: tearDownTicketAgents(${input.ticket_id}) failed:`, e),
@@ -1108,7 +1108,7 @@ async function main() {
           text: input.note,
         });
         // Stop ALL agents currently on this ticket — their work is moot now. A
-        // ticket can carry more than one helper (worker + tester/reviewer), so
+        // ticket can carry more than one helper (worker + tester), so
         // reap every non-main agent on it, not just the first.
         await tearDownTicketAgents(input.ticket_id);
         refreshCoordination();
@@ -1283,6 +1283,32 @@ async function main() {
         if (r.status !== 0) throw new Error(`failed to open graph viewer (exit ${r.status})`);
         return { ok: true };
       }
+      case "spawn_suborchestrator": {
+        // Callable from the operator (`:so` / `:suborchestrator` tmux command) or
+        // the main orchestrator. Opens a dedicated tmux window (not a pane in the
+        // agent grid) so the operator can interact with it directly. The
+        // suborchestrator has orchestrator-level MCP permissions — it can observe
+        // the fleet, author tickets, and spawn workers on the operator's behalf
+        // while the main orchestrator continues its own work.
+        const claudeSessionId = newClaudeSessionId();
+        const agent = registry.create({ role: "suborchestrator", ticket_id: null, claude_session_id: claudeSessionId });
+        const model = defaultModelForRole("suborchestrator");
+        const cmd = buildClaudeCommand(paths, agent.id, {
+          role: "suborchestrator",
+          ticket_id: null,
+          prompt: "",
+          interactive: true,
+          model,
+          claudeSessionId,
+        });
+        const windowName = `so-${String(agent.id).replace("suborchestrator-", "")}`;
+        const pane = tmux.newWindow({ name: windowName, cmd, cwd: paths.root });
+        registry.attach(agent.id, { pane_id: pane });
+        refreshCoordination();
+        // Switch to the new window immediately so the operator can start directing it.
+        tmux.selectWindow(pane);
+        return { ok: true, agent_id: agent.id };
+      }
       case "request_review": {
         const input = RequestReviewInput.parse(params);
         assertOrchestrator(input.caller_id, "request_review");
@@ -1290,12 +1316,12 @@ async function main() {
           role: "tester",
           ticket_id: input.ticket_id,
           prompt: `Read .charm/tickets/${input.ticket_id}.md and validate it.`,
-          // Interactive, same as reviewers (and workers): a tester that can't run
+          // Interactive, same as investigators (and workers): a tester that can't run
           // the validation — unclear acceptance criteria, the diff doesn't match the
           // ticket, a broken environment — must report_status('blocked') and WAIT
           // for the orchestrator to message guidance into its live pane via
           // continue_agent. A one-shot `claude -p` couldn't be resumed. As with
-          // reviewers, the prompt requires a terminal report_status('done'/'failed')
+          // investigators, the prompt requires a terminal report_status('done'/'failed')
           // so the orchestrator is pinged and reaps the otherwise-idle pane.
           interactive: true,
         });

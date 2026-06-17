@@ -7,7 +7,7 @@ import type { AgentRole } from "../schema.ts";
 
 /** The orchestrator always runs under this fixed agent id. It is spawned directly by
  *  `charm start` (not through the registry's auto-incrementing sub-agent sequence), so
- *  no reviewer/worker/tester can ever collide with it. The kill path treats this id as
+ *  no investigator/worker/tester can ever collide with it. The kill path treats this id as
  *  protected: no caller — not the orchestrator itself, not a sub-agent, not the human
  *  operator — may terminate it via kill_agent. */
 export const MAIN_AGENT_ID = "main-001";
@@ -66,7 +66,7 @@ export const MODEL_ALIASES: Record<string, string> = {
 };
 
 /** A charm "mode" sets the DEFAULT model family for the whole fleet (main +
- *  reviewers + workers + testers) and the orchestrator's behavioral framing:
+ *  investigators + workers + testers) and the orchestrator's behavioral framing:
  *    research    -> Sonnet  (fast, cheap; exploration and research workflows)
  *    development -> Opus     (most capable; for writing and shipping code)
  *  This is a default, not a hard pin — `charm start -m/--model` (CHARM_MODEL)
@@ -89,14 +89,16 @@ export function isMode(v: string | undefined | null): v is CharmMode {
  *  CHARM_MODEL_<ROLE> env vars (e.g. CHARM_MODEL_WORKER=opus-4.7), or for the whole
  *  fleet via the charm mode (CHARM_MODE=research|development).
  *
- *  The main agent runs both Stage 0 (discovery) and Stage 1 (planning) — the most
- *  reasoning-intensive work in the workflow. It defaults to Opus. Sub-agents
- *  (reviewers, workers, testers) follow the fleet mode; their default is Sonnet. */
+ *  The main agent runs investigation kickoff and the synthesis/planning that turns
+ *  findings into worker tickets — the most reasoning-intensive work in the
+ *  workflow. It defaults to Opus. Sub-agents (investigators, workers, testers)
+ *  follow the fleet mode; their default is Sonnet. */
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   main: "opus-4.8",
-  reviewer: "sonnet-4.6",
+  investigator: "sonnet-4.6",
   worker: "sonnet-4.6",
   tester: "sonnet-4.6",
+  suborchestrator: "opus-4.8",
 };
 
 /** Resolve the model for a spawned agent role. Precedence, highest first:
@@ -119,8 +121,8 @@ export function defaultModelForRole(role: AgentRole): string {
 
 /** Thinking-token budgets passed as MAX_THINKING_TOKENS to each claude process.
  *
- *  "max" is reserved for the main agent (discovery + planning): the graph
- *  decomposition problem benefits from the largest available reasoning budget.
+ *  "max" is reserved for the main agent (investigation synthesis + planning): the
+ *  graph decomposition problem benefits from the largest available reasoning budget.
  *  Sub-agents default to "high". Override globally with CHARM_THINKING or
  *  per-role with CHARM_THINKING_<ROLE> (e.g. CHARM_THINKING_WORKER=medium). */
 export const THINKING_BUDGETS: Record<string, number> = {
@@ -134,9 +136,10 @@ export const THINKING_BUDGETS: Record<string, number> = {
 /** Per-role thinking defaults. main gets "max"; everything else gets "high". */
 export const DEFAULT_THINKING_BY_ROLE: Record<AgentRole, string> = {
   main: "max",
-  reviewer: "high",
+  investigator: "high",
   worker: "high",
   tester: "high",
+  suborchestrator: "max",
 };
 
 /** Global thinking floor from CHARM_THINKING (applies to roles that don't have a
@@ -190,46 +193,47 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // Resolve the role's system prompt. Every role but `main` loads a single
   // `<role>.md`. The orchestrator (`main`) has no `main.md`: it runs the staged
   // pipeline in one session, so its prompt IS the orchestrator frame followed by
-  // the two stages it runs directly (discovery then planning), concatenated.
-  // orchestrator.md is the top-level frame — it states the full five-stage gated
-  // pipeline and the hard rule that nothing fans out before discovery + planning
-  // are approved; without it the agent reads two independent "you are Stage X"
-  // files and can skip straight to ticket fan-out. Assembling them here is what
-  // makes these files live — without this, `main.md` is missing and the
-  // orchestrator falls back to a useless one-line stub.
+  // the planner (which carries the two stages it runs directly: kicking off
+  // investigation, then synthesizing findings into worker tickets), concatenated.
+  // orchestrator.md is the top-level frame — it states the full gated pipeline
+  // and the hard rule that no worker fan-out happens before the investigation
+  // findings are synthesized and the plan approved; without it the agent reads a
+  // standalone planner file and can skip straight to ticket fan-out. Assembling
+  // them here is what makes these files live — without this, `main.md` is missing
+  // and the orchestrator falls back to a useless one-line stub.
   let rolePrompt: string;
   if (spec.plain) {
     rolePrompt = "";
   } else if (spec.role === "main") {
-    const stages = ["orchestrator.md", "discovery.md", "planner.md"]
+    const stages = ["orchestrator.md", "planner.md"]
       .map((f) => join(paths.promptsDir, f))
       .filter((p) => existsSync(p))
       .map((p) => readFileSync(p, "utf8").trim());
     rolePrompt = stages.length
       ? stages.join("\n\n---\n\n")
-      : "You are the orchestrator (main agent) running the charm discovery -> planning -> fan-out workflow.";
+      : "You are the orchestrator (main agent) running the charm investigate -> plan -> fan-out workflow.";
   } else {
     const promptFile = join(paths.promptsDir, `${spec.role}.md`);
     rolePrompt = existsSync(promptFile) ? readFileSync(promptFile, "utf8") : `You are a ${spec.role}.`;
   }
-  // The charm renders agent-produced markdown (PROJECT.md, COORDINATION.md,
-  // tickets/*.md) inside an Ink TUI. Terminal emoji rendering inflates row
+  // The charm renders agent-produced markdown (COORDINATION.md, tickets/*.md)
+  // inside an Ink TUI. Terminal emoji rendering inflates row
   // height inconsistently across fonts/terminals, which breaks the layout —
   // so forbid emojis in every artifact agents write.
   const CHARM_RULES = [
     "",
     "## Charm output rules (override any contrary instruction)",
-    "- Do NOT use emoji or pictographic characters anywhere in your output, in tool arguments, or in files you write (PROJECT.md, COORDINATION.md, tickets/*.md, code comments, commit messages — anywhere). This includes ✅ ❌ ⚠️ 🚀 ⭐ 📝 etc. Use ASCII instead: [x], [ ], (!), ->, *, etc.",
+    "- Do NOT use emoji or pictographic characters anywhere in your output, in tool arguments, or in files you write (COORDINATION.md, tickets/*.md, code comments, commit messages — anywhere). This includes ✅ ❌ ⚠️ 🚀 ⭐ 📝 etc. Use ASCII instead: [x], [ ], (!), ->, *, etc.",
     "- Do NOT use box-drawing or other wide Unicode decoration in markdown output. ASCII only for status indicators, bullets, and dividers.",
-    "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_review_agents, spawn_workers, request_review). Never attempt to spawn a subagent any other way.",
+    "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_investigators, spawn_workers, request_review). Never attempt to spawn a subagent any other way.",
   ].join("\n");
   // Operator skills router — injected only for the main agent (orchestrator).
-  // Restart/reset-kb are operator actions; a worker or reviewer must never run
+  // Restart/reset-kb are operator actions; a worker or investigator must never run
   // them. The router lists trigger -> SKILL.md; the agent reads the full file on
   // demand. Sub-agents (and plain windows) never see this section.
   const skillsIndex = join(paths.skillsDir, "INDEX.md");
   const CHARM_SKILLS =
-    spec.role === "main" && !spec.plain && existsSync(skillsIndex)
+    (spec.role === "main" || spec.role === "suborchestrator") && !spec.plain && existsSync(skillsIndex)
       ? "\n## Charm operator skills (read on demand)\n" +
         "When the user asks you to perform one of the operator actions below, FIRST read the listed SKILL.md " +
         "(path relative to the project root) and follow it exactly — including any confirmation gates — before acting.\n\n" +
@@ -247,7 +251,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const CHARM_WORKSPACE = existsSync(paths.charmMd)
     ? "\n\n" + readFileSync(paths.charmMd, "utf8").trim() + "\n"
     : "";
-  // Shared coordination ethos for every sub-agent (worker / reviewer / tester) —
+  // Shared coordination ethos for every sub-agent (worker / investigator / tester) —
   // NOT the orchestrator (which carries the other side of this in orchestrator.md)
   // and NOT plain windows. Injected from this single place so the three roles stay
   // in sync rather than drifting across their separate prompt files. It does two
@@ -300,7 +304,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   flags.push("--mcp-config", shellQuote(paths.sessionMcpConfig));
   // Strip every built-in tool that can spawn agents OUTSIDE charm's orchestration,
   // so all fan-out must go through the charm MCP tools (spawn_workers /
-  // spawn_review_agents / request_review) the daemon needs for dependency +
+  // spawn_investigators / request_review) the daemon needs for dependency +
   // file-scope enforcement:
   //   - Agent       — the native subagent tool (current name in Claude Code).
   //   - Task        — its older alias; harmless to keep listed for older CLIs.

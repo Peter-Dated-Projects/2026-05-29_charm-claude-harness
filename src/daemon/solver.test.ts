@@ -25,6 +25,7 @@ function ticket(opts: {
     frontmatter: {
       id: opts.id,
       title: opts.id,
+      type: "implementation",
       status: opts.status ?? "ready",
       stage: "approved",
       depends_on: opts.depends_on ?? [],

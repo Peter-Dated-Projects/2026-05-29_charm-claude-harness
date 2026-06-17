@@ -99,19 +99,21 @@ function useFileContent(path: string | null): string {
   return content;
 }
 
-function inferStage(status: Status): "stage0" | "stage2" | "stage3" | "idle" {
-  if (status.pending_approvals.some((g) => g.stage === 0)) return "stage0";
-  if (status.pending_approvals.some((g) => g.stage === 2)) return "stage2";
-  if (status.agents.some((a) => a.role === "worker" && a.state === "running")) return "stage3";
+// There is no stage-0 (discovery) gate anymore. "gate" = a pending human gate
+// (the stage-2 worker-plan approval or the stage-4 diff approval), which opens
+// the relevant ticket file; "active" = investigators or workers running, which
+// opens the live coordination board; otherwise idle.
+function inferStage(status: Status): "gate" | "active" | "idle" {
+  if (status.pending_approvals.length > 0) return "gate";
+  if (status.agents.some((a) => (a.role === "worker" || a.role === "investigator") && a.state === "running")) return "active";
   return "idle";
 }
 
 function defaultFile(stage: ReturnType<typeof inferStage>, files: string[], approvalTicketId: string | null): string | null {
-  if (stage === "stage0") return files.find((f) => f.endsWith("PROJECT.md")) ?? files[0] ?? null;
-  if (stage === "stage2" && approvalTicketId) {
+  if (stage === "gate" && approvalTicketId) {
     return files.find((f) => f.endsWith(`${approvalTicketId}.md`)) ?? null;
   }
-  if (stage === "stage3") return files.find((f) => f.endsWith("COORDINATION.md")) ?? null;
+  if (stage === "active") return files.find((f) => f.endsWith("COORDINATION.md")) ?? null;
   return files[0] ?? null;
 }
 
@@ -228,7 +230,7 @@ function ViewerPanel(props: {
 function ArtifactsTab({ status, inputActive }: { status: Status; inputActive: boolean }) {
   const files = useFileTree(PATHS);
   const stage = inferStage(status);
-  const pendingTicket = status.pending_approvals.find((g) => g.stage === 2)?.ticket_id ?? null;
+  const pendingTicket = status.pending_approvals.find((g) => g.stage === 2 || g.stage === 4)?.ticket_id ?? null;
   const auto = defaultFile(stage, files, pendingTicket);
   const [selected, setSelected] = useState<string | null>(null);
   const [filesRows, setFilesRows] = useState(MIN_FILES_ROWS);
@@ -595,7 +597,7 @@ function App() {
         <Text inverse={tab === "agents"} wrap="truncate-end"> 3·Agents{finishedCount ? ` (${finishedCount} done)` : ""} </Text>
         <Text> </Text>
         <Text inverse={tab === "files"} wrap="truncate-end"> 4·Files </Text>
-        <Text dimColor wrap="truncate-end">   ·  tab/shift-tab to switch · :q quit · :a detach</Text>
+        <Text dimColor wrap="truncate-end">   ·  tab/shift-tab to switch · :q quit · :a detach · :so suborchestrator</Text>
       </Box>
       {tab === "artifacts"
         ? <ArtifactsTab status={status} inputActive={true} />

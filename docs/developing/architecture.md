@@ -14,7 +14,7 @@ resolves `charm-mcp` by name.
 | `charm` (CLI) | `src/cli.ts` | operator entry point: `init`, `start`, `stop`, `attach`, `resume`, `status`, `approve`, `restart`, `reset-kb`. `start` spawns the daemon and console, opens the tmux layout, and launches the main agent |
 | `charmd` (daemon) | `src/daemon/` | the long-running brain: ticket store, agent registry, dep/scope solver, coordination file, tmux layout. Talks to agents over a per-session Unix socket with a JSON line protocol |
 | `charm-mcp` (MCP shim) | `src/mcp/server.ts` | a thin stdio MCP server spawned by **every** `claude` process via `.charm/charm.json`. Exposes the charm tools and forwards each call to the daemon over the socket |
-| `charm-console` (TUI) | `src/console/` | an Ink (React-for-the-terminal) app pinned to the left pane: live, fs-watched viewer for `PROJECT.md`, `COORDINATION.md`, and tickets, plus the approval gates |
+| `charm-console` (TUI) | `src/console/` | an Ink (React-for-the-terminal) app pinned to the left pane: live, fs-watched viewer for `COORDINATION.md` and tickets, plus the approval gates |
 | `charm-graph` | `src/console/graph.ts`, `src/graph-viewers.ts` | a standalone animated force-directed view of the ticket/dependency graph, opened in its own window via the `open_graph` tool |
 
 ## How a session is wired
@@ -34,8 +34,8 @@ resolves `charm-mcp` by name.
    +----+--------------------------------+
         |
    +--------+-------------+-------------+
- [main]  [reviewer-1]  [worker-A]   [worker-B]    <- real `claude` processes,
-                                                     each in its own tmux pane
+ [main]  [investigator-1] [worker-A]  [worker-B]   <- real `claude` processes,
+                                                      each in its own tmux pane
 
   tmux window:  console pane (left)  +  agent grid (right)
 
@@ -61,7 +61,7 @@ which hides subagents inside the parent process.
 - `tmux.ts` / `layout.ts` — pane and layout management.
 - `spawn.ts` — spawning `claude` and the sibling binaries, with claim handling so two ticks
   can't double-spawn the same ticket.
-- `approvals.ts` — the blocking human gates (stages 0, 2, 4).
+- `approvals.ts` — the blocking human gates (stages 2 and 4).
 
 Test files sit next to the modules they cover (`*.test.ts`).
 
@@ -87,8 +87,9 @@ own isolated checkout. See [docs/operating/worktrees.md](../operating/worktrees.
 
 Tickets live as markdown files in `.charm/tickets/` with `gray-matter` frontmatter. The
 `bun:sqlite` database is **only an index** over those files — the `.md` files are the source
-of truth. Frontmatter is validated with `zod` (`src/schema.ts`): `id` (`T-###`), `title`,
-`status`, `stage`, `depends_on`, and `touches`. See `src/store/tickets.ts`.
+of truth. Frontmatter is validated with `zod` (`src/schema.ts`): `id` (`T-###`), `title`, `type`
+(`investigation` or `implementation`, default `implementation`), `status`, `stage`,
+`depends_on`, and `touches`. See `src/store/tickets.ts`.
 
 Statuses and stages, and how they map onto the pipeline, are documented in
 [Running a session](../operating/running-a-session.md#ticket-lifecycle).

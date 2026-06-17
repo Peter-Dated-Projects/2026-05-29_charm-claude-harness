@@ -1,42 +1,46 @@
 # Running a session
 
 Every charm session runs the same fixed, gated pipeline. The main ("orchestrator") agent
-drives it in a single interactive session; parallel fan-out only happens after discovery and
-planning are approved. This is the hard rule baked into the orchestrator prompt — no workers
-spawn before you have approved the brief and the plan.
+drives it in a single interactive session, joining two decoupled phases: investigators
+gather context and propose fixes, then the orchestrator synthesizes their findings into a
+worker-ticket plan that gets built. Worker fan-out only happens after the findings are
+synthesized and the plan is approved. This is the hard rule baked into the orchestrator
+prompt — no workers spawn before you have approved the plan.
 
-## The five-stage pipeline
+## The four-stage pipeline
 
 | Stage | Who runs it | Mode | Gate before advancing |
 |---|---|---|---|
-| 0 — Discovery | main agent + you, interactively | interactive | you approve `.charm/PROJECT.md` |
-| 1 — Planning / ticket generation | main agent | interactive | none -> auto into Stage 2 |
-| 2 — Ticket review and enrichment | N reviewer agents | interactive | you approve the enriched tickets |
+| 1 — Investigation | main agent opens investigation tickets + N investigator agents | interactive | none -> investigators close their own tickets |
+| 2 — Planning / synthesis | main agent reads findings, authors worker tickets | interactive | you approve the worker-ticket plan |
 | 3 — Development | M worker agents | interactive, coordinated | none -> each ticket advances on its own |
 | 4 — Test and review | tester agents, one per ticket | interactive | you approve the diff before merge |
 
+A ticket's `type` decides who works it: `investigation` tickets go to investigators,
+`implementation` tickets to workers.
+
 Gates are **blocking**: the daemon halts the pipeline until you approve, either in the
 console's Approvals tab or with `charm approve <gate_id>` from another terminal. The gated
-stages are 0, 2, and 4.
+stages are 2 and 4.
 
-### Stage 0 — Discovery
+### Stage 1 — Investigation
 
-The main agent interviews you about the goal and writes `.charm/PROJECT.md` — the brief that
-anchors everything downstream. Read it in the Artifacts tab. Approving it is your commitment
-to the scope; reject and keep iterating if it has the goal wrong.
+The main agent turns your request into one or more investigation tickets and fans out
+investigator agents on them. Investigators are read-only on code: they gather context, find
+the real problem, and propose a fix (sometimes a few options with tradeoffs), writing their
+findings into the ticket body before closing. When an investigator hits a decision it can't
+make, it surfaces a question and the orchestrator answers — from its own knowledge or by
+asking you. This stage has no human gate; it ends when the findings are in.
 
-### Stage 1 — Planning
+### Stage 2 — Planning / synthesis
 
-The main agent decomposes the approved brief into tickets. Each ticket is a markdown file in
-`.charm/tickets/` with frontmatter declaring its `depends_on` and `touches` (file globs).
-This stage has no gate of its own — it flows straight into review.
-
-### Stage 2 — Ticket review and enrichment
-
-One reviewer agent per ticket sharpens scope, dependencies, and file globs. When
-they finish, you approve the enriched set. This is your last checkpoint before parallel work
-starts, so it is worth reading: the `touches` globs are what the daemon uses to keep workers
-out of each other's way.
+The main agent reads every investigation finding, then authors fresh worker (implementation)
+tickets from what was learned — there's no fixed 1:1 mapping; N investigations inform M
+worker tickets. Each worker ticket is a markdown file in `.charm/tickets/` with frontmatter
+declaring its `depends_on` and `touches` (file globs). The agent lays the tickets out in
+dependency waves, renders the plan (`charm tree`), and gates. You approve the worker-ticket
+plan. This is your last checkpoint before parallel work starts, so it is worth reading: the
+`touches` globs are what the daemon uses to keep workers out of each other's way.
 
 ### Stage 3 — Development
 
@@ -69,10 +73,10 @@ tick rather than failing.
 
 Tickets carry two orthogonal fields in their frontmatter:
 
-- **stage**: `generated` -> `review` -> `approved` -> `in_progress` -> `testing` -> `done`
-  (or `failed`). This tracks where the ticket is in the pipeline.
-- **status**: `pending`, `ready`, `running`, `blocked`, `reviewed`, `complete`, `failed`,
-  `cancelled`. This tracks the ticket's current run state.
+- **stage**: `generated` -> `investigating` -> `approved` -> `in_progress` -> `testing` ->
+  `done` (or `failed`). This tracks where the ticket is in the pipeline.
+- **status**: `pending`, `ready`, `running`, `blocked`, `complete`, `failed`, `cancelled`.
+  This tracks the ticket's current run state.
 
 `COORDINATION.md` shows every ticket except the two terminal states (`complete`, `cancelled`)
 — one row per still-relevant ticket so the fleet (and you) can see the live board at a glance.

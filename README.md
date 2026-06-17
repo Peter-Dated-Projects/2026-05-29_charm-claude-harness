@@ -20,23 +20,29 @@ a soft shared coordination file) on one shared git tree.
 
 ## How it works
 
-### The five-stage pipeline
+### The four-stage pipeline
 
 Every charm session runs the same fixed, gated pipeline. The main ("orchestrator") agent
-drives it in a single session; fan-out only happens after discovery and planning are
-approved.
+drives it in a single session, joining two decoupled phases: investigators gather context
+and propose fixes (Phase A), then the orchestrator synthesizes their findings into worker
+tickets that get built (Phase B). Fan-out to workers only happens after the findings are
+synthesized and the worker-ticket plan is approved.
 
 | Stage | Who runs it | Mode | Gate before advancing |
 |---|---|---|---|
-| 0 — Discovery | main agent + human, interactively | interactive | human approves `.charm/PROJECT.md` |
-| 1 — Planning / ticket generation | main agent | interactive | none → auto into Stage 2 |
-| 2 — Ticket review & enrichment | N reviewer agents | interactive | human approves the enriched tickets |
+| 1 — Investigation | main agent opens investigation tickets + N investigator agents | interactive | none → investigators close their own tickets |
+| 2 — Planning / synthesis | main agent reads findings, authors worker tickets | interactive | human approves the worker-ticket plan |
 | 3 — Development | M worker agents | interactive, coordinated | none → each ticket advances on its own |
 | 4 — Test & review | tester agents, one per ticket | interactive | human approves the diff before merge |
 
+Tickets carry a `type` (`investigation` or `implementation`) that decides who works them:
+investigation tickets go to investigators, implementation tickets to workers.
+
 Gates are blocking: the daemon halts the pipeline until the human approves in the Console
-pane (or via `charm approve <gate_id>`). The hard rule baked into the orchestrator prompt
-is that no parallel work is fanned out before discovery and planning are approved.
+pane (or via `charm approve <gate_id>`). The two gates are at Stage 2 (the worker-ticket
+plan) and Stage 4 (the merge diff). The hard rule baked into the orchestrator prompt is
+that no worker fan-out happens before the investigation findings are synthesized and that
+plan is approved.
 
 ### Parallelism on one shared tree
 
@@ -74,8 +80,8 @@ many `claude` processes run at once.
        └───────────┬───────────┘
                    │
   ┌────────┬───────┴────────┬─────────────┐
- [main]  [reviewer-1]   [worker-A]    [worker-B]   ← real `claude` processes,
-                                                     each in its own tmux pane
+ [main]  [investigator-1] [worker-A]    [worker-B]  ← real `claude` processes,
+                                                      each in its own tmux pane
 
   tmux window:  console pane (left)  +  agent grid (right, VS-Code-style)
 ```
@@ -90,8 +96,8 @@ many `claude` processes run at once.
   via `.charm/charm.json`. It exposes the charm tools and forwards each call to the daemon
   over the socket.
 - **`charm-console` (TUI)** — an Ink (React-for-the-terminal) app pinned to the left pane.
-  Live file viewer for `.charm/PROJECT.md`, `COORDINATION.md`, and tickets (fs-watched
-  auto-refresh), plus the approval gates.
+  Live file viewer for `COORDINATION.md` and tickets (fs-watched auto-refresh), plus the
+  approval gates.
 - **`charm-graph`** — a standalone animated force-directed view of the ticket/dependency
   graph, opened in its own terminal window via the `open_graph` tool.
 
@@ -104,8 +110,8 @@ was pressed in.
 
 | Tool | Typical caller | Effect |
 |---|---|---|
-| `create_tickets` | main | write `.charm/tickets/*.md` + index (capped at 3/call) |
-| `spawn_review_agents` | main | spawn one interactive reviewer per ticket id |
+| `create_tickets` | main | write `.charm/tickets/*.md` + index (capped at 3/call); each ticket is `type` investigation or implementation |
+| `spawn_investigators` | main | spawn one interactive investigator per investigation-ticket id |
 | `spawn_workers` | main | enforce dep + scope, spawn interactive workers |
 | `request_review` | main/worker | spawn a tester on a finished ticket |
 | `await_approval` | main | block on a human gate in the Console |
@@ -181,10 +187,11 @@ From source, no install:
 ./charm.sh start "build a markdown to-do CLI"   # prompts research vs development mode
 ```
 
-`start` opens a tmux session: the console on the left, the main agent on the right. Walk
-through discovery, approve the project brief, let it plan and review tickets, approve them,
-and watch workers fan out. Inside the session, the `:` key opens a command prompt — `:q`
-quits the charm, `:a` detaches, `:dev` / `:research` swap the fleet's model mid-session.
+`start` opens a tmux session: the console on the left, the main agent on the right. Watch
+investigators gather context, let the orchestrator synthesize their findings into a
+worker-ticket plan, approve that plan, and watch workers fan out. Inside the session, the
+`:` key opens a command prompt — `:q` quits the charm, `:a` detaches, `:dev` / `:research`
+swap the fleet's model mid-session.
 
 Mode and model:
 
@@ -229,9 +236,9 @@ charm.sh              run-from-source wrapper (forwards to src/cli.ts)
 docs/                 full docs, organized by audience (see docs/README.md)
 ```
 
-`.charm/` (created in a target project, not this repo) holds `PROJECT.md`, `tickets/`,
-`COORDINATION.md`, the sqlite index, prompts, the durable `kb/`, and per-session run state
-under `run/<uuid>/`.
+`.charm/` (created in a target project, not this repo) holds `tickets/` (both investigation
+and implementation tickets), `COORDINATION.md`, the sqlite index, prompts, the durable
+`kb/`, and per-session run state under `run/<uuid>/`.
 
 ## Build
 

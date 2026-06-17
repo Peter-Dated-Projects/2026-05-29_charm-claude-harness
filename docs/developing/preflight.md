@@ -25,20 +25,23 @@ This is a HARNESS SELF-TEST, not a real product. Your job is to exercise every c
 feature in sequence and narrate what you're doing so I can verify each works. Keep all
 actual code trivial. Follow this script:
 
-STAGE 0 — Discovery: Do a short discovery pass and write .charm/PROJECT.md describing a
-tiny "string-utils" library smoke test. Then call await_approval and STOP for my gate.
+STAGE 1 — Investigation: Open ONE investigation ticket with create_tickets(type=
+"investigation") asking what a tiny "string-utils" library smoke test would entail, then
+call spawn_investigators on it. Let the investigator write its findings into the ticket
+body and report_status(done). To exercise the question/answer loop, have the investigator
+report_status(blocked) once with a question; answer it with continue_agent. Reap it with
+kill_agent when done. There is NO human gate at this stage.
 
-STAGE 1 — Planning: After I approve, use create_tickets to write exactly FOUR tickets
-with these scopes (so the solver has real work to do):
+STAGE 2 — Planning / synthesis: Read the investigation findings, then use create_tickets
+(type="implementation") to write exactly FOUR worker tickets with these scopes (so the
+solver has real work to do):
   - T-A: implement `upper(s)` in src/upper.js          (no deps)
   - T-B: implement `reverse(s)` in src/reverse.js       (no deps — must run PARALLEL to T-A)
   - T-C: implement cli.js importing both                (DEPENDS on T-A and T-B)
   - T-D: also edits src/upper.js                        (OVERLAPS T-A's scope on purpose)
 Declare touches: accurately and set the T-C dependency. T-D's overlap with T-A must force
-the solver to SERIALIZE them, not run both at once.
-
-STAGE 2 — Review: Call spawn_review_agents so a reviewer enriches each ticket.
-Report when they finish, then call await_approval for my ticket-approval gate. STOP.
+the solver to SERIALIZE them, not run both at once. Render the plan with `charm tree`,
+then call await_approval(stage=2) for my worker-ticket-plan gate. STOP.
 
 STAGE 3 — Development: After I approve, call spawn_workers. Confirm in your narration that
 T-A and T-B ran concurrently while T-C stayed blocked on its deps and T-D was serialized
@@ -51,7 +54,8 @@ running agent, continue_agent to resume one, set_ticket_state to force a ticket'
 status/stage by id, and cancel_ticket on T-D. Narrate each.
 
 STAGE 4 — Test: Call request_review on a completed ticket to spawn a tester, let it
-validate against acceptance criteria, then await_approval for the diff-merge gate. STOP.
+validate against acceptance criteria, then await_approval(stage=4) for the diff-merge
+gate. STOP.
 
 THROUGHOUT — Also call these so I can confirm they work, and report their output:
 list_tickets, list_agents, read_coordination, set_session_description ("preflight sweep"),
@@ -65,10 +69,10 @@ paper over it. Do not advance past an await_approval until I approve.
 
 | Feature | Proven by |
 |---|---|
-| Stage 0 discovery + `PROJECT.md` authoring | discovery pass writes the brief |
-| `await_approval` (×3 gates) | blocking stops at stages 0, 2, 4 |
-| `create_tickets` + ticket store + sqlite index | four `.md` tickets written |
-| `spawn_review_agents` (interactive) | Stage 2 reviewer enrichment |
+| Stage 1 investigation + findings into the ticket body | investigator works the investigation ticket |
+| `await_approval` (×2 gates) | blocking stops at stages 2 and 4 |
+| `create_tickets` (both types) + ticket store + sqlite index | one investigation ticket + four implementation tickets written |
+| `spawn_investigators` (interactive) | Stage 1 investigation pass |
 | `spawn_workers` + dep/scope solver | T-A‖T-B parallel, T-C dep-gated, **T-D serialized behind T-A** |
 | `update_plan` / `read_coordination` | workers populate `COORDINATION.md` |
 | `report_status` / `set_ticket_status` | worker-driven state transitions |
@@ -89,8 +93,9 @@ paper over it. Do not advance past an await_approval until I approve.
 
 These cannot be triggered by the agent. Run them against the live session.
 
-- **Approval gates** — approve each of the three gates: at least once from the Console pane
-  UI, and at least once via `charm approve <gate_id>`, to prove both paths.
+- **Approval gates** — approve each of the two gates (stage 2 and stage 4): at least once
+  from the Console pane UI, and at least once via `charm approve <gate_id>`, to prove both
+  paths.
 - **Liveness sweep** — while a worker runs, `tmux kill-pane` on its pane by hand. The
   daemon's liveness sweep should detect the dead pane and reap the agent from the registry
   within the sweep interval. Only a hard external kill exercises this path — a graceful

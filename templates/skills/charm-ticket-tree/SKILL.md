@@ -1,6 +1,6 @@
 ---
 name: charm-ticket-tree
-description: Render the ticket backlog as an ASCII dependency tree — a spanning-tree view of the DAG with a status glyph per ticket and inline (← …) cross-edges. Run it when finalizing a ticket plan (the last step of Stage 1, before fanning out reviewers) and any time the user asks to see the ticket tree, dependency tree, or board structure.
+description: Render the ticket backlog as an ASCII dependency tree — a spanning-tree view of the DAG with a status glyph per ticket and inline (← …) cross-edges. Run it when finalizing the worker-ticket plan (the last step of Stage 2, before the await_approval gate) and any time the user asks to see the ticket tree, dependency tree, or board structure.
 ---
 
 # Ticket dependency tree
@@ -28,10 +28,10 @@ the skill.
 ## How it reads
 
 - **Glyph after the id** = the ticket's status: `✓` complete · `✗` failed ·
-  `●` running · `⊘` blocked · `◑` reviewed · `○` ready · `·` pending ·
+  `●` running · `⊘` blocked · `○` ready · `·` pending ·
   `⊗` cancelled. A legend prints under the tree.
 - **A `[word]` tag** spells out the in-flight or terminal-but-notable statuses
-  (running, blocked, reviewed, ready, failed, cancelled). Freshly-planned tickets
+  (running, blocked, ready, failed, cancelled). Freshly-planned tickets
   are all `pending`, so a planning-time tree shows mostly structure — which is
   the point.
 - **Tree structure** = the `depends_on` graph laid out as a spanning tree. Each
@@ -42,10 +42,10 @@ the skill.
 
 ## When to use
 
-- **Finalizing a ticket plan (Stage 1).** Run it as the last step before
-  `spawn_review_agents(...)`, so the human sees the full dependency structure of
-  what you just planned and can sanity-check it before reviewers fan out. This is
-  the required hand-off view — see the Planner prompt.
+- **Finalizing the worker-ticket plan (Stage 2).** Run it as the last step before
+  `await_approval(stage=2, ...)`, so the human sees the full dependency structure
+  of what you just planned and can sanity-check it before approving the plan and
+  letting workers fan out. This is the required hand-off view — see the Planner prompt.
 - The user asks to "see the ticket tree" / "dependency tree" / "show the board" /
   "what depends on what".
 - You want to confirm the graph after re-parenting or adding tickets — a quick

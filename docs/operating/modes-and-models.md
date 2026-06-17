@@ -52,7 +52,7 @@ When no `-m` pin is given, model defaults differ by role:
 | Role | Development mode | Research mode |
 |---|---|---|
 | Orchestrator (main agent) | `opus-4.8` | `sonnet-4.6` |
-| Sub-agents (worker, reviewer, tester) | `sonnet-4.6` | `sonnet-4.6` |
+| Sub-agents (investigator, worker, tester) | `sonnet-4.6` | `sonnet-4.6` |
 
 The orchestrator always stays on the heavier model in development mode — it holds the full
 session plan and coordinates all sub-agent spawns, so the extra capability is consistently

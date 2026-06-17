@@ -1,18 +1,26 @@
 import { z } from "zod";
 
-export const TicketStage = z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]);
+export const TicketStage = z.enum(["generated", "investigating", "approved", "in_progress", "testing", "done", "failed"]);
 export type TicketStage = z.infer<typeof TicketStage>;
 
-export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "reviewed", "complete", "failed", "cancelled"]);
+export const TicketStatus = z.enum(["pending", "ready", "running", "blocked", "complete", "failed", "cancelled"]);
 export type TicketStatus = z.infer<typeof TicketStatus>;
+
+/** Whether a ticket is a Phase-A investigation (worked by an investigator: gather
+ *  context, propose a fix, write findings into the body) or a Phase-B
+ *  implementation/build ticket (worked by a worker). The orchestrator authors
+ *  both kinds via create_tickets and spawns the matching role. Defaults to
+ *  `implementation` so an unqualified ticket is a build ticket. */
+export const TicketType = z.enum(["investigation", "implementation"]);
+export type TicketType = z.infer<typeof TicketType>;
 
 /** The statuses COORDINATION.md renders: every status except the two terminal
  *  "done with it" ones, `complete` and `cancelled`. Open and in-flight tickets
- *  obviously belong on the live board; `reviewed` stays (waiting for a worker);
- *  `failed` stays too, because a failed ticket needs an operator's eyes (update
- *  the ticket, re-spawn a retry). Only a cleanly completed ticket, or one the
- *  operator deliberately called off, leaves the board. */
-export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "reviewed", "failed"];
+ *  obviously belong on the live board; `failed` stays too, because a failed
+ *  ticket needs an operator's eyes (update the ticket, re-spawn a retry). Only a
+ *  cleanly completed ticket, or one the operator deliberately called off, leaves
+ *  the board. */
+export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "failed"];
 
 /** Statuses a worker may set on its own ticket via set_ticket_status. `cancelled`
  *  is intentionally excluded: cancelling is a deliberate operator/orchestrator
@@ -21,7 +29,7 @@ export const COORDINATION_STATUSES: TicketStatus[] = ["pending", "ready", "runni
  *
  *  `complete` IS intentionally worker-settable, by design — not an oversight. A
  *  worker can mark its own ticket complete (so can report_status('done')) without
- *  a mandatory tester/reviewer gate, because the real gate is the human: the
+ *  a mandatory tester gate, because the real gate is the human: the
  *  common path to completion is the operator stepping into the session and
  *  telling the agent it's done. Testing stays optional and orchestrator-driven
  *  (request_review) rather than forced on every ticket. */
@@ -32,11 +40,12 @@ export const WORKER_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "ru
  *  down its agent, which is cancel_ticket's job — keeping it out of this general state
  *  write means the two paths can't be confused. (Happens to match the worker set, but
  *  it's a distinct authorization surface: this one is keyed by ticket_id, not agent.) */
-export const ORCHESTRATOR_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "reviewed", "complete", "failed"];
+export const ORCHESTRATOR_SETTABLE_STATUSES: TicketStatus[] = ["pending", "ready", "running", "blocked", "complete", "failed"];
 
 export const TicketFrontmatter = z.object({
   id: z.string().regex(/^T-\d{3,}$/),
   title: z.string().min(1),
+  type: TicketType.default("implementation"),
   status: TicketStatus.default("pending"),
   stage: TicketStage.default("generated"),
   depends_on: z.array(z.string()).default([]),
@@ -51,7 +60,7 @@ export const Ticket = z.object({
 });
 export type Ticket = z.infer<typeof Ticket>;
 
-export const AgentRole = z.enum(["main", "reviewer", "worker", "tester"]);
+export const AgentRole = z.enum(["main", "investigator", "worker", "tester", "suborchestrator"]);
 export type AgentRole = z.infer<typeof AgentRole>;
 
 export const AgentState = z.enum(["spawning", "running", "blocked", "done", "failed"]);
@@ -83,7 +92,10 @@ export type Agent = z.infer<typeof Agent>;
 
 export const ApprovalGate = z.object({
   id: z.string(),
-  stage: z.union([z.literal(0), z.literal(2), z.literal(4)]),
+  // Stage 2 = the worker-ticket plan (after investigation synthesis); stage 4 =
+  // the merge diff. There is no stage-0 gate — discovery was removed in favor of
+  // the investigation phase, which opens with no human gate.
+  stage: z.union([z.literal(2), z.literal(4)]),
   label: z.string(),
   payload_path: z.string().nullable(),
   ticket_id: z.string().nullable(),
@@ -119,6 +131,10 @@ export const CreateTicketsInput = z.object({
   tickets: z.array(z.object({
     title: z.string(),
     body: z.string(),
+    // "investigation" => a Phase-A context-gathering ticket worked by an
+    // investigator; "implementation" (default) => a Phase-B build ticket worked
+    // by a worker. The orchestrator authors both kinds through this one tool.
+    type: TicketType.default("implementation"),
     depends_on: z.array(z.string()).default([]),
     touches: z.array(z.string()).default([]),
   })).min(1).max(3, "create_tickets accepts at most 3 tickets per call; split larger batches across multiple calls"),
@@ -151,11 +167,11 @@ export const FinishProposalInput = z.object({
 });
 export type FinishProposalInput = z.infer<typeof FinishProposalInput>;
 
-export const SpawnReviewersInput = z.object({
+export const SpawnInvestigatorsInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
 });
-export type SpawnReviewersInput = z.infer<typeof SpawnReviewersInput>;
+export type SpawnInvestigatorsInput = z.infer<typeof SpawnInvestigatorsInput>;
 
 export const SpawnWorkersInput = z.object({
   caller_id: z.string().optional(),
@@ -192,7 +208,7 @@ export const CloseWorktreeInput = z.object({
 export type CloseWorktreeInput = z.infer<typeof CloseWorktreeInput>;
 
 export const AwaitApprovalInput = z.object({
-  stage: z.union([z.literal(0), z.literal(2), z.literal(4)]),
+  stage: z.union([z.literal(2), z.literal(4)]),
   label: z.string(),
   ticket_id: z.string().nullable().default(null),
   payload_path: z.string().nullable().default(null),
@@ -221,7 +237,7 @@ export type ReportStatusInput = z.infer<typeof ReportStatusInput>;
 
 // set_ticket_status lets a worker drive its own ticket's lifecycle directly:
 // status (running while working, complete/failed when terminal) and/or stage
-// (e.g. in_progress -> review -> testing). Self-scoped — the daemon applies it to
+// (e.g. in_progress -> testing). Self-scoped — the daemon applies it to
 // the caller's assigned ticket; an agent cannot move another's ticket. At least
 // one of status/stage must be present, or the call is a no-op worth rejecting.
 // `cancelled` is not worker-settable (see WORKER_SETTABLE_STATUSES).

@@ -7,7 +7,7 @@ export class ApprovalQueue {
   private seq = 0;
   private listeners = new Set<(snapshot: ApprovalGate[]) => void>();
 
-  enqueue(opts: { stage: 0 | 2 | 4; label: string; ticket_id: string | null; payload_path: string | null; agent_id?: string | null }): Promise<"approve" | "reject"> {
+  enqueue(opts: { stage: 2 | 4; label: string; ticket_id: string | null; payload_path: string | null; agent_id?: string | null }): Promise<"approve" | "reject"> {
     this.seq += 1;
     const gate: ApprovalGate = {
       id: `gate-${String(this.seq).padStart(3, "0")}`,

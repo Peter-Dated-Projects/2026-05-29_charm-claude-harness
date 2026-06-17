@@ -201,7 +201,7 @@ program
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
-      prompt: plain ? "" : `Goal: ${goal}. Begin Stage 0 (Discovery) per your system prompt.`,
+      prompt: plain ? "" : `Goal: ${goal}. Begin Stage 1 (Investigation) per your system prompt.`,
       interactive: true,
       model: fleetModel,
       plain,
@@ -709,6 +709,19 @@ program
         catch { /* daemon gone — fall through to the status-line notice */ }
       }
       spawn("tmux", ["display-message", `charm: cannot switch to ${mode} mode (no daemon)`], { stdio: "ignore" });
+      return;
+    }
+    // Spawn a suborchestrator: an interactive, operator-facing agent in its own
+    // tmux window that has orchestrator-level MCP permissions. Useful when the
+    // operator wants to delegate sub-tasks, query the fleet, or run parallel work
+    // while the main orchestrator continues. Opens the new window immediately.
+    const SO_ALIASES = new Set(["so", "suborchestrator"]);
+    if (SO_ALIASES.has(c)) {
+      if (socket) {
+        try { await rpcCall(socket, "spawn_suborchestrator"); return; }
+        catch { /* daemon gone — fall through */ }
+      }
+      spawn("tmux", ["display-message", `charm: cannot spawn suborchestrator (no daemon)`], { stdio: "ignore" });
       return;
     }
     // Unknown: surface in tmux status line briefly.

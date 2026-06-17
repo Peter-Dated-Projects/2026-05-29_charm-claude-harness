@@ -141,7 +141,7 @@ export class Tmux {
     spawnSync("tmux", ["select-window", "-t", target]);
   }
 
-  /** Start a command in the initial window's only pane (Stage 0 main agent). */
+  /** Start a command in the initial window's only pane (the main agent). */
   spawnInWindow(window: string, cmd: string, cwd: string): string {
     const target = `${this.session}:${window}.0`;
     const r = spawnSync(

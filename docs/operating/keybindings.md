@@ -38,7 +38,7 @@ current tab is Artifacts.
 
 ## Artifacts tab
 
-A vertical split: a file list (`.charm/PROJECT.md`, `COORDINATION.md`, and every
+A vertical split: a file list (`.charm/COORDINATION.md` and every
 ticket) above a scrolling markdown viewer. A single combined input handler owns
 both the list navigation and the viewer scroll, so `g`/`G`/`r` are free to act on
 the viewer and selection here.

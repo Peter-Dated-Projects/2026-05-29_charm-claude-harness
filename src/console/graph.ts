@@ -72,7 +72,7 @@ interface Edge {
 /** A small Obsidian-like graph: a few clusters of linked "notes". */
 function dummyGraph(): { nodes: Node[]; edges: Edge[] } {
   const clusters: Record<string, string[]> = {
-    discovery: ["PROJECT", "scope", "constraints", "stack", "risks"],
+    investigation: ["findings", "scope", "constraints", "options", "risks"],
     tickets: ["T-001", "T-002", "T-003", "T-004", "T-005", "T-006"],
     workers: ["worker-A", "worker-B", "worker-C", "coordination"],
     infra: ["daemon", "tmux", "mcp-shim", "sqlite", "rpc"],
