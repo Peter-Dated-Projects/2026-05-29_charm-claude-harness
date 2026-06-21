@@ -19,7 +19,7 @@ program
 
 program
   .command("init")
-  .description("scaffold or refresh .charm/ in the current dir: re-copies template tooling (prompts, skills, CLAUDE.md, charm.json) -- additive or update only, never deletes; kb/, COORDINATION.md, and settings.json are preserved")
+  .description("scaffold or refresh .charm/ in the current dir: re-copies template tooling (prompts, skills, CHARM.md, charm.json), ensures the root CLAUDE.md imports it -- additive or update only, never deletes; kb/, COORDINATION.md, and settings.json are preserved")
   .option("-r, --root <path>", "project root", process.cwd())
   .action((opts) => {
     const paths = charmPaths(resolve(opts.root));
@@ -31,7 +31,7 @@ program
     console.log(`  tickets:  ${paths.ticketsDir}/`);
     console.log(`  kb:       ${paths.kbDir}/  (durable, git-tracked)`);
     console.log(`  skills:   ${paths.skillsDir}/  (operator skills + index)`);
-    console.log(`  claude:   ${paths.charmMd}  (workspace guardrails, injected into each agent's prompt)`);
+    console.log(`  charm:    ${paths.charmMd}  (workspace guardrails, loaded via the root CLAUDE.md import)`);
     console.log(`  config:   ${paths.mcpConfig}`);
   });
 
@@ -997,20 +997,25 @@ function scaffoldCharmDir(
     console.warn("[charm] skill templates not found; skipping skills scaffold");
   }
 
-  // Seed the shared workspace CLAUDE.md (guardrails + operator-skills router).
-  // It lands at .charm/CLAUDE.md, and buildClaudeCommand (daemon/spawn.ts)
+  // Seed the shared workspace CHARM.md (guardrails + operator-skills router).
+  // It lands at .charm/CHARM.md, and buildClaudeCommand (daemon/spawn.ts)
   // appends this local copy to every charm-spawned agent's system prompt.
   // Like prompts/skills it's tooling, not user data: copy if missing, and
   // refresh (overwrite) it on `charm init` so the workspace tracks the template.
   const charmTemplates = locateTemplateDir("charm");
   if (charmTemplates) {
-    const src = join(charmTemplates, "CLAUDE.md");
+    const src = join(charmTemplates, "CHARM.md");
     if (existsSync(src) && (!existsSync(paths.charmMd) || refresh)) {
       cpSync(src, paths.charmMd);
     }
   } else {
-    console.warn("[charm] charm templates not found; skipping CLAUDE.md scaffold");
+    console.warn("[charm] charm templates not found; skipping CHARM.md scaffold");
   }
+
+  // Wire the workspace CHARM.md into the project's root CLAUDE.md so any Claude
+  // session opened in the repo loads the shared context natively (via an `@`
+  // import), not just charm-spawned agents.
+  ensureRootClaudeImport(paths);
 
   const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
   const mcpConfig = {
@@ -1066,6 +1071,41 @@ function ensureGitignoreRules(paths: ReturnType<typeof charmPaths>) {
   out += block.join("\n") + "\n";
   writeFileSync(gitignore, out);
   console.log(`  gitignore: appended ${missing.length} charm rule(s) to ${gitignore}`);
+}
+
+/**
+ * Ensure the project's root CLAUDE.md imports the workspace CHARM.md so the
+ * shared charm context loads into any Claude session opened in the repo.
+ *
+ * Two steps, both non-destructive:
+ *   1. If <root>/CLAUDE.md doesn't exist, create it empty (it will then carry
+ *      only the charm import).
+ *   2. If it doesn't already import `.charm/CHARM.md`, append the import line at
+ *      the bottom. An existing import (anywhere in the file) is left untouched, so
+ *      re-running init/start never duplicates it.
+ *
+ * `@.charm/CHARM.md` is Claude Code's native file-import syntax; it resolves
+ * relative to the root CLAUDE.md, i.e. to <root>/.charm/CHARM.md.
+ */
+function ensureRootClaudeImport(paths: ReturnType<typeof charmPaths>) {
+  const importLine = "@.charm/CHARM.md";
+  const existed = existsSync(paths.rootClaudeMd);
+  const existing = existed ? readFileSync(paths.rootClaudeMd, "utf8") : "";
+  if (existing.includes(importLine)) return;
+
+  let out = existing;
+  if (out.length > 0 && !out.endsWith("\n")) out += "\n"; // finish a dangling last line
+  if (out.length > 0) out += "\n"; // blank separator before our block
+  out +=
+    "<!-- charm: load the shared multi-agent workspace context (auto-added by `charm init`) -->\n" +
+    importLine +
+    "\n";
+  writeFileSync(paths.rootClaudeMd, out);
+  console.log(
+    existed
+      ? `  claude:   appended ${importLine} import to ${paths.rootClaudeMd}`
+      : `  claude:   created ${paths.rootClaudeMd} importing ${importLine}`,
+  );
 }
 
 /**

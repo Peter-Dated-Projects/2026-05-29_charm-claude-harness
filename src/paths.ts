@@ -106,9 +106,15 @@ export function charmPaths(root: string, sessionId?: string) {
     claudeSettings: join(root, ".claude", "settings.json"),
     projectMd: join(charmDir, "PROJECT.md"),
     // Workspace facts + guardrails shared by every agent, seeded from
-    // templates/charm/CLAUDE.md and appended to each charm-spawned agent's
-    // system prompt by buildClaudeCommand (daemon/spawn.ts).
-    charmMd: join(charmDir, "CLAUDE.md"),
+    // templates/charm/CHARM.md and appended to each charm-spawned agent's
+    // system prompt by buildClaudeCommand (daemon/spawn.ts). It is named CHARM.md
+    // (not CLAUDE.md) so the project's root CLAUDE.md can pull it into native
+    // Claude Code context via an `@.charm/CHARM.md` import without a name clash.
+    charmMd: join(charmDir, "CHARM.md"),
+    // The project's own root CLAUDE.md. charm ensures it exists (creating an empty
+    // one if absent) and that it imports the workspace CHARM.md, so any Claude
+    // session opened in the repo loads the shared workspace context.
+    rootClaudeMd: join(root, "CLAUDE.md"),
     coordinationMd: join(charmDir, "COORDINATION.md"),
     mcpConfig: join(charmDir, "charm.json"),
     // ---- per-session control plane (under runDir), continued ----

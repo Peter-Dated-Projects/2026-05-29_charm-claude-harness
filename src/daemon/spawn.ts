@@ -240,17 +240,12 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
         readFileSync(skillsIndex, "utf8").trim() +
         "\n"
       : "";
-  // Inject the shared workspace CLAUDE.md (guardrails + operator-skills router),
-  // scaffolded from templates/charm/CLAUDE.md into <root>/.charm/CLAUDE.md by
-  // `charm init`. We read the LOCAL copy at spawn so a project can hand-tune its
-  // own guardrails. This is appended to the system prompt rather than wired as a
-  // SessionStart hook on purpose: a hook in .claude/settings.json fires for every
-  // `claude` run in the repo, but charm's guardrails should reach ONLY
-  // charm-spawned agents. Every role gets it (workers edit files, so the file
-  // scope and ticket/kb guardrails apply fleet-wide); plain windows do too.
-  const CHARM_WORKSPACE = existsSync(paths.charmMd)
-    ? "\n\n" + readFileSync(paths.charmMd, "utf8").trim() + "\n"
-    : "";
+  // The shared workspace guardrails (.charm/CHARM.md) are NOT appended here. They
+  // reach every agent file-based instead: `charm init` makes the project's root
+  // CLAUDE.md import `@.charm/CHARM.md`, and Claude Code natively loads that root
+  // CLAUDE.md for any session whose cwd is the repo root — which every charm spawn
+  // is. Appending here too would double-inject the same content into each agent's
+  // context, so we rely solely on the import.
   // Shared coordination ethos for every sub-agent (worker / investigator / tester) —
   // NOT the orchestrator (which carries the other side of this in orchestrator.md)
   // and NOT plain windows. Injected from this single place so the three roles stay
@@ -276,7 +271,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
-  const systemPrompt = rolePrompt + CHARM_WORKSPACE + CHARM_RULES + CHARM_COORDINATION + CHARM_SKILLS + modelLine;
+  const systemPrompt = rolePrompt + CHARM_RULES + CHARM_COORDINATION + CHARM_SKILLS + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   // Conversation identity. A fresh spawn launches under a charm-owned
