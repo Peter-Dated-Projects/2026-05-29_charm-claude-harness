@@ -4,10 +4,13 @@ import FileExplorer from './components/FileExplorer'
 import OrchestrationCanvas from './components/OrchestrationCanvas'
 import AgentSidebar from './components/AgentSidebar'
 import MarkdownViewer from './components/MarkdownViewer'
+import OrchestratorHub from './components/OrchestratorHub'
+import TicketDetail from './components/TicketDetail'
 import { useCharmData, useFileContent } from './hooks/useCharmData'
 import { computeLayout } from './lib/layout'
 
 type ActiveView = 'files' | 'charm' | 'search'
+type CenterContent = 'canvas' | 'markdown' | 'ticket' | 'hub'
 
 function IconFiles() {
   return (
@@ -34,6 +37,19 @@ function IconSearch() {
     </svg>
   )
 }
+function IconHub() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="6" height="6" rx="1"/>
+      <rect x="16" y="3" width="6" height="6" rx="1"/>
+      <rect x="2" y="15" width="6" height="6" rx="1"/>
+      <rect x="16" y="15" width="6" height="6" rx="1"/>
+      <line x1="8" y1="6" x2="16" y2="6"/>
+      <line x1="8" y1="18" x2="16" y2="18"/>
+      <line x1="12" y1="6" x2="12" y2="18"/>
+    </svg>
+  )
+}
 function IconSettings() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -44,8 +60,10 @@ function IconSettings() {
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState<ActiveView>('files')
-  const [previewPath, setPreviewPath] = useState<string | null>(null)
+  const [activeView,    setActiveView]    = useState<ActiveView>('files')
+  const [previewPath,   setPreviewPath]   = useState<string | null>(null)
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null)
+  const [centerContent, setCenterContent] = useState<CenterContent>('canvas')
 
   const { state, loading, error, tauriAvailable } = useCharmData()
   const { content: previewContent } = useFileContent(previewPath)
@@ -59,7 +77,67 @@ export default function App() {
   const idleCount     = (state?.tickets ?? []).filter(t => t.status === 'open').length
   const worktreeCount = (state?.worktrees ?? []).length
 
-  const showPreview = previewPath !== null && previewContent !== null
+  const selectedTicket = selectedTicketId
+    ? state?.tickets.find(t => t.id === selectedTicketId) ?? null
+    : null
+
+  function openFile(path: string) {
+    setPreviewPath(path)
+    setCenterContent('markdown')
+  }
+
+  function openTicket(nodeId: string) {
+    const ticket = state?.tickets.find(t => t.id === nodeId)
+    if (ticket) {
+      setSelectedTicketId(ticket.id)
+      setCenterContent('ticket')
+    }
+  }
+
+  function closeCenter() {
+    setPreviewPath(null)
+    setSelectedTicketId(null)
+    setCenterContent('canvas')
+  }
+
+  function openHub() {
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+      import('@tauri-apps/api/webviewWindow').then(({ WebviewWindow }) => {
+        const existing = WebviewWindow.getByLabel('hub')
+        if (existing) { existing.then(w => w?.setFocus()) }
+        else {
+          new WebviewWindow('hub', {
+            url: '/?hub=1',
+            title: 'Orchestrator Hub',
+            width: 300,
+            height: 650,
+            resizable: false,
+            alwaysOnTop: true,
+          })
+        }
+      })
+    } else {
+      // Dev browser mode — show hub inline as center panel
+      setCenterContent(centerContent === 'hub' ? 'canvas' : 'hub')
+    }
+  }
+
+  // Hub-only window (when opened as a Tauri WebviewWindow at ?hub=1)
+  const isHubWindow = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('hub') === '1'
+  if (isHubWindow) {
+    return (
+      <div style={{ height: '100vh', background: '#090b10', fontFamily: 'var(--mono)' }}>
+        <OrchestratorHub currentState={state} />
+      </div>
+    )
+  }
+
+  const titlebar: Record<CenterContent, string> = {
+    canvas:   'orchestration — charm studio',
+    markdown: previewPath?.split('/').pop() ?? '',
+    ticket:   selectedTicket ? `${selectedTicket.id} — ${selectedTicket.title}` : '',
+    hub:      'orchestrator hub',
+  }
 
   return (
     <div className="app-shell">
@@ -76,36 +154,46 @@ export default function App() {
           </button>
         </div>
         <div className="activity-bottom">
+          <button className={`activity-btn${centerContent === 'hub' ? ' active' : ''}`} title="Orchestrator Hub" onClick={openHub}>
+            <IconHub />
+          </button>
           <button className="activity-btn" title="Settings"><IconSettings /></button>
         </div>
       </nav>
 
-      <FileExplorer onOpenFile={path => setPreviewPath(path)} />
+      <FileExplorer onOpenFile={openFile} />
 
       <main className="canvas-panel">
         <div className="canvas-titlebar">
-          <span className="canvas-title">
-            {showPreview ? previewPath!.split('/').pop() : 'orchestration — charm studio'}
-          </span>
+          <span className="canvas-title">{titlebar[centerContent]}</span>
           <div className="canvas-badges">
-            {showPreview ? (
-              <button className="canvas-badge close-b" onClick={() => setPreviewPath(null)}>close</button>
+            {centerContent !== 'canvas' ? (
+              <button className="canvas-badge close-b" onClick={closeCenter}>close</button>
             ) : (
               <>
-                {activeCount > 0  && <span className="canvas-badge active-b">{activeCount} active</span>}
-                {idleCount > 0    && <span className="canvas-badge">{idleCount} open</span>}
+                {activeCount > 0   && <span className="canvas-badge active-b">{activeCount} active</span>}
+                {idleCount > 0     && <span className="canvas-badge">{idleCount} open</span>}
                 {worktreeCount > 0 && <span className="canvas-badge worktree-b">{worktreeCount} worktrees</span>}
-                {!tauriAvailable  && <span className="canvas-badge mock-b">mock</span>}
-                {error            && <span className="canvas-badge err-b">error</span>}
+                {!tauriAvailable   && <span className="canvas-badge mock-b">mock</span>}
+                {error             && <span className="canvas-badge err-b">error</span>}
               </>
             )}
           </div>
         </div>
 
-        {showPreview ? (
-          <MarkdownViewer path={previewPath!} content={previewContent} onClose={() => setPreviewPath(null)} />
-        ) : (
-          <OrchestrationCanvas graph={graph} />
+        {centerContent === 'canvas' && (
+          <OrchestrationCanvas graph={graph} onNodeClick={openTicket} />
+        )}
+        {centerContent === 'markdown' && previewContent !== null && (
+          <MarkdownViewer path={previewPath!} content={previewContent} onClose={closeCenter} />
+        )}
+        {centerContent === 'ticket' && selectedTicket !== null && (
+          <TicketDetail ticket={selectedTicket} onClose={closeCenter} />
+        )}
+        {centerContent === 'hub' && (
+          <div className="hub-inline-wrap">
+            <OrchestratorHub currentState={state} compact />
+          </div>
         )}
       </main>
 

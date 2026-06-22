@@ -644,3 +644,250 @@
 
 .ticket-loading { padding: 16px 14px; font-size: 11px; color: var(--text-dim); }
 .ticket-empty   { padding: 16px 14px; font-size: 11px; color: var(--text-dim); }
+
+/* Ticket detail panel */
+.ticket-detail {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+  background: var(--ground);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-mid) transparent;
+}
+
+.ticket-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.ticket-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ticket-detail-id     { font-size: 13px; color: var(--orch); font-weight: 700; letter-spacing: 0.04em; }
+.ticket-detail-status { font-size: 11px; letter-spacing: 0.06em; }
+.ticket-detail-title  {
+  font-size: 15px;
+  color: var(--text-white);
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 20px;
+}
+
+/* Stage progress */
+.ticket-stages {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  margin-bottom: 24px;
+  position: relative;
+}
+
+.ticket-stages::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  right: 5px;
+  height: 1px;
+  background: var(--border);
+}
+
+.stage-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  position: relative;
+  z-index: 1;
+}
+
+.stage-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  transition: background 0.15s;
+}
+
+.stage-step.done .stage-dot  { background: var(--orch-dim); border-color: var(--orch); }
+.stage-step.active .stage-dot { background: var(--orch); border-color: var(--orch); box-shadow: 0 0 6px var(--orch-glow); }
+
+.stage-label {
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.stage-step.active .stage-label { color: var(--text-muted); }
+
+/* Ticket detail sections */
+.ticket-detail-section { margin-bottom: 18px; }
+.ticket-detail-section-label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.ticket-touch {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  margin-bottom: 3px;
+  word-break: break-all;
+}
+
+.ticket-deps { display: flex; flex-wrap: wrap; gap: 5px; }
+.ticket-dep-badge {
+  font-size: 10px;
+  color: var(--orch);
+  background: var(--orch-glow);
+  border: 1px solid var(--orch-dim);
+  border-radius: 2px;
+  padding: 2px 7px;
+}
+
+/* Orchestrator Hub */
+.hub-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.hub-panel.compact {
+  flex: 1;
+  border: none;
+  background: var(--ground);
+}
+
+.hub-inline-wrap {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  padding: 24px;
+  justify-content: center;
+}
+
+.hub-inline-wrap .hub-panel {
+  width: 280px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  height: fit-content;
+  max-height: 100%;
+}
+
+.hub-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.hub-title {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.hub-count {
+  font-size: 9px;
+  color: var(--agent);
+  letter-spacing: 0.06em;
+}
+
+.hub-sessions { flex: 1; overflow-y: auto; padding: 6px 0; }
+
+.hub-session {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  background: none;
+  cursor: pointer;
+  transition: background 0.08s;
+  color: var(--text);
+}
+.hub-session:hover { background: rgba(255,255,255,0.03); }
+.hub-session.active {
+  background: var(--surface-2);
+  border-left: 2px solid var(--orch);
+  padding-left: 14px;
+}
+
+.hub-session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.hub-session-label {
+  font-size: 11px;
+  color: var(--text-bright);
+  font-weight: 600;
+}
+
+.hub-session-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.hub-session-desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-bottom: 5px;
+}
+
+.hub-session-stats {
+  display: flex;
+  gap: 8px;
+}
+
+.hub-stat {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.hub-footer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.hub-new-btn {
+  width: 100%;
+  padding: 6px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
+  border-radius: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.12s, color 0.12s;
+}
+.hub-new-btn:hover { border-color: var(--orch); color: var(--orch); }
