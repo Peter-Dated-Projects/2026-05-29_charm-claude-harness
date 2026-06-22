@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import type { CharmState, Ticket } from '../types/charm'
 
 type Tab = 'general' | 'orchestration'
 
@@ -11,67 +12,7 @@ interface Msg {
 }
 
 const GENERAL_MSGS: Msg[] = [
-  {
-    id: 'g1',
-    role: 'system',
-    body: 'Connected to Claude claude-opus-4-8. Ask anything.',
-    time: '09:41',
-  },
-  {
-    id: 'g2',
-    role: 'user',
-    body: 'What files changed in the last worktree commit?',
-    time: '09:42',
-  },
-  {
-    id: 'g3',
-    role: 'assistant',
-    body: 'The last commit on `feat/auth` touched:\n\n`src/auth/jwt.ts` — new token validation\n`src/auth/middleware.ts` — refresh logic\n`tests/auth.spec.ts` — 14 new cases\n\nNo changes to the daemon or MCP layer.',
-    time: '09:42',
-  },
-]
-
-const ORCH_MSGS: Msg[] = [
-  {
-    id: 'o1',
-    role: 'system',
-    body: 'Connected to orchestrator — session charm-3f9a. 3 active agents, 1 worktree.',
-    time: '09:38',
-  },
-  {
-    id: 'o2',
-    role: 'user',
-    body: 'Spin up two investigators to look into the auth refresh token edge cases.',
-    time: '09:39',
-  },
-  {
-    id: 'o3',
-    role: 'assistant',
-    body: 'Creating worktree `feat/auth-edge` and spawning 2 investigator agents.',
-    time: '09:39',
-    tool: {
-      name: 'create_worktree',
-      detail: 'branch: feat/auth-edge, base: main',
-    },
-  },
-  {
-    id: 'o4',
-    role: 'assistant',
-    body: 'Done. `ag-01` is investigating token expiry window; `ag-02` is checking concurrent refresh races. You\'ll see them appear on the canvas.',
-    time: '09:39',
-  },
-  {
-    id: 'o5',
-    role: 'user',
-    body: 'How are ag-01 and ag-02 doing?',
-    time: '09:44',
-  },
-  {
-    id: 'o6',
-    role: 'assistant',
-    body: '`ag-01` — In progress. Found a 2s grace window that allows double-use of expiring tokens.\n\n`ag-02` — Blocked on a race condition in `refreshMutex`. Waiting on approval to add a `skipCache` flag.',
-    time: '09:44',
-  },
+  { id: 'g1', role: 'system', body: 'Connected to Claude claude-opus-4-8. Ask anything.', time: '' },
 ]
 
 function Message({ msg }: { msg: Msg }) {
@@ -79,11 +20,14 @@ function Message({ msg }: { msg: Msg }) {
     <div className="chat-message">
       <div className="msg-header">
         <span className={`msg-role ${msg.role}`}>{msg.role}</span>
-        <span className="msg-time">{msg.time}</span>
+        {msg.time && <span className="msg-time">{msg.time}</span>}
       </div>
-      <div className="msg-body"
+      <div
+        className="msg-body"
         dangerouslySetInnerHTML={{
-          __html: msg.body.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br/>')
+          __html: msg.body
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\n/g, '<br/>')
         }}
       />
       {msg.tool && (
@@ -96,20 +40,62 @@ function Message({ msg }: { msg: Msg }) {
   )
 }
 
-export default function AgentSidebar() {
-  const [tab, setTab]   = useState<Tab>('orchestration')
+function TicketRow({ ticket }: { ticket: Ticket }) {
+  const statusColor: Record<string, string> = {
+    open:        '#3b82f6',
+    in_progress: '#10b981',
+    blocked:     '#f59e0b',
+    complete:    '#3d4a68',
+    reviewed:    '#3d4a68',
+    cancelled:   '#3d4a68',
+  }
+  const color = statusColor[ticket.status] ?? '#3d4a68'
+  const isLive = ticket.status === 'open' || ticket.status === 'in_progress' || ticket.status === 'blocked'
+  return (
+    <div className={`ticket-row${isLive ? ' live' : ''}`}>
+      <div className="ticket-header">
+        <span className="ticket-id">{ticket.id}</span>
+        <span className="ticket-status" style={{ color }}>{ticket.status.replace('_', ' ')}</span>
+      </div>
+      <div className="ticket-title">{ticket.title}</div>
+      {ticket.stage !== 'done' && (
+        <div className="ticket-stage">{ticket.stage}</div>
+      )}
+    </div>
+  )
+}
+
+interface Props {
+  state: CharmState | null
+  loading: boolean
+  tauriAvailable: boolean
+}
+
+export default function AgentSidebar({ state, loading, tauriAvailable }: Props) {
+  const [tab, setTab]     = useState<Tab>('orchestration')
   const [draft, setDraft] = useState('')
+  const [msgs, setMsgs]   = useState<Msg[]>(GENERAL_MSGS)
   const taRef = useRef<HTMLTextAreaElement>(null)
 
-  const msgs = tab === 'general' ? GENERAL_MSGS : ORCH_MSGS
+  const liveTickets   = (state?.tickets ?? []).filter(t =>
+    t.status === 'open' || t.status === 'in_progress' || t.status === 'blocked'
+  )
+  const doneTickets   = (state?.tickets ?? []).filter(t =>
+    t.status === 'complete' || t.status === 'reviewed'
+  )
+  const activeCount   = (state?.tickets ?? []).filter(t => t.status === 'in_progress').length
+  const worktreeCount = (state?.worktrees ?? []).length
 
   const context = tab === 'orchestration'
-    ? { label: 'session', value: 'charm-3f9a / main' }
+    ? { label: 'session', value: state?.meta?.description?.slice(0, 32) || 'charm session' }
     : { label: 'model', value: 'claude-opus-4-8' }
 
   function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
+      if (!draft.trim()) return
+      const now = new Date().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' })
+      setMsgs(prev => [...prev, { id: String(Date.now()), role: 'user', body: draft, time: now }])
       setDraft('')
     }
   }
@@ -117,17 +103,11 @@ export default function AgentSidebar() {
   return (
     <aside className="agent-sidebar">
       <div className="sidebar-tabs">
-        <div
-          className={`sidebar-tab${tab === 'general' ? ' active' : ''}`}
-          onClick={() => setTab('general')}
-        >
+        <div className={`sidebar-tab${tab === 'general' ? ' active' : ''}`} onClick={() => setTab('general')}>
           General
         </div>
-        <div
-          className={`sidebar-tab${tab === 'orchestration' ? ' active' : ''}`}
-          onClick={() => setTab('orchestration')}
-        >
-          <span className="tab-dot" />
+        <div className={`sidebar-tab${tab === 'orchestration' ? ' active' : ''}`} onClick={() => setTab('orchestration')}>
+          {activeCount > 0 && <span className="tab-dot" />}
           Orchestrate
         </div>
       </div>
@@ -138,31 +118,72 @@ export default function AgentSidebar() {
           <div className="chat-context-value">{context.value}</div>
         </div>
 
-        <div className="chat-messages">
-          {msgs.map((m) => <Message key={m.id} msg={m} />)}
-        </div>
+        {tab === 'orchestration' ? (
+          <div className="coordination-panel">
+            <div className="coord-stats">
+              <div className="coord-stat">
+                <span className="coord-stat-val" style={{ color: '#10b981' }}>{activeCount}</span>
+                <span className="coord-stat-label">active</span>
+              </div>
+              <div className="coord-stat">
+                <span className="coord-stat-val" style={{ color: '#a78bfa' }}>{worktreeCount}</span>
+                <span className="coord-stat-label">worktrees</span>
+              </div>
+              <div className="coord-stat">
+                <span className="coord-stat-val" style={{ color: '#3b82f6' }}>{state?.tickets?.length ?? 0}</span>
+                <span className="coord-stat-label">total</span>
+              </div>
+              {!tauriAvailable && (
+                <div className="coord-stat">
+                  <span className="coord-stat-val" style={{ color: '#f59e0b' }}>mock</span>
+                  <span className="coord-stat-label">mode</span>
+                </div>
+              )}
+            </div>
 
-        <div className="chat-composer">
-          <div className="composer-input-wrap">
-            <textarea
-              ref={taRef}
-              className="composer-input"
-              placeholder={
-                tab === 'orchestration'
-                  ? 'Tell the orchestrator what to do…'
-                  : 'Ask Claude anything…'
-              }
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={handleKey}
-              rows={3}
-            />
-            <div className="composer-footer">
-              <span className="composer-hint">⌘↵ send</span>
-              <button className="composer-send">Send</button>
+            <div className="ticket-list">
+              {loading && <div className="ticket-loading">loading…</div>}
+              {liveTickets.length > 0 && (
+                <>
+                  <div className="ticket-section-label">live</div>
+                  {liveTickets.map(t => <TicketRow key={t.id} ticket={t} />)}
+                </>
+              )}
+              {doneTickets.length > 0 && (
+                <>
+                  <div className="ticket-section-label">complete</div>
+                  {doneTickets.slice(-5).map(t => <TicketRow key={t.id} ticket={t} />)}
+                </>
+              )}
+              {!loading && state?.tickets?.length === 0 && (
+                <div className="ticket-empty">no tickets — session is clean</div>
+              )}
             </div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="chat-messages">
+              {msgs.map(m => <Message key={m.id} msg={m} />)}
+            </div>
+            <div className="chat-composer">
+              <div className="composer-input-wrap">
+                <textarea
+                  ref={taRef}
+                  className="composer-input"
+                  placeholder="Ask Claude anything…"
+                  value={draft}
+                  onChange={e => setDraft(e.target.value)}
+                  onKeyDown={handleKey}
+                  rows={3}
+                />
+                <div className="composer-footer">
+                  <span className="composer-hint">cmd+enter send</span>
+                  <button className="composer-send">Send</button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </aside>
   )
