@@ -31,7 +31,7 @@ flowchart TB
     s7["auto-update<br/>auto_update · auto_update_helper · auto_update_ui"]
   end
 
-  subgraph DAEMON["DAEMON BACKEND · src/daemon/index.ts · unchanged · STAYS"]
+  subgraph DAEMON["DAEMON BACKEND · src/daemon/index.ts · hierarchy routing added · STAYS"]
     direction TB
     charmd["charmd<br/>RPC · ticket store · solver · approvals"]
     spawn["spawn.ts<br/>agent command builder"]
@@ -41,9 +41,9 @@ flowchart TB
   subgraph BRIDGE["THE BRIDGE · Phase 1 · single seam · daemon to Zed"]
     direction TB
     bridge{{"CharmBridge<br/>socket client · 1500ms poll"}}
-    state["CharmState<br/>tickets · agents · gates · coord"]
+    state["CharmState<br/>tickets · agents (parent_id · worktree)<br/>sub_orchestrators · gates · coord"]
     injsock["inject_text listener<br/>receives ping · continue · set_mode"]
-    handlemap["agent_id -> TerminalView map"]
+    handlemap["agent_id -> Entity&lt;Terminal&gt; map"]
   end
 
   subgraph NATIVE["ZED NATIVE · kept as-is · zero new code"]
