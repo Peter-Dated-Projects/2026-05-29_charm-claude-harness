@@ -153,42 +153,47 @@ dedicated sub-section if the agents pane gains grouping in a later phase).
 ## Spawning an agent terminal
 
 When the daemon fires `spawnAgentLocked` (relayed to the bridge), open a new
-terminal in the agents pane. **Two candidate APIs exist in the source materials
-and must be settled by prototype (open question #1):**
+terminal in the agents pane. **[VERIFIED against pinned Zed 1.95.0 source]** The
+plan's earlier candidates (`terminal_panel.spawn_task(&SpawnInTerminal)` and
+`project.create_terminal(TerminalKind::Shell(..))`) do NOT exist at this version.
+The confirmed entry point is:
 
-- **`terminal_panel.spawn_task(&SpawnInTerminal { command, args, env, cwd, ... })`**
-  — T-027 and T-028 both name this as the right entry point: it takes a command
-  + args + env + cwd directly and creates the terminal view in the panel. This
-  is the higher-level call and is the **preferred candidate**.
-- **`project.create_terminal(TerminalKind::Shell(Some(cwd)), window, cx)`** —
-  the lower-level call. Creates a `Terminal` entity; you then wrap it in a
-  `TerminalView` and add it to the pane yourself, and must set the command
-  separately. Use only if `spawn_task` cannot carry the full env block.
+- **`Project::create_terminal_task(spawn_task: SpawnInTerminal, cx) -> Task<Result<Entity<Terminal>>>`**
+  (crates/project/src/terminals.rs) — carries a full command spec (command,
+  args, env, cwd, shell) and returns the `Entity<Terminal>` directly. This
+  resolves the old sub-question: the returned handle IS suitable for
+  `terminal.paste()`/`input()` injection and is exactly what the bridge
+  registers in its `agent_id -> Entity<Terminal>` map.
+- (`Project::create_terminal_shell(cwd, cx)` is the default-shell-only variant —
+  not used by charm, which always spawns the `claude` command.)
 
-Sketch using the preferred candidate:
+`SpawnInTerminal` lives in crates/task/src/task.rs and derives `Default`;
+`command` is `Option<String>`, `args: Vec<String>`, `env: HashMap<String,String>`,
+`cwd: Option<PathBuf>`, with label/strategy fields covered by
+`..Default::default()`.
+
+Sketch:
 
 ```rust
-workspace.update(cx, |ws, window, cx| {
-    let spec = SpawnInTerminal {
-        command: "claude".into(),
-        args: claude_args,          // --session-id ... --mcp-config ... --append-system-prompt ...
-        env: charm_env,             // CHARM_AGENT_ID, CHARM_SOCKET, ...
-        cwd: Some(PathBuf::from(cwd)),
-        ..Default::default()
-    };
-    let terminal = terminal_panel.update(cx, |panel, cx| {
-        panel.spawn_task(&spec, window, cx)
-    });
-    ws.add_item_to_pane(&agents_pane, Box::new(terminal_view), None, true, window, cx);
+let spec = SpawnInTerminal {
+    command: Some("claude".into()),
+    args: claude_args,          // --session-id ... --mcp-config ... --append-system-prompt ...
+    env: charm_env,             // CHARM_AGENT_ID, CHARM_SOCKET, ...
+    cwd: Some(PathBuf::from(cwd)),
+    ..Default::default()
+};
+let terminal: Entity<Terminal> = project
+    .update(cx, |p, cx| p.create_terminal_task(spec, cx))
+    .await?;
 
-    // Register the handle so the bridge can inject text later:
-    bridge.register_terminal(agent_id, terminal);
-});
+// create_terminal_task returns the Terminal entity but does NOT place it in a
+// pane; wrap it in a TerminalView and add it to the agents pane:
+let terminal_view = cx.new(|cx| TerminalView::new(terminal.clone(), ..., window, cx));
+ws.add_item_to_pane(&agents_pane, Box::new(terminal_view), None, true, window, cx);
+
+// Register the handle so the bridge can inject text later:
+bridge.register_terminal(agent_id, terminal);
 ```
-
-The exact field names on `SpawnInTerminal` and whether `spawn_task` returns a
-handle suitable for `terminal.input()` injection are what the prototype must
-confirm.
 
 The command string itself is unchanged from `spawn.ts`:
 
@@ -202,30 +207,37 @@ exec claude --session-id <uuid> --model <m> --permission-mode auto \
 Only *where* it runs changes (a Zed terminal tab instead of a tmux pane). The
 env vars, flags, and system-prompt assembly all stay.
 
-**Open question #1:** the exact `create_terminal` / `TerminalKind` /
-`TerminalBuilder` signature for passing a custom command (not the default
-shell) plus env vars and cwd. Confirmed to exist from T-027/T-028 source
-analysis; needs a prototype to nail the call.
+**Open question #1: RESOLVED.** The call is
+`Project::create_terminal_task(SpawnInTerminal { command, args, env, cwd, .. }, cx)`
+returning `Task<Result<Entity<Terminal>>>` (verified against pinned Zed source).
+The `TerminalKind` / `TerminalBuilder` framing in earlier drafts was wrong for
+this version.
 
 ---
 
 ## Text injection (pingOrchestrator, continue_agent)
 
-The bridge holds `agent_id -> Entity<Terminal>`. On an inject request:
+The bridge holds `agent_id -> Entity<Terminal>`. On an inject request, use
+`Terminal::paste`, NOT raw `input`:
 
 ```rust
 terminal_entity.update(cx, |terminal, cx| {
-    terminal.input(text.into_bytes());
+    terminal.paste(&text);
 });
 ```
 
-`Terminal::input` writes to the PTY master fd — the channel tmux's
-`paste-buffer -p` + `send-keys Enter` ultimately reaches.
+**[VERIFIED against pinned Zed source]** `Terminal::paste(&str)` already does the
+bracketed-paste handling the old tmux path needed: when the terminal is in
+`Modes::BRACKETED_PASTE` it wraps the text in `\x1b[200~ .. \x1b[201~`; otherwise
+it converts `\n`/`\r\n` to `\r`. `Terminal::input(bytes)` is the RAW path (writes
+straight to the PTY with no newline handling) and should NOT be used for
+multi-line agent messages -- it is the bug the old `send-keys -l` split caused.
 
-**Unvalidated (open question + T-028 Risk 1):** do NOT assume bare `input()`
-handles multi-line correctly. The tmux path needed bracketed paste because
-`send-keys -l` split multi-line messages. Prototype multi-line injection against
-a real claude REPL; if newlines submit early, wrap bytes in `ESC[200~ … ESC[201~`.
+Original open question + T-028 Risk 1 (do newlines submit early?) is therefore
+answered by an existing API rather than a hand-rolled escape wrap. One residual
+runtime check (needs the full editor build): confirm claude's REPL enables
+`TermMode::BRACKETED_PASTE` so the wrapping branch is taken. `paste()` degrades
+safely either way.
 
 ### Idle-gated delivery for the orchestrator target
 

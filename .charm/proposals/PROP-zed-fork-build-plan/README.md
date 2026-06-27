@@ -170,24 +170,24 @@ bulk of the new model.
 
 ## Cross-cutting open questions
 
-These span multiple phases and need a prototype to resolve before committing to
-the detailed builds.
+These spanned multiple phases. All three de-risk spikes have now been RUN against
+a real Zed checkout -- full results in `.charm/kb/zed-spike-results.md`.
 
-1. **`project.create_terminal()` signature** — T-028 confirmed the API shape
-   from Zed source analysis, but the exact call for specifying a command
-   (rather than the default shell) needs a prototype. `TerminalKind` and
-   `TerminalBuilder` are the entry points. (Affects Phase 4.)
+1. **`project.create_terminal()` signature** — **RESOLVED.** No
+   `create_terminal` at the pinned version; the call is
+   `Project::create_terminal_task(SpawnInTerminal, cx) -> Task<Result<Entity<Terminal>>>`.
+   `TerminalKind`/`TerminalBuilder` framing was wrong. (See Phase 4.)
 
-2. **`inject_text` push flow** — the daemon pushes text into PTYs today. In the
-   fork, the bridge must receive an inject notification and call
-   `terminal.input()`. The exact daemon-to-bridge push mechanism (second listen
-   socket vs. socket-protocol push extension vs. handle-keyed action routing)
-   needs a prototype. (Affects Phases 1 and 4.)
+2. **`inject_text` push flow** — **PARTIALLY RESOLVED.** The terminal-side call
+   is `Terminal::paste(&str)` (NOT raw `input()`); it already does the
+   bracketed-paste wrapping the tmux path needed. The daemon-to-bridge push
+   mechanism (which transport carries the notification) is still a Phase 1
+   design choice; the terminal API it lands on is settled. (Affects Phases 1, 4.)
 
-3. **Canvas performance at 15+ agents** — 60fps drawing of agent circles +
-   edges + traveling dots via GPUI primitives is expected to be within budget,
-   but unbenchmarked. A 10-minute mock-node prototype is the right risk
-   mitigation. (Affects Phase 3.)
+3. **Canvas performance at 15+ agents** — **RESOLVED. PASS.** A charm-realistic
+   scene (16 cards + 15 connectors + 15 animated dots) ran at ~118fps avg in an
+   unoptimized debug build, 0.7% of frames over the 60fps budget, not
+   vsync-capped. Comfortable headroom; release is faster. (Affects Phase 3.)
 
 ---
 
