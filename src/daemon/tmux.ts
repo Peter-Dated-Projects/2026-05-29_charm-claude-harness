@@ -78,6 +78,16 @@ export class Tmux {
   }
 
   /**
+   * Install a session-level tmux hook that runs `cmd` whenever `hook` fires
+   * (e.g. "client-resized"). Used to keep the layout — and the sidebar's
+   * max-width clamp — in sync when the terminal is resized, since the daemon's
+   * relayout otherwise only runs on fleet-grid mutations (spawn/kill/register).
+   */
+  setHook(hook: string, cmd: string): void {
+    spawnSync("tmux", ["set-hook", "-t", this.session, hook, `run-shell '${cmd.replace(/'/g, `'\\''`)}'`]);
+  }
+
+  /**
    * Bind `:` (no prefix) at the session level so any pane — console or agent —
    * pops a tmux command-prompt that runs `cmdTemplate` with the typed text
    * substituted for `%%%`. The substitution happens via tmux's own `%1` token.

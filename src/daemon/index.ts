@@ -329,6 +329,13 @@ async function main() {
     return run;
   }
 
+  // The last layout string we applied, used to break the window-layout-changed
+  // feedback loop: applying a layout fires that hook, which calls relayout again
+  // -- if the recomputed layout is identical (steady state), we skip the apply so
+  // tmux stops re-firing. Spawn/kill/register always change the string (pane set
+  // differs), so those still apply. Reset to null to force the next apply.
+  let lastAppliedLayout: string | null = null;
+
   // The actual relayout work, assuming the caller already holds the layout lock.
   async function relayoutLocked() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
@@ -346,16 +353,19 @@ async function main() {
       }
       if (agentIdxs.length === 0) return;
       // Preserve whatever width the console column currently has -- the user
-      // may have dragged the divider. Fall back to a 35% share only on the
-      // first layout, when the pane hasn't been sized yet. Floored at 40 cols
-      // so the Ink TUI stays readable, and capped at MAX_CONSOLE_WIDTH (also
-      // never wider than the window minus 20) so the agent grid keeps room.
-      const MAX_CONSOLE_WIDTH = 100;
+      // may have dragged the divider, narrower or wider. No minimum: the user
+      // can shrink it freely. The only constraints are MAX_CONSOLE_WIDTH (the
+      // cap the user asked for) and never wider than the window minus 20 so the
+      // agent grid keeps room. Fall back to a 35% share only on the first
+      // layout, when the pane hasn't been sized yet.
+      // The cap is what stops a divider-drag from widening the sidebar past
+      // MAX_CONSOLE_WIDTH: the window-layout-changed hook re-runs this, the drag
+      // shows up as a larger `cur`, and Math.min clamps it back down.
+      const MAX_CONSOLE_WIDTH = 50;
       const cur = await tmux.paneWidth(consolePaneId);
-      const consoleWidth = Math.min(
-        MAX_CONSOLE_WIDTH,
-        Math.max(20, win.w - 20),
-        Math.max(40, cur ?? Math.floor(win.w * 0.35)),
+      const consoleWidth = Math.max(
+        1,
+        Math.min(MAX_CONSOLE_WIDTH, win.w - 20, cur ?? Math.floor(win.w * 0.35)),
       );
       const layout = buildLayoutString({
         windowWidth: win.w,
@@ -365,7 +375,11 @@ async function main() {
         consoleWidth,
         agentPaneWidths: agentWidths,
       });
+      // Skip the apply when nothing changed (steady state after a snap-back), so
+      // our own select-layout doesn't re-trigger window-layout-changed forever.
+      if (layout === lastAppliedLayout) return;
       await tmux.applyLayout(WINDOW, layout);
+      lastAppliedLayout = layout;
     } catch (e) {
       console.error("[charmd] relayout failed:", e);
     }
@@ -836,6 +850,17 @@ async function main() {
         // state changes.
         orchestratorPaneId = agent_pane_ids[0] ?? null;
         refreshCoordination();
+        await relayout();
+        return { ok: true };
+      }
+      case "relayout": {
+        // Fired by the session's `client-resized` tmux hook (see cli.ts start):
+        // recompute the grid so the sidebar's max-width clamp is re-applied when
+        // the terminal is resized, not just on spawn/kill. Safe to call any time;
+        // it's a no-op when no agent panes are registered yet. This routes through
+        // `client-resized` (terminal size change) — NOT `window-layout-changed` —
+        // precisely because relayout calls select-layout, which would re-fire a
+        // layout hook and loop; resizing the client is not self-induced.
         await relayout();
         return { ok: true };
       }

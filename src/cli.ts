@@ -250,6 +250,18 @@ program
       `--socket "#{@charm_socket}" --session "#{session_name}" %1`;
     tmux.bindCommandPrompt(ctlTemplate);
 
+    // Re-clamp the layout whenever the terminal is resized OR the user drags a
+    // pane divider. The daemon's relayout (which enforces the sidebar's
+    // max-width) otherwise only runs on fleet-grid mutations, so dragging the
+    // console divider past the cap would stick until the next spawn.
+    // `window-layout-changed` catches divider drags; `client-resized` catches
+    // terminal resizes. The daemon skips re-applying an unchanged layout, so the
+    // select-layout it issues can't feed window-layout-changed back into a loop.
+    // Same `#{@charm_socket}` token as the `:` binding: resolves per-session.
+    const relayoutCmd = `${selfArgv.map(shellQuote).join(" ")} ctl relayout --socket "#{@charm_socket}"`;
+    tmux.setHook("window-layout-changed", relayoutCmd);
+    tmux.setHook("client-resized", relayoutCmd);
+
     // Focus the main agent pane so keystrokes go to Claude, not the console.
     tmux.selectPane(`${session}:charm.1`);
 
@@ -725,6 +737,15 @@ program
         catch { /* daemon gone — fall through */ }
       }
       spawn("tmux", ["display-message", `charm: cannot spawn suborchestrator (no daemon)`], { stdio: "ignore" });
+      return;
+    }
+    // Recompute the layout: fired by the session's `client-resized` tmux hook so
+    // the sidebar's max-width clamp re-applies on terminal resize, not just on
+    // spawn/kill. Fail silently if the daemon's gone — a resize must never error.
+    if (c === "relayout") {
+      if (socket) {
+        try { await rpcCall(socket, "relayout"); } catch { /* daemon gone — nothing to relayout */ }
+      }
       return;
     }
     // Unknown: surface in tmux status line briefly.
