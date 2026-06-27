@@ -354,7 +354,7 @@ async function main() {
       // The cap is what stops a divider-drag from widening the sidebar past
       // MAX_CONSOLE_WIDTH: the window-layout-changed hook re-runs this, the drag
       // shows up as a larger `cur`, and Math.min clamps it back down.
-      const MAX_CONSOLE_WIDTH = 50;
+      const MAX_CONSOLE_WIDTH = 25;
       const cur = await tmux.paneWidth(consolePaneId);
       const consoleWidth = Math.max(
         1,
