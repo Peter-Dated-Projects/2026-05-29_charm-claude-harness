@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "
 import { join, dirname, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
-import { charmPaths, defaultSessionName } from "../paths.ts";
+import { charmPaths, defaultSessionName, worktreePathFor, assertPlainName } from "../paths.ts";
 import { TicketStore } from "../store/tickets.ts";
 import { AgentRegistry, holdsTicketClaim, occupiesLiveSlot } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
@@ -382,7 +382,7 @@ async function main() {
   // pre-claim view and double-spawn onto the same file (BUG: spawn-race
   // double-spawn). Must NOT take the lock itself — the mutex is a non-reentrant
   // promise chain, so re-entering it from within a held section would deadlock.
-  async function spawnAgentLocked(spec: SpawnSpec): Promise<string> {
+  async function spawnAgentLocked(spec: SpawnSpec, parentId: string | null = null): Promise<string> {
     // Hard cap guard — the single chokepoint every spawn path flows through, so
     // no caller can exceed the ceiling even if a batch clamp is wrong. Batch
     // spawners pre-clamp to remainingAgentSlots() and never reach this throw;
@@ -399,7 +399,11 @@ async function main() {
     // `claude --session-id` AND records it on the registry entry — the two must
     // match for a later `claude --resume`/`--continue` to land on this session.
     const claudeSessionId = newClaudeSessionId();
-    const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id, claude_session_id: claudeSessionId });
+    // parentId is the authorizing caller_id (the spawning orchestrator), recorded
+    // on the child so the status RPC can derive the agent hierarchy. Passed as a
+    // separate arg rather than on SpawnSpec to keep the spec type (in spawn.ts)
+    // untouched.
+    const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id, parent_id: parentId, claude_session_id: claudeSessionId });
     try {
       const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role), claudeSessionId };
       const cmd = buildClaudeCommand(paths, agent.id, resolved);
@@ -452,8 +456,29 @@ async function main() {
    *  spawners do NOT use this — they take the lock once around their whole
    *  solve+loop and call spawnAgentLocked directly, so the solve and every spawn
    *  in the batch share one critical section. */
-  function spawnAgent(spec: SpawnSpec): Promise<string> {
-    return withLayoutLock(() => spawnAgentLocked(spec));
+  function spawnAgent(spec: SpawnSpec, parentId: string | null = null): Promise<string> {
+    return withLayoutLock(() => spawnAgentLocked(spec, parentId));
+  }
+
+  /** Resolve an optional worktree NAME (from a spawn RPC) to the cwd an agent
+   *  should run in, or undefined for default shared-tree execution. The name is a
+   *  plain segment naming an already-open worktree under .charm/worktrees/; we
+   *  guard it with assertPlainName (same path-injection guard create_worktree
+   *  uses) and require the checkout to already exist, so a typo'd or never-opened
+   *  worktree fails loud here instead of spawning an agent into a missing dir.
+   *  Once resolved, spawnAgentLocked's existing cwd path trusts the dir and
+   *  records worktree_name via setWorktree — the field that is otherwise always
+   *  null because no caller passed a cwd before this. */
+  function resolveSpawnCwd(worktree: string | undefined): string | undefined {
+    if (!worktree) return undefined;
+    assertPlainName(worktree);
+    const dir = worktreePathFor(paths, worktree);
+    if (!existsSync(dir)) {
+      throw new Error(
+        `worktree "${worktree}" not found at ${dir} — open it with create_worktree before spawning into it`,
+      );
+    }
+    return dir;
   }
 
   /** Kill an agent's pane and drop it from the registry, coordination doc, and
@@ -680,12 +705,28 @@ async function main() {
     switch (method) {
       case "ping":
         return { ok: true, ts: Date.now() };
-      case "status":
+      case "status": {
+        const agents = registry.list();
+        // Derive the sub-orchestrator summary the orchestration canvas needs (one
+        // SubOrchestratorRecord per live suborchestrator): its id, the worktree it
+        // runs in, its lifecycle state, and how many agents it spawned. agent_count
+        // uses the parent_id edge now recorded at spawn time — children whose
+        // parent_id points back at this sub-orchestrator.
+        const sub_orchestrators = agents
+          .filter((a) => a.role === "suborchestrator")
+          .map((so) => ({
+            id: so.id,
+            worktree: so.worktree_name,
+            status: so.state,
+            agent_count: agents.filter((a) => a.parent_id === so.id).length,
+          }));
         return {
           tickets: store.list().map((t) => t.frontmatter),
-          agents: registry.list(),
+          agents,
           pending_approvals: approvals.pending(),
+          sub_orchestrators,
         };
+      }
       case "list_tickets": {
         // Query the sqlite index, optionally filtered to a set of statuses. This
         // is the agent-facing backlog view (exposed as the list_tickets MCP tool)
@@ -760,6 +801,11 @@ async function main() {
         // ceiling between our clamp and our first claim. (Investigators don't claim
         // file `touches`, so the touch-conflict race doesn't apply here; the cap
         // is the shared resource that must be serialized.)
+        // Resolve the optional worktree once for the whole batch (fails loud if it
+        // names a non-existent checkout). parent_id is the authorizing caller_id so
+        // the canvas can draw the orchestrator -> investigator edge.
+        const cwd = resolveSpawnCwd(input.worktree);
+        const parentId = input.caller_id ?? null;
         return withLayoutLock(async () => {
           // Clamp to the concurrent-agent cap, same as spawn_workers: spawn up to
           // the free slots and defer the rest for a later retry.
@@ -772,6 +818,7 @@ async function main() {
               role: "investigator",
               ticket_id: tid,
               prompt: `Read .charm/tickets/${tid}.md and investigate it.`,
+              cwd,
               // Interactive (like workers), NOT headless. An investigator that needs
               // a decision it can't make must be able to report_status('blocked')
               // and WAIT for the orchestrator to message guidance into its pane via
@@ -783,7 +830,7 @@ async function main() {
               // requires a terminal report_status('done') on completion, which marks
               // the ticket `complete`, pings the orchestrator, and lets it reap the pane.
               interactive: true,
-            }));
+            }, parentId));
           }
           if (deferred.length > 0) {
             console.error(
@@ -797,6 +844,10 @@ async function main() {
       case "spawn_workers": {
         const input = SpawnWorkersInput.parse(params);
         assertOrchestrator(input.caller_id, "spawn_workers");
+        // Resolve the optional batch worktree (fails loud on a missing checkout)
+        // and capture the authorizing caller as the parent of every worker spawned.
+        const workerCwd = resolveSpawnCwd(input.worktree);
+        const workerParentId = input.caller_id ?? null;
         // The whole read-solve-spawn runs under ONE layout-lock critical section.
         // Solving (inFlight + nextRunnable) and the spawn loop must share a lock so
         // a concurrent spawn_workers / request_review can't slip between this
@@ -837,8 +888,9 @@ async function main() {
               role: "worker",
               ticket_id: tid,
               prompt: `Read .charm/tickets/${tid}.md and complete it.`,
+              cwd: workerCwd,
               interactive: true,
-            }));
+            }, workerParentId));
             store.update(tid, { status: "running", stage: "in_progress" });
           }
           // Deferred = not-yet-runnable (deps/touches) PLUS the ones clamped by the
@@ -1291,7 +1343,11 @@ async function main() {
         // the fleet, author tickets, and spawn workers on the operator's behalf
         // while the main orchestrator continues its own work.
         const claudeSessionId = newClaudeSessionId();
-        const agent = registry.create({ role: "suborchestrator", ticket_id: null, claude_session_id: claudeSessionId });
+        // Record the authorizing caller as the parent. Normally the operator
+        // (`:so` tmux command, no caller_id -> null); a main-orchestrator caller
+        // would pass its id and become the parent edge.
+        const soParentId = (params as { caller_id?: string } | undefined)?.caller_id ?? null;
+        const agent = registry.create({ role: "suborchestrator", ticket_id: null, parent_id: soParentId, claude_session_id: claudeSessionId });
         const model = defaultModelForRole("suborchestrator");
         const cmd = buildClaudeCommand(paths, agent.id, {
           role: "suborchestrator",
@@ -1316,6 +1372,7 @@ async function main() {
           role: "tester",
           ticket_id: input.ticket_id,
           prompt: `Read .charm/tickets/${input.ticket_id}.md and validate it.`,
+          cwd: resolveSpawnCwd(input.worktree),
           // Interactive, same as investigators (and workers): a tester that can't run
           // the validation — unclear acceptance criteria, the diff doesn't match the
           // ticket, a broken environment — must report_status('blocked') and WAIT
@@ -1324,7 +1381,7 @@ async function main() {
           // investigators, the prompt requires a terminal report_status('done'/'failed')
           // so the orchestrator is pinged and reaps the otherwise-idle pane.
           interactive: true,
-        });
+        }, input.caller_id ?? null);
         return { agent_id: id };
       }
       default:

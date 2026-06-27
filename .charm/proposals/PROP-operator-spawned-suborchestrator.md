@@ -4,7 +4,15 @@ status: draft
 
 # PROP-operator-spawned-suborchestrator
 
-**Status:** draft
+**Status:** superseded-by: PROP-zed-fork-build-plan/orchestration-model.md
+
+> **Superseded (2026-06-26).** This proposal's live content (the agent role and
+> the tool-capability contract) has been absorbed into
+> [PROP-zed-fork-build-plan/orchestration-model.md](PROP-zed-fork-build-plan/orchestration-model.md),
+> which **redefines** `suborchestrator` as a per-worktree pipeline manager rather
+> than the operator-facing brainstorm lieutenant described below. The standalone
+> operator-lieutenant (`so-NNN`) is **dropped for v1** there. Kept here only as a
+> historical record; build from the orchestration-model doc instead.
 
 ---
 

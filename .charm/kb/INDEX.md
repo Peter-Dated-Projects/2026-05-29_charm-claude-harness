@@ -8,8 +8,8 @@ the KB. See `CONTRIBUTING.md` before adding or editing a note.
 | Root | Notes | What it holds |
 |---|---|---|
 | [architecture](architecture/_index.md) | 1 | How the system is built |
-| [decisions](decisions/_index.md)       | 8 | What we chose and why |
-| [conventions](conventions/_index.md)   | 1 | Repo patterns and idioms |
-| [gotchas](gotchas/_index.md)           | 4 | Traps and non-obvious constraints |
+| [decisions](decisions/_index.md)       | 13 | What we chose and why |
+| [conventions](conventions/_index.md)   | 3 | Repo patterns and idioms |
+| [gotchas](gotchas/_index.md)           | 22 | Traps and non-obvious constraints |
 | [domain](domain/_index.md)             | 1 | Glossary of project terms + research |
 | tracks/                                | — | Per-worktree scratchpad and track-specific notes (see CONTRIBUTING.md) |
