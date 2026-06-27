@@ -1427,33 +1427,57 @@ async function main() {
       }
       case "spawn_suborchestrator": {
         // Callable from the operator (`:so` / `:sub` / `:suborchestrator` tmux command) or
-        // the main orchestrator. Opens a dedicated tmux window (not a pane in the
-        // agent grid) so the operator can interact with it directly. The
-        // suborchestrator has orchestrator-level MCP permissions — it can observe
-        // the fleet, author tickets, and spawn workers on the operator's behalf
-        // while the main orchestrator continues its own work.
+        // the main orchestrator. The suborchestrator joins the agent grid as a new
+        // pane in the main charm window — NOT a separate tmux window — so it sits
+        // alongside the console and the other agents in the existing multi-pane
+        // layout instead of taking over the screen. It has orchestrator-level MCP
+        // permissions — it can observe the fleet, author tickets, and spawn workers
+        // on the operator's behalf while the main orchestrator continues its work.
         const claudeSessionId = newClaudeSessionId();
         // Record the authorizing caller as the parent. Normally the operator
         // (`:so`/`:sub` tmux command, no caller_id -> null); a main-orchestrator caller
         // would pass its id and become the parent edge.
         const soParentId = (params as { caller_id?: string } | undefined)?.caller_id ?? null;
-        const agent = registry.create({ role: "suborchestrator", ticket_id: null, parent_id: soParentId, claude_session_id: claudeSessionId });
-        const model = defaultModelForRole("suborchestrator");
-        const cmd = buildClaudeCommand(paths, agent.id, {
-          role: "suborchestrator",
-          ticket_id: null,
-          prompt: "",
-          interactive: true,
-          model,
-          claudeSessionId,
+        // Take the layout lock for the whole spawn: it mutates agentPaneIds and the
+        // window layout, the same shared state every other spawn touches, so it must
+        // not interleave with a concurrent spawn or relayout.
+        return withLayoutLock(async () => {
+          const agent = registry.create({ role: "suborchestrator", ticket_id: null, parent_id: soParentId, claude_session_id: claudeSessionId });
+          const model = defaultModelForRole("suborchestrator");
+          const cmd = buildClaudeCommand(paths, agent.id, {
+            role: "suborchestrator",
+            ticket_id: null,
+            prompt: "",
+            interactive: true,
+            model,
+            claudeSessionId,
+          });
+          try {
+            // Split into THIS session's main window, exactly like every sub-agent
+            // pane (see spawnAgentLocked), so the suborchestrator lands in the grid;
+            // pin the target to `${session}:${WINDOW}` for the same reason — the
+            // detached daemon must not let the split land in another session.
+            const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
+            registry.attach(agent.id, { pane_id: pane });
+            agentPaneIds.push(pane);
+            refreshCoordination();
+            await relayoutLocked();
+            // Focus the new pane so the operator can start directing it immediately.
+            tmux.selectPane(pane);
+            return { ok: true, agent_id: agent.id };
+          } catch (e) {
+            // Same rollback as spawnAgentLocked: drop the stranded pane + registry
+            // entry so a failed spawn doesn't hold a slot or leave a zombie pane.
+            const stranded = registry.get(agent.id);
+            if (stranded?.pane_id) {
+              try { await tmux.killPane(stranded.pane_id); } catch { /* best effort */ }
+              const i = agentPaneIds.indexOf(stranded.pane_id);
+              if (i >= 0) agentPaneIds.splice(i, 1);
+            }
+            registry.remove(agent.id);
+            throw e;
+          }
         });
-        const windowName = `so-${String(agent.id).replace("suborchestrator-", "")}`;
-        const pane = tmux.newWindow({ name: windowName, cmd, cwd: paths.root });
-        registry.attach(agent.id, { pane_id: pane });
-        refreshCoordination();
-        // Switch to the new window immediately so the operator can start directing it.
-        tmux.selectWindow(pane);
-        return { ok: true, agent_id: agent.id };
       }
       case "request_review": {
         const input = RequestReviewInput.parse(params);
