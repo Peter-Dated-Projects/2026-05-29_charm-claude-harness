@@ -190,31 +190,25 @@ export function resolveModel(input: string): string {
 /** Build the shell command that the tmux pane will run.
  *  CHARM_AGENT_ID is exported so the MCP shim can identify the agent. */
 export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: SpawnSpec): string {
-  // Resolve the role's system prompt. Every role but `main` loads a single
-  // `<role>.md`. The orchestrator (`main`) has no `main.md`: it runs the staged
-  // pipeline in one session, so its prompt IS the orchestrator frame followed by
-  // the planner (which carries the two stages it runs directly: kicking off
-  // investigation, then synthesizing findings into worker tickets), concatenated.
-  // orchestrator.md is the top-level frame — it states the full gated pipeline
-  // and the hard rule that no worker fan-out happens before the investigation
-  // findings are synthesized and the plan approved; without it the agent reads a
-  // standalone planner file and can skip straight to ticket fan-out. Assembling
-  // them here is what makes these files live — without this, `main.md` is missing
-  // and the orchestrator falls back to a useless one-line stub.
+  // Resolve the role's system prompt: every role loads a single `<role>.md`. The
+  // orchestrator (`main`) has no `main.md` — its file is `orchestrator.md`, the
+  // complete orchestrator prompt: the top-level gated-pipeline frame (including the
+  // hard rule that no worker fan-out happens before the investigation findings are
+  // synthesized and the plan approved) AND the detail for the two stages it runs
+  // directly (kicking off investigation, then synthesizing findings into worker
+  // tickets) plus fleet management. (It used to be assembled from orchestrator.md +
+  // planner.md; those were merged into one file.) Missing file -> a one-line stub.
   let rolePrompt: string;
   if (spec.plain) {
     rolePrompt = "";
-  } else if (spec.role === "main") {
-    const stages = ["orchestrator.md", "planner.md"]
-      .map((f) => join(paths.promptsDir, f))
-      .filter((p) => existsSync(p))
-      .map((p) => readFileSync(p, "utf8").trim());
-    rolePrompt = stages.length
-      ? stages.join("\n\n---\n\n")
-      : "You are the orchestrator (main agent) running the charm investigate -> plan -> fan-out workflow.";
   } else {
-    const promptFile = join(paths.promptsDir, `${spec.role}.md`);
-    rolePrompt = existsSync(promptFile) ? readFileSync(promptFile, "utf8") : `You are a ${spec.role}.`;
+    const file = spec.role === "main" ? "orchestrator.md" : `${spec.role}.md`;
+    const promptFile = join(paths.promptsDir, file);
+    rolePrompt = existsSync(promptFile)
+      ? readFileSync(promptFile, "utf8").trim()
+      : spec.role === "main"
+        ? "You are the orchestrator (main agent) running the charm investigate -> plan -> fan-out workflow."
+        : `You are a ${spec.role}.`;
   }
   // The charm renders agent-produced markdown (COORDINATION.md, tickets/*.md)
   // inside an Ink TUI. Terminal emoji rendering inflates row

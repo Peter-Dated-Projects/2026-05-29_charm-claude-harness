@@ -24,6 +24,26 @@ workspace facts and guardrails every agent shares.
   accumulates — real work product. Only the `charm-reset-kb` skill replaces it,
   and only after explicit confirmation.
 
+## Agent lifecycle (auto-reap)
+
+Every sub-agent ends by reporting a terminal state with `report_status`. That
+report is what drives teardown, and the daemon — not the orchestrator — owns it:
+
+- **`done` / `failed` are auto-reaped.** A short grace after a sub-agent reports
+  `done` or `failed`, the daemon tears its pane down on its own (grace tunable via
+  `CHARM_AUTO_REAP_MS`; `0` disables). The orchestrator is still pinged so it can
+  advance the workflow, but it does **not** need to `kill_agent` a finished agent —
+  that's routine bookkeeping the daemon already does. `kill_agent` is reserved for
+  deliberate intervention: stopping an agent that is stuck, looping, or working on
+  the wrong thing.
+- **`blocked` is never auto-reaped.** That agent's process is alive, waiting on the
+  orchestrator's `continue_agent`.
+
+Two consequences: a sub-agent must **always** end with a terminal `report_status`
+(a pane that finishes silently lingers until the liveness sweep notices the dead
+process); and the orchestrator reacts to finish pings but leaves teardown of
+`done`/`failed` agents to the daemon.
+
 ## Operator skills
 
 When the user asks for one of these, read and follow that `SKILL.md` exactly —

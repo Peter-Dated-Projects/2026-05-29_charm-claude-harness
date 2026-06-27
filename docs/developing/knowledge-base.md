@@ -206,5 +206,5 @@ All three original follow-ups are shipped:
    first run, which appends `.charm/*` / `!.charm/kb/` to the project's `.gitignore`.
 2. **Scaffold `kb/` on `charm init`** — done. `scaffoldCharmDir()` in `src/cli.ts` copies the
    KB template on `charm init` and `charm start` (first run only; never clobbered on re-init).
-3. **Wire the read/write-back loop into prompts** — done. The planner, investigator, and worker
+3. **Wire the read/write-back loop into prompts** — done. The orchestrator, investigator, and worker
    prompts all reference `.charm/kb/INDEX.md` and specify when to read and write KB notes.

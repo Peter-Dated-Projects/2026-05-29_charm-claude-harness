@@ -1426,7 +1426,7 @@ async function main() {
         return { ok: true };
       }
       case "spawn_suborchestrator": {
-        // Callable from the operator (`:so` / `:suborchestrator` tmux command) or
+        // Callable from the operator (`:so` / `:sub` / `:suborchestrator` tmux command) or
         // the main orchestrator. Opens a dedicated tmux window (not a pane in the
         // agent grid) so the operator can interact with it directly. The
         // suborchestrator has orchestrator-level MCP permissions — it can observe
@@ -1434,7 +1434,7 @@ async function main() {
         // while the main orchestrator continues its own work.
         const claudeSessionId = newClaudeSessionId();
         // Record the authorizing caller as the parent. Normally the operator
-        // (`:so` tmux command, no caller_id -> null); a main-orchestrator caller
+        // (`:so`/`:sub` tmux command, no caller_id -> null); a main-orchestrator caller
         // would pass its id and become the parent edge.
         const soParentId = (params as { caller_id?: string } | undefined)?.caller_id ?? null;
         const agent = registry.create({ role: "suborchestrator", ticket_id: null, parent_id: soParentId, claude_session_id: claudeSessionId });

@@ -45,7 +45,7 @@ the skill.
 - **Finalizing the worker-ticket plan (Stage 2).** Run it as the last step before
   `await_approval(stage=2, ...)`, so the human sees the full dependency structure
   of what you just planned and can sanity-check it before approving the plan and
-  letting workers fan out. This is the required hand-off view — see the Planner prompt.
+  letting workers fan out. This is the required hand-off view — see the orchestrator prompt.
 - The user asks to "see the ticket tree" / "dependency tree" / "show the board" /
   "what depends on what".
 - You want to confirm the graph after re-parenting or adding tickets — a quick

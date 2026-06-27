@@ -718,7 +718,7 @@ program
     // tmux window that has orchestrator-level MCP permissions. Useful when the
     // operator wants to delegate sub-tasks, query the fleet, or run parallel work
     // while the main orchestrator continues. Opens the new window immediately.
-    const SO_ALIASES = new Set(["so", "suborchestrator"]);
+    const SO_ALIASES = new Set(["so", "sub", "suborchestrator"]);
     if (SO_ALIASES.has(c)) {
       if (socket) {
         try { await rpcCall(socket, "spawn_suborchestrator"); return; }

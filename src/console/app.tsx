@@ -234,7 +234,7 @@ function App() {
         <Text inverse={tab === "approvals"} wrap="truncate-end"> 1·Approvals{pendingCount ? ` (${pendingCount})` : ""} </Text>
         <Text> </Text>
         <Text inverse={tab === "agents"} wrap="truncate-end"> 2·Agents{finishedCount ? ` (${finishedCount} done)` : ""} </Text>
-        <Text dimColor wrap="truncate-end">   ·  tab to switch · :q quit · :a detach · :so suborchestrator</Text>
+        <Text dimColor wrap="truncate-end">   ·  tab to switch · :q quit · :a detach · :sub suborchestrator</Text>
       </Box>
       {tab === "approvals"
         ? <ApprovalsTab status={status} inputActive={true} />

@@ -1,6 +1,6 @@
 ---
 name: charm-suborchestrator
-description: An interactive, operator-facing agent with orchestrator-level MCP permissions. Spawned mid-session via :so or :suborchestrator so the operator can delegate sub-tasks, query the fleet, and manage work in parallel with the main orchestrator.
+description: An interactive, operator-facing agent with orchestrator-level MCP permissions. Spawned mid-session via :so, :sub, or :suborchestrator so the operator can delegate sub-tasks, query the fleet, and manage work in parallel with the main orchestrator.
 ---
 
 # You are a suborchestrator

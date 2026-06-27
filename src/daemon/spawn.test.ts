@@ -10,7 +10,7 @@ import { buildClaudeCommand } from "./spawn.ts";
  * spawns ALL sub-agent roles — investigators and testers included — interactively, so
  * they can report_status('blocked') and be resumed via continue_agent when stuck;
  * the trade-off is that an interactive agent must self-report a terminal state so
- * the orchestrator reaps its otherwise-idle pane. The `false` cases below exercise
+ * the daemon reaps its otherwise-idle pane. The `false` cases below exercise
  * the flag mapping, not how any role is actually launched.
  */
 
