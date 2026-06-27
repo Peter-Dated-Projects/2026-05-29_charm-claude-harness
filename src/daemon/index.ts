@@ -485,6 +485,11 @@ async function main() {
    *  pane grid, then relayout. Shared by dismiss_agent (done/failed cleanup) and
    *  kill_agent (forced termination). No-op if the agent is already gone. */
   function tearDownAgent(agent_id: string): Promise<void> {
+    // Whoever tears this agent down first wins — a manual kill_agent,
+    // cancel_ticket, a terminal set_ticket_state, the liveness sweep, or the
+    // auto-reap timer itself. Cancel any pending auto-reap synchronously so it
+    // can't fire a second, redundant teardown after this one completes.
+    cancelAutoReap(agent_id);
     return withLayoutLock(async () => {
       const a = registry.get(agent_id);
       if (!a) return;
@@ -569,10 +574,82 @@ async function main() {
         // Keep it short — the full reap/resume/abandon protocol lives in the
         // orchestrator prompt; this is just the wake + what changed.
         const line =
-          `[charm] ${events.join("; ")}. Reap finished panes, resolve any blocks, and advance per your orchestrator instructions.`;
+          `[charm] ${events.join("; ")}. Resolve any blocks and advance per your orchestrator instructions.`;
         await tmux.sendText(orchestratorPaneId, line);
       } catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
     }, 1200);
+  }
+
+  // --- Auto-reap of finished agents ----------------------------------------
+  // A sub-agent that reports a terminal state (`done`/`failed`) leaves its pane
+  // standing: its interactive Claude process idles in the REPL until something
+  // tears it down. Historically that teardown was the orchestrator's job — it
+  // called kill_agent on every finished agent — which burns an orchestrator
+  // turn (and tokens) on pure bookkeeping that conveys no decision. So the
+  // daemon reaps finished agents itself, a short grace after they report. The
+  // orchestrator is STILL pinged (report_status pings on done/failed/blocked)
+  // so it can advance the workflow — spawn the next wave, synthesize findings,
+  // resolve blocks — it just no longer has to do the reaping.
+  //
+  // The grace period is deliberate: it lets the agent's process flush any final
+  // writes and exit, and is well inside the window the manual reap already
+  // operated in (the orchestrator could take many seconds to get around to a
+  // kill_agent). Teardown still goes through tearDownAgent, which takes the
+  // layout lock and releases the touches-claim only at registry.remove() — so
+  // this changes nothing about the spawn-race claim discipline.
+  //
+  // `blocked` is NOT auto-reaped: that agent's process is alive and waiting for
+  // the orchestrator's continue_agent. Set CHARM_AUTO_REAP_MS to tune the grace
+  // (0 disables auto-reap entirely, restoring the manual-kill-only behavior).
+  const AUTO_REAP_MS = (() => {
+    const raw = Number(process.env.CHARM_AUTO_REAP_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 5_000;
+  })();
+  const autoReapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function scheduleAutoReap(agentId: string): void {
+    if (AUTO_REAP_MS === 0) return; // auto-reap disabled
+    if (autoReapTimers.has(agentId)) return; // already armed — first report wins
+    const timer = setTimeout(() => {
+      autoReapTimers.delete(agentId);
+      const a = registry.get(agentId);
+      // Reap only if it's still present AND still finished. done/failed are
+      // terminal so a flip back shouldn't happen, but guard anyway so we never
+      // tear down an agent that somehow re-entered a live state.
+      if (!a || (a.state !== "done" && a.state !== "failed")) return;
+      // A done worker holds its `touches`-claim until teardown (holdsTicketClaim
+      // is released only at registry.remove, NOT at report_status). So its
+      // teardown here is what opens the dependency frontier for any ticket whose
+      // files overlap it — and a dependent wave the orchestrator tried to spawn
+      // during the grace would have been deferred. Re-ping AFTER teardown so it
+      // retries that frontier. Only a `done` worker can open a frontier this way:
+      // a `failed` worker's ticket isn't `complete`, so its dependents stay
+      // blocked regardless; investigators/testers hold no claim.
+      const openedFrontier = a.role === "worker" && a.state === "done";
+      const ticketId = a.ticket_id;
+      console.error(
+        `[charmd] auto-reap: tearing down finished agent ${agentId} (${a.role}, ${a.state}) ` +
+          `after ${AUTO_REAP_MS}ms grace.`,
+      );
+      void tearDownAgent(agentId)
+        .then(() => {
+          if (openedFrontier) {
+            pingOrchestrator(
+              `${agentId} -> done${ticketId ? ` on ${ticketId}` : ""}. Its file claim is now released`,
+            );
+          }
+        })
+        .catch((e) => console.error(`[charmd] auto-reap teardown of ${agentId} failed:`, e));
+    }, AUTO_REAP_MS);
+    // A pending reap timer must not, by itself, keep the daemon's event loop
+    // alive across shutdown.
+    if (typeof timer.unref === "function") timer.unref();
+    autoReapTimers.set(agentId, timer);
+  }
+
+  function cancelAutoReap(agentId: string): void {
+    const t = autoReapTimers.get(agentId);
+    if (t) { clearTimeout(t); autoReapTimers.delete(agentId); }
   }
 
   // --- Dead-pane liveness sweep --------------------------------------------
@@ -951,9 +1028,11 @@ async function main() {
       case "close_worktree": {
         const input = CloseWorktreeInput.parse(params);
         assertOrchestrator(input.caller_id, "close_worktree");
-        // Mutates the worktree set -> layout lock. force:true so a dirty/locked
-        // tree can't wedge the close (charm does no merge-back; the branch keeps
-        // any committed work, deleted only when delete_branch is set).
+        // Mutates the worktree set -> layout lock. Removing a copy deletes its
+        // whole repo, so any committed-but-unmerged work on its branch goes with
+        // it (charm does no merge-back — merge deliberately before closing if you
+        // want to keep it). delete_branch additionally drops a leftover
+        // charm/<name> branch in the MAIN repo if the work was merged back.
         return withLayoutLock(async () => {
           worktrees.remove(input.name, { deleteBranch: input.delete_branch, force: true });
           return { closed: input.name };
@@ -1003,9 +1082,17 @@ async function main() {
         if (a.ticket_id) store.appendLog(a.ticket_id, { agent: a.id, kind: input.state, text: input.note });
         refreshCoordination();
         // Wake the orchestrator on a sub-agent's done/failed/blocked so it can
-        // reap the pane and advance. Never ping for the main agent itself.
+        // advance the workflow (spawn the next wave, synthesize, resolve a
+        // block). Never ping for the main agent itself.
         if (a.role !== "main" && (input.state === "done" || input.state === "failed" || input.state === "blocked")) {
-          pingOrchestrator(`${a.id} (${a.role}) -> ${input.state}${a.ticket_id ? ` on ${a.ticket_id}` : ""}`);
+          pingOrchestrator(`${a.id} -> ${input.state}${a.ticket_id ? ` on ${a.ticket_id}` : ""}`);
+        }
+        // Auto-reap a finished pane after a short grace, so the orchestrator
+        // never has to spend a turn on kill_agent for routine cleanup — the
+        // ping above is for advancing the workflow, not for reaping. `blocked`
+        // is excluded: that agent is alive and waiting for continue_agent.
+        if (a.role !== "main" && (input.state === "done" || input.state === "failed")) {
+          scheduleAutoReap(a.id);
         }
         return { ok: true };
       }
@@ -1390,22 +1477,24 @@ async function main() {
   });
 
   // Session-close git sync. On shutdown the daemon commits the durable charm
-  // surfaces (KB, proposals, tickets, scratchpad) so a session's work product
-  // travels with the repo instead of sitting dirty in the working tree forever.
+  // surfaces (KB, proposals, scratchpad) so a session's work product travels with
+  // the repo instead of sitting dirty in the working tree forever. Tickets are
+  // deliberately NOT committed — they're gitignored run state that churns on every
+  // spawn/status change and would flood the changelog.
   // Deliberately simple: one commit at close, when the daemon is the SOLE git
   // writer (agents are being reaped), which sidesteps index-lock contention on
   // the shared tree. Two safety properties matter:
-  //   - PATH-SCOPED: we `git add`/`git commit` only the four charm surfaces, so
-  //     this can never sweep an operator's or agent's unrelated staged/unstaged
-  //     work into the commit (the partial-commit discipline). This stays
-  //     path-scoped on purpose — it is NOT worktree-aware, so a worktree's branch
-  //     work can never be swept into the main worktree's session-close commit.
+  //   - PATH-SCOPED: we `git add`/`git commit` only the charm surfaces, so this
+  //     can never sweep an operator's or agent's unrelated staged/unstaged work
+  //     into the commit (the partial-commit discipline). This stays path-scoped
+  //     on purpose — it is NOT worktree-aware, so a worktree copy's branch work
+  //     can never be swept into the main checkout's session-close commit.
   //   - NON-FATAL: any git failure (not a repo, detached HEAD, hook rejection,
   //     a lingering lock) is logged and swallowed — it must never block shutdown.
   // Opt out with CHARM_NO_AUTOCOMMIT=1. Commits land on the active branch.
   const commitSessionArtifacts = () => {
     if (process.env.CHARM_NO_AUTOCOMMIT) return;
-    const surfaces = [paths.kbDir, paths.proposalsDir, paths.ticketsDir, paths.scratchpadDir]
+    const surfaces = [paths.kbDir, paths.proposalsDir, paths.scratchpadDir]
       .filter((d) => existsSync(d));
     if (surfaces.length === 0) return;
     const git = (args: string[]) =>
@@ -1423,7 +1512,7 @@ async function main() {
     // paths -> nothing changed this session, so skip the empty commit.
     if (git(["diff", "--cached", "--quiet", "--", ...surfaces]).status === 0) return;
     const label = paths.sessionId ? paths.sessionId.slice(0, 8) : session;
-    const msg = `charm session ${label}: sync KB, proposals, tickets, scratchpad`;
+    const msg = `charm session ${label}: sync KB, proposals, scratchpad`;
     // Pathspec on commit keeps it a partial commit: only the surfaces land, even
     // if the operator had other paths staged.
     const commit = git(["commit", "-m", msg, "--", ...surfaces]);
@@ -1436,6 +1525,10 @@ async function main() {
 
   const cleanup = (code = 0) => {
     if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+    // Drop any pending auto-reap timers so they can't fire into a torn-down
+    // daemon (they're unref'd, but clear them anyway for a clean shutdown).
+    for (const t of autoReapTimers.values()) clearTimeout(t);
+    autoReapTimers.clear();
     try { commitSessionArtifacts(); } catch (e) {
       console.error(`[charmd] session-close commit threw: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1444,17 +1537,21 @@ async function main() {
     // linger as orphans (covers SIGINT/SIGTERM, the shutdown RPC, and crashes).
     try { killGraphViewers(paths.graphPids); } catch { /* ignore */ }
     // Worktree teardown safety-net. The orchestrator is supposed to close every
-    // worktree it opened (close_worktree) by session end; this catches the ones
-    // it didn't. Any LINKED worktree still present here (every list() entry but
-    // the main worktree at paths.root) is a leak — name them loudly so the operator
-    // knows what was swept, then prune to reclaim the dirs. Best-effort: a git
+    // worktree copy it opened (close_worktree) by session end; this catches the
+    // ones it didn't. We name any still-present copies loudly so the operator
+    // knows to reclaim them, then prune. NOTE: prune() reaps only corrupt/
+    // half-created orphans, NOT intact copies — worktreesDir is shared by every
+    // session in this repo, so an intact copy might belong to a co-resident
+    // session and must never be swept here. Leaked-but-intact copies are left for
+    // the operator (or a later explicit close_worktree). Best-effort: a git
     // failure must never block shutdown.
     try {
-      const linked = worktrees.list().filter((w) => w.path !== paths.root);
-      if (linked.length > 0) {
+      const leaked = worktrees.list();
+      if (leaked.length > 0) {
         console.error(
-          `[charmd] session shutdown: ${linked.length} worktree(s) left open by the orchestrator; pruning: ` +
-            linked.map((w) => w.path).join(", "),
+          `[charmd] session shutdown: ${leaked.length} worktree copy(ies) present; ` +
+            `intact ones are left for the operator (prune reaps only orphans): ` +
+            leaked.map((w) => w.path).join(", "),
         );
       }
       worktrees.prune();

@@ -86,10 +86,10 @@ export const Agent = z.object({
   // built without a parent (the orchestrator itself, an operator `:so`) still
   // parses, exactly like ticket_id/worktree_name.
   parent_id: z.string().nullable().default(null),
-  // The orchestrator-managed git worktree this agent is isolated in
+  // The orchestrator-managed worktree copy this agent is isolated in
   // (.charm/worktrees/<name>/), or null for the default shared-tree execution.
   // Nullable like ticket_id: most agents run in the shared tree, and the daemon
-  // sets the real value later via setWorktree once a worktree is opened.
+  // sets the real value later via setWorktree once a copy is opened.
   worktree_name: z.string().nullable(),
   pane_id: z.string().nullable(),
   pid: z.number().nullable(),
@@ -199,10 +199,11 @@ export const SpawnWorkersInput = z.object({
 export type SpawnWorkersInput = z.infer<typeof SpawnWorkersInput>;
 
 // Worktree management tools. A worktree is an orchestrator-managed side resource
-// (a parallel line of work on its own branch under .charm/worktrees/<name>/), so
-// every tool is caller-gated to the orchestrator like spawn_workers. `name` is a
-// plain segment (assertPlainName guards it daemon-side before it's joined into a
-// path). branch/base steer create(); delete_branch steers close().
+// (a parallel line of work in a completely separate repo COPY — its own clone
+// with its own .git — under .charm/worktrees/<name>/), so every tool is
+// caller-gated to the orchestrator like spawn_workers. `name` is a plain segment
+// (assertPlainName guards it daemon-side before it's joined into a path).
+// branch/base steer create(); delete_branch steers close().
 export const CreateWorktreeInput = z.object({
   caller_id: z.string().optional(),
   name: z.string(),
@@ -221,7 +222,8 @@ export type ListWorktreesInput = z.infer<typeof ListWorktreesInput>;
 export const CloseWorktreeInput = z.object({
   caller_id: z.string().optional(),
   name: z.string(),
-  // Also `git branch -D charm/<name>` after removing the worktree (best-effort).
+  // After deleting the copy, also `git branch -D charm/<name>` in the MAIN repo
+  // (best-effort) — for a branch that was already merged back.
   delete_branch: z.boolean().optional(),
 });
 export type CloseWorktreeInput = z.infer<typeof CloseWorktreeInput>;

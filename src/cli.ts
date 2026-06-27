@@ -536,18 +536,18 @@ program
 // race the daemon's worktree set. The CLI stays read-only.
 const worktreeCmd = program
   .command("worktree")
-  .description("inspect the git worktrees a charm session is managing (.charm/worktrees/<name>/)");
+  .description("inspect the worktree copies a charm session is managing (.charm/worktrees/<name>/)");
 
 worktreeCmd
   .command("list")
-  .description("list the orchestrator-managed git worktrees (asks a live daemon for the annotated view; falls back to `git worktree list` when no daemon is up)")
+  .description("list the orchestrator-managed worktree copies (asks a live daemon for the annotated view; falls back to scanning .charm/worktrees/ when no daemon is up)")
   .option("-r, --root <path>", "project root", process.cwd())
   .action(async (opts) => {
     const root = resolve(opts.root);
-    // Prefer a live daemon: its list_worktrees annotates each tree with the agent
-    // (if any) occupying it — richer than raw git. We don't resolveOneSession here
-    // (worktrees are project-wide, not per-session run-state), so just probe the
-    // newest live session's socket; absent one, fall back to reading git directly.
+    // Prefer a live daemon: its list_worktrees annotates each copy with the agent
+    // (if any) occupying it — richer than a bare dir scan. We don't resolveOneSession
+    // here (copies are project-wide, not per-session run-state), so just probe the
+    // newest live session's socket; absent one, fall back to scanning the dir.
     const live = listRunSessions(root).find((s) => s.alive);
     if (live) {
       try {
@@ -556,18 +556,26 @@ worktreeCmd
         return;
       } catch {
         // Daemon flagged alive but unreachable (mid-shutdown / stale pid) — drop to
-        // the git fallback rather than erroring; the question is read-only.
+        // the dir-scan fallback rather than erroring; the question is read-only.
       }
     }
-    // No daemon: shell `git worktree list` under the root, same no-daemon-required
-    // ethos as `tree`. Lists every worktree git knows about; charm's live under
-    // .charm/worktrees/.
-    const r = spawnSync("git", ["worktree", "list"], { cwd: root, encoding: "utf8" });
-    if (r.status !== 0) {
-      console.error(`[charm] git worktree list failed under ${root}: ${(r.stderr || r.error?.message || "").trim()}`);
-      process.exit(1);
+    // No daemon: scan .charm/worktrees/ directly, same no-daemon-required ethos as
+    // `tree`. Charm copies are standalone clones (not linked git worktrees), so we
+    // enumerate the subdirs and read each one's branch from its own .git. This
+    // mirrors WorktreeManager.list() without needing the daemon.
+    const worktreesDir = join(root, ".charm", "worktrees");
+    if (!existsSync(worktreesDir)) {
+      console.log("[]");
+      return;
     }
-    process.stdout.write(r.stdout);
+    const copies = readdirSync(worktreesDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(join(worktreesDir, e.name, ".git")))
+      .map((e) => {
+        const path = join(worktreesDir, e.name);
+        const b = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: path, encoding: "utf8" });
+        return { name: e.name, path, branch: b.status === 0 ? b.stdout.trim() : null };
+      });
+    console.log(JSON.stringify(copies, null, 2));
   });
 
 program

@@ -1,20 +1,21 @@
 node_modules/
 dist/
-# Charm run state is ephemeral and ignored, EXCEPT the durable surfaces that
-# must travel with the repo: the knowledge base, the proposal corpus, the
-# canonical tickets, and the orchestrator scratchpad. The daemon commits these
-# on session close, so they are git-tracked. `.charm/*` ignores the genuinely
-# ephemeral children (db.sqlite — a rebuilt index over the tickets — plus run/,
-# logs/, prompts/, skills/, and the per-session control-plane files); the `!`
-# lines re-include the durable ones. (Works only because `.charm/` itself is not
-# excluded.)
+# Charm run state is ephemeral and ignored, EXCEPT the durable, high-signal
+# surfaces that must travel with the repo: the knowledge base, the proposal
+# corpus, and the orchestrator scratchpad. The daemon commits these on session
+# close, so they are git-tracked. `.charm/*` ignores everything else — db.sqlite,
+# run/, logs/, prompts/, skills/, the per-session control-plane files, AND the
+# tickets: tickets/ churns on every spawn/status change and would flood the
+# changelog, while the KB/proposals/scratchpad are what's actually worth
+# versioning. The `!` lines re-include the durable ones. (Works only because
+# `.charm/` itself is not excluded.)
 .charm/*
 !.charm/kb/
 !.charm/proposals/
-!.charm/tickets/
 !.charm/scratchpad/
-# .charm/worktrees/ is ephemeral run state (ignored by .charm/.gitignore), but
-# that nested gitignore itself must travel with the repo, so re-include it.
+# .charm/worktrees/ holds standalone repo copies (one per parallel line of work)
+# — ephemeral run state, ignored by .charm/.gitignore. That nested gitignore
+# itself must travel with the repo, so re-include it.
 !.charm/.gitignore
 *.log
 .DS_Store
@@ -25,3 +26,6 @@ testing/
 
 # Local-only Rust port scratch; never tracked on main.
 rust/
+
+# charm: track durable .charm surfaces, ignore ephemeral run state
+!.charm/tickets/

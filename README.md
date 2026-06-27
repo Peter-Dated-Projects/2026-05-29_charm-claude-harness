@@ -54,9 +54,11 @@ All agents work on **one git tree** by default. Safety comes from two layers:
 2. **Soft layer** — every worker reads and writes a shared `.charm/COORDINATION.md` so it
    knows what other in-flight agents are doing and why, before it touches anything.
 
-Git worktrees are available as an optional orchestrator-side tool for non-overlapping
-parallel branches that need full isolation (e.g. separate feature branches or Graphite
-stacked PRs). The orchestrator manages them via `create_worktree` / `list_worktrees` /
+Worktrees are available as an optional orchestrator-side tool for parallel lines of work
+that need full isolation (e.g. separate feature branches or Graphite stacked PRs). Each is
+a completely separate copy of the repo (a clone with its own `.git`), so an agent's edits
+there — including to its own `.charm` and KB — never touch the main checkout; work is merged
+back deliberately. The orchestrator manages them via `create_worktree` / `list_worktrees` /
 `close_worktree`; they live under `.charm/worktrees/<name>/` and are not the default
 execution model. See [docs/operating/worktrees.md](docs/operating/worktrees.md).
 

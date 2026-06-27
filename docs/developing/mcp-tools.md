@@ -54,9 +54,11 @@ sub-agent calling them is rejected.
 
 ## Managing the fleet
 
+> **Finished agents are reaped automatically.** When a sub-agent reports `done` or `failed`, the daemon tears its pane down on its own after a short grace (default 5s; set `CHARM_AUTO_REAP_MS`, `0` disables). The orchestrator is still pinged so it can advance the workflow, but it does **not** need to `kill_agent` finished agents — that tool is for deliberate intervention (killing a stuck/looping/wrong agent), not routine cleanup. `blocked` agents are never auto-reaped (they're alive, waiting on `continue_agent`).
+
 | Tool | Caller | Effect |
 |---|---|---|
-| `kill_agent` | orchestrator (or self) | Terminate an agent: kill its tmux pane and drop it from the registry. A self-kill marks the ticket `failed`; the orchestrator/operator killing another marks it `cancelled`. The orchestrator can never be killed by anyone. |
+| `kill_agent` | orchestrator (or self) | Terminate an agent: kill its tmux pane and drop it from the registry. A self-kill marks the ticket `failed`; the orchestrator/operator killing another marks it `cancelled`. The orchestrator can never be killed by anyone. Finished (`done`/`failed`) agents are auto-reaped, so reserve this for live agents you want stopped. |
 | `continue_agent` | orchestrator | Resume a blocked sub-agent by sending it a `message` (your guidance / the unblock info) and flipping it back to running — instead of killing and respawning. |
 | `cancel_ticket` | orchestrator | Call off a ticket that is no longer wanted: marks it `cancelled`, drops it from the coordination board, and tears down any agent on it. Not a retry mechanism — use `kill_agent` for that. |
 
@@ -72,20 +74,23 @@ A lightweight design-doc surface under `.charm/proposals/`, separate from the ti
 
 ## Worktrees
 
-Worktrees let the orchestrator run parallel, non-overlapping lines of work on isolated git branches
-checked out under `.charm/worktrees/<name>/`. Each worktree is a fully independent checkout; agents
-spawned into one see only that branch, so their changes don't race with the shared tree. All three
-tools are orchestrator-only — the daemon rejects calls from investigators and workers.
+Worktrees let the orchestrator run parallel, non-overlapping lines of work in **completely separate
+copies of the repo** under `.charm/worktrees/<name>/`. Each copy is a full clone with its own `.git`,
+not a linked `git worktree` — an agent spawned into one sees only that copy (including its own
+`.charm` and KB), so nothing it does races with or touches the main checkout. The copy's `origin`
+points back at the main repo, so work is merged back deliberately. All three tools are
+orchestrator-only — the daemon rejects calls from investigators and workers.
 
-Use worktrees when two tickets touch the same files (scope conflict) or when you want to stack
-Graphite PRs in parallel. The default shared-tree model is simpler and covers most cases; reach for
-worktrees only when isolation or separate branches are genuinely needed.
+Use worktrees when two tickets touch the same files (scope conflict), when you want to stack
+Graphite PRs in parallel, or when a line of work must be sealed off from the main checkout entirely.
+The default shared-tree model is simpler and covers most cases; reach for a copy only when full
+isolation or separate branches are genuinely needed.
 
 | Tool | Caller | Effect |
 |---|---|---|
-| `create_worktree` | orchestrator | Creates an isolated git worktree under `.charm/worktrees/<name>/` on a new `charm/<name>` branch cut from HEAD (or a named `base`). Pass `branch` to check out an existing branch instead (e.g. for a Graphite-stack PR). Every opened worktree must be closed before session end. |
-| `list_worktrees` | orchestrator | Lists all open worktrees for this session — name, path, branch, and the live agent (if any) occupying each one. |
-| `close_worktree` | orchestrator | Closes and removes a worktree by `name`. Pass `delete_branch: true` to also drop the branch (charm does no merge-back, so any committed work on that branch is gone with it). Must be called when the work is merged or abandoned. |
+| `create_worktree` | orchestrator | Clones the repo into a standalone copy under `.charm/worktrees/<name>/` on a new `charm/<name>` branch cut from HEAD (or a named `base`), with `origin` pointing at the main repo. Pass `branch` to check out an existing branch instead (e.g. for a Graphite-stack PR). Carries the committed state (including the tracked `.charm/kb`, `proposals`, `scratchpad`) but not gitignored run state. Every opened copy must be closed before session end. |
+| `list_worktrees` | orchestrator | Lists all copies currently under `.charm/worktrees/` — name, path, branch, and the live agent (if any) occupying each one. |
+| `close_worktree` | orchestrator | Deletes a copy by `name`, removing its whole repo — any committed-but-unmerged work on its branch goes with it (merge first to keep it). Pass `delete_branch: true` to also drop a leftover `charm/<name>` branch in the main repo if the work was already merged back. Must be called when the work is merged or abandoned. |
 
 ## Viewers
 

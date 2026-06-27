@@ -79,12 +79,15 @@ export function charmPaths(root: string, sessionId?: string) {
     // into ticketsDir and indexes it, which is what makes it a real, spawnable
     // ticket. Drafts here are NOT indexed and never appear on the board.
     scratchpadDir: join(charmDir, "scratchpad"),
-    // Orchestrator-managed git worktrees, one subdir per parallel line of work
-    // (.charm/worktrees/<name>/), each a checkout of its own branch. This is a
-    // side resource, not part of the default shared-tree execution model: charm
-    // opens worktrees via MCP tools and must close them by session end, and the
-    // daemon owns the git plumbing + a prune safety-net. Gitignored (see
-    // .charm/.gitignore) — a worktree is ephemeral run state, never committed.
+    // Orchestrator-managed worktree copies, one subdir per parallel line of work
+    // (.charm/worktrees/<name>/). Each is a COMPLETELY SEPARATE clone of the repo
+    // (its own .git), not a linked `git worktree`, so an agent's edits there —
+    // including to its own .charm — never touch the main checkout; work is merged
+    // back deliberately and separately. This is a side resource, not part of the
+    // default shared-tree execution model: charm opens copies via MCP tools and
+    // must close them by session end, and the daemon owns the git plumbing + a
+    // prune safety-net. Gitignored (see .charm/.gitignore) — a copy is ephemeral
+    // run state, never committed.
     worktreesDir: join(charmDir, "worktrees"),
     // Design proposals / feature requests (PROP-*.md). list_proposals reads this;
     // finish_proposal moves an accepted/superseded file into proposals/finished/.
