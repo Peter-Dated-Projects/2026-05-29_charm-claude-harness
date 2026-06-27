@@ -78,6 +78,14 @@ export const Agent = z.object({
   id: z.string(),
   role: AgentRole,
   ticket_id: z.string().nullable(),
+  // The agent that authorized this agent's spawn (the spawning orchestrator's
+  // id), or null for the root orchestrator and operator-spawned agents. This is
+  // the hierarchy edge the Zed orchestration canvas draws the agent tree from:
+  // the registry records who spawned whom so sub_orchestrators (in the status
+  // RPC) can count each sub-orchestrator's children. Defaults to null so a record
+  // built without a parent (the orchestrator itself, an operator `:so`) still
+  // parses, exactly like ticket_id/worktree_name.
+  parent_id: z.string().nullable().default(null),
   // The orchestrator-managed git worktree this agent is isolated in
   // (.charm/worktrees/<name>/), or null for the default shared-tree execution.
   // Nullable like ticket_id: most agents run in the shared tree, and the daemon
@@ -170,12 +178,23 @@ export type FinishProposalInput = z.infer<typeof FinishProposalInput>;
 export const SpawnInvestigatorsInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
+  // Optional worktree to run the spawned agents in: the plain `name` of an
+  // already-open worktree (.charm/worktrees/<name>/). When set, the daemon
+  // resolves it to that checkout's cwd so the agent runs on its own branch and
+  // its registry `worktree_name` is populated (the field is otherwise always null
+  // because no spawn path passes a cwd today). Omit for default shared-tree
+  // execution. assertPlainName guards it daemon-side before it's joined to a path.
+  worktree: z.string().optional(),
 });
 export type SpawnInvestigatorsInput = z.infer<typeof SpawnInvestigatorsInput>;
 
 export const SpawnWorkersInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
+  // Optional worktree (plain name of an open .charm/worktrees/<name>/) to run the
+  // spawned workers in; see SpawnInvestigatorsInput.worktree. Applies to every
+  // worker in the batch.
+  worktree: z.string().optional(),
 });
 export type SpawnWorkersInput = z.infer<typeof SpawnWorkersInput>;
 
@@ -278,6 +297,10 @@ export type SetTicketStateInput = z.infer<typeof SetTicketStateInput>;
 export const RequestReviewInput = z.object({
   caller_id: z.string().optional(),
   ticket_id: z.string(),
+  // Optional worktree (plain name of an open .charm/worktrees/<name>/) to run the
+  // tester in; see SpawnInvestigatorsInput.worktree. A tester validating a worker
+  // that ran in a worktree needs the same checkout to see its commit.
+  worktree: z.string().optional(),
 });
 export type RequestReviewInput = z.infer<typeof RequestReviewInput>;
 
