@@ -348,9 +348,12 @@ async function main() {
       // Preserve whatever width the console column currently has -- the user
       // may have dragged the divider. Fall back to a 35% share only on the
       // first layout, when the pane hasn't been sized yet. Floored at 40 cols
-      // so the Ink TUI stays readable, and capped so the agent grid keeps room.
+      // so the Ink TUI stays readable, and capped at MAX_CONSOLE_WIDTH (also
+      // never wider than the window minus 20) so the agent grid keeps room.
+      const MAX_CONSOLE_WIDTH = 100;
       const cur = await tmux.paneWidth(consolePaneId);
       const consoleWidth = Math.min(
+        MAX_CONSOLE_WIDTH,
         Math.max(20, win.w - 20),
         Math.max(40, cur ?? Math.floor(win.w * 0.35)),
       );

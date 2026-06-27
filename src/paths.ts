@@ -120,6 +120,13 @@ export function charmPaths(root: string, sessionId?: string) {
     rootClaudeMd: join(root, "CLAUDE.md"),
     coordinationMd: join(charmDir, "COORDINATION.md"),
     mcpConfig: join(charmDir, "charm.json"),
+    // The single source of truth for what under .charm/ is tracked vs ignored. A
+    // committed, self-contained gitignore that ignores every child of .charm/
+    // EXCEPT the durable surfaces (kb, proposals, scratchpad, skills) and itself.
+    // Lives inside .charm/ so the rules travel with the directory and never touch
+    // the project's root .gitignore. Nested-gitignore precedence makes this
+    // authoritative over any root rule for paths under .charm/.
+    charmGitignore: join(charmDir, ".gitignore"),
     // ---- per-session control plane (under runDir), continued ----
     pidFile: join(runDir, "charmd.pid"),
     // This session's identity + description record. Written by `start`, enriched

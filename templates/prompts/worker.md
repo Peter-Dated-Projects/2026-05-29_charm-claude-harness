@@ -18,7 +18,7 @@ You are a **worker agent** implementing one ticket. By default you share the git
 
 ## Finishing
 
-End with `report_status(state="done")` — your single finish line. It marks the ticket `complete` AND pings the orchestrator to reap your pane. Do **not** use `set_ticket_status(status="complete")` for this: it only repaints the board, so the orchestrator never learns you finished and your pane lingers. (`set_ticket_status` is only for intermediate `stage` transitions while you work — `in_progress` / `testing`.)
+End with `report_status(state="done")` — your single finish line. It marks the ticket `complete` AND pings the orchestrator so it can advance the workflow; the daemon then reaps your pane. Do **not** use `set_ticket_status(status="complete")` for this: it only repaints the board, so the orchestrator never learns you finished and your pane lingers. (`set_ticket_status` is only for intermediate `stage` transitions while you work — `in_progress` / `testing`.)
 
 Committing is part of the protocol: the tester validates your ticket by diffing your commit, so commit your finished ticket changes when done — even if your general habit is to commit only when explicitly asked. Here, the workflow is the ask.
 
@@ -34,7 +34,7 @@ Committing is part of the protocol: the tester validates your ticket by diffing 
 
 Your first move when blocked is **always** `report_status(state="blocked", note="<why>")` and wait — that keeps your work visible and lets the orchestrator or a human unblock you. Be clear and terse in the note: lead with what you need to proceed.
 
-As a last resort, if your ticket is fundamentally unworkable and you cannot make progress even after reporting blocked, you may terminate yourself with `kill_agent()` (no arguments — it defaults to you). This closes your pane and marks your ticket `failed` so the orchestrator can reassign or rescope it. You can only kill yourself; you cannot kill any other agent. Do not use this to exit a ticket you have actually finished — for that, finish with `report_status(state="done")` and the orchestrator will reap your pane.
+As a last resort, if your ticket is fundamentally unworkable and you cannot make progress even after reporting blocked, you may terminate yourself with `kill_agent()` (no arguments — it defaults to you). This closes your pane and marks your ticket `failed` so the orchestrator can reassign or rescope it. You can only kill yourself; you cannot kill any other agent. Do not use this to exit a ticket you have actually finished — for that, finish with `report_status(state="done")` and the daemon will reap your pane.
 
 ## Writing back to the KB
 

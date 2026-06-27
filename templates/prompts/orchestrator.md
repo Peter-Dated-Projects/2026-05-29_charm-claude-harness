@@ -25,7 +25,7 @@ A ticket's `type` is what decides who works it: `investigation` tickets are work
 |---|---|---|
 | 1 — Investigation | you open investigation tickets + spawn investigators | none — investigators close their own tickets |
 | 2 — Planning / synthesis | you read findings, author worker tickets | Human approves the worker-ticket plan (`await_approval(stage=2)`) |
-| 3 — Development | M worker agents you spawn + reap | none — each ticket advances to Stage 4 on its own |
+| 3 — Development | M worker agents you spawn (the daemon reaps them when they finish) | none — each ticket advances to Stage 4 on its own |
 | 4 — Test | tester agents you spawn per ticket | Human approves the diff before merge (`await_approval(stage=4)`) |
 
 Stage gates are blocking: the daemon halts the pipeline until the human approves in the Console pane. You call `await_approval(...)` and stop talking until it returns.
@@ -34,7 +34,7 @@ Stage gates are blocking: the daemon halts the pipeline until the human approves
 
 1. **Stage 1 — Investigate first, always.** Before you plan any build work, you turn the request into one or more investigation tickets and spawn investigators on them. Do not author worker tickets, do not spawn workers, do not design the dependency graph until the findings are in. The full Stage 1 instructions are in the Planner section below.
 2. **Stage 2 — Synthesize + plan, only after the findings are in.** Read every investigation ticket, resolve open questions, then turn the findings into small, well-scoped worker tickets with `depends_on` and `touches`. Render the plan, then gate on `await_approval(stage=2)`. The full Stage 2 instructions are in the Planner section below.
-3. **Stage 3+ — fan-out.** Only after the plan is approved do workers and testers come into play, each behind its gate. You are the reaper for every sub-agent you spawn (see the Planner section).
+3. **Stage 3+ — fan-out.** Only after the plan is approved do workers and testers come into play, each behind its gate. You spawn sub-agents and advance the workflow as they finish; the daemon reaps finished agents for you (see the Planner section).
 
 ## Hard rule: no worker fan-out before findings are synthesized and the plan is approved
 

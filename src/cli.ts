@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { mkdirSync, writeFileSync, appendFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, cpSync, rmSync, openSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -63,12 +63,10 @@ program
     // the session it was pressed in.
     const sessionId = (opts.uuid as string | undefined) ?? randomUUID();
     const paths = charmPaths(root, sessionId);
-    // Detect a first run BEFORE scaffolding creates .charm/, so we know whether
-    // to offer the one-time .gitignore setup below.
-    const firstRun = !existsSync(paths.charmDir);
     // Reuse an existing .charm/ if present, otherwise scaffold a fresh one. (The
     // shared workspace under .charm/ is created here; the per-session run dir is
-    // created just below.)
+    // created just below.) Scaffolding also writes the self-contained
+    // .charm/.gitignore that governs what under .charm/ is tracked.
     scaffoldCharmDir(paths, { refresh: false });
     // Garbage-collect run dirs whose daemon is gone, so a crashed prior session
     // doesn't linger as a phantom in `stop`/`attach`'s session picker.
@@ -90,9 +88,6 @@ program
 
     const goal = (goalParts ?? []).join(" ").trim();
     const plain = goal.length === 0;
-
-    // On the very first run in this dir, offer to wire up .gitignore.
-    if (firstRun) await maybeConfigureGitignore(paths);
 
     // 0. Resolve the charm mode. Mode is the DEFAULT model selector and the
     // orchestrator's behavioral framing — research defaults the fleet to Sonnet,
@@ -885,38 +880,6 @@ function writeSessionMeta(
   writeFileSync(paths.metaJson, JSON.stringify(meta, null, 2) + "\n");
 }
 
-/** On the first `start` in a directory, offer to add charm's run-state ignore
- *  rules to the project's .gitignore. The rules ignore the ephemeral run state
- *  (socket, db, tickets, logs, the resolved session name, …) while keeping the
- *  durable, git-tracked knowledge base at .charm/kb/. Opt-in and skipped silently
- *  when stdin isn't a TTY, when a .charm rule already exists, or when declined. */
-async function maybeConfigureGitignore(paths: CharmPaths): Promise<void> {
-  if (!process.stdin.isTTY) return;
-  const gitignorePath = join(paths.root, ".gitignore");
-  const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
-  // Already configured (any .charm or !.charm line present)? Leave it alone.
-  if (/^\s*!?\.charm(\/|\b)/m.test(existing)) return;
-
-  const { confirm } = await import("./cli/confirm-prompt.tsx");
-  const ok = await confirm(
-    "Add charm's run state to .gitignore?",
-    "Ignores ephemeral run state (.charm/sock, db.sqlite, tickets, logs, …) " +
-      "while keeping the durable knowledge base (.charm/kb/) tracked.",
-  );
-  if (!ok) return;
-
-  const block =
-    "# Charm run state is ephemeral and ignored, EXCEPT the durable knowledge base.\n" +
-    "# `.charm/*` ignores the run-state children; `!.charm/kb/` re-includes the KB.\n" +
-    ".charm/*\n" +
-    "!.charm/kb/\n";
-  // Separate cleanly from any existing content: ensure a trailing newline, then a
-  // blank line before our block when the file already had text.
-  const prefix = existing.length === 0 ? "" : (existing.endsWith("\n") ? "\n" : "\n\n");
-  appendFileSync(gitignorePath, prefix + block);
-  console.log(`[charm] added charm ignore rules to ${gitignorePath}`);
-}
-
 type StartOpts = { research?: boolean; development?: boolean; dev?: boolean };
 
 /** Decide the charm mode for a `start` run. Explicit flags win; conflicting flags
@@ -969,7 +932,11 @@ function scaffoldCharmDir(
   mkdirSync(paths.scratchpadDir, { recursive: true });
   mkdirSync(paths.proposalsDir, { recursive: true });
   mkdirSync(paths.promptsDir, { recursive: true });
-  mkdirSync(paths.logsDir, { recursive: true });
+  // NOTE: logsDir is deliberately NOT created here. It's per-session run state
+  // (.charm/run/<uuid>/logs/), created by whoever owns a session — `start`,
+  // restart, and the daemon each mkdir it with a session in scope. Creating it
+  // in the shared scaffolder made `charm init` (which runs session-less) leave a
+  // never-written .charm/logs/ behind.
 
   const templatesDir = locateTemplateDir("prompts");
   if (templatesDir) {
@@ -1042,43 +1009,46 @@ function scaffoldCharmDir(
     );
   }
 
-  ensureGitignoreRules(paths);
+  ensureCharmGitignore(paths, { refresh });
   scaffoldClaudeSettings(paths);
 }
 
 /**
- * Ensure the project's root .gitignore carries the rules charm's tracking model
- * depends on: `.charm/*` ignores the ephemeral run state, and the `!` re-includes
- * keep the durable surfaces (kb, proposals, tickets, scratchpad) tracked so the
- * daemon's session-close commit can capture them.
+ * Write the self-contained .charm/.gitignore — the single source of truth for
+ * what under .charm/ is committed. It ignores every child of .charm/ EXCEPT the
+ * durable surfaces (kb, proposals, scratchpad, skills) and the file itself; the
+ * ephemeral run state (run/, worktrees/, db.sqlite, charm.json, CHARM.md,
+ * prompts/, tickets/, …) is left untracked. Tickets are intentionally NOT a
+ * durable surface — the daemon's session-close commit treats them as run state.
  *
- * Check-and-append, never clobber: we look for each required line and append only
- * the ones that are absent, so a user's existing .gitignore is preserved and
- * re-running init/start never duplicates rules. The file is created if it does
- * not exist. Appended lines go to the end in canonical order — the negations land
- * after `.charm/*`, which is what makes the re-includes take effect.
+ * The anchored `/*` matches only direct children of .charm/, so a `!/kb` style
+ * negation re-includes the whole subtree beneath it (the children of an
+ * un-ignored directory are never matched by `/*`). Living inside .charm/, the
+ * rules travel with the directory and keep the project's root .gitignore clean;
+ * nested-gitignore precedence makes them authoritative for any path under
+ * .charm/.
+ *
+ * Seeded if absent on `charm start` (refresh=false) and overwritten on
+ * `charm init` (refresh=true), matching how the other template tooling is kept
+ * in sync.
  */
-function ensureGitignoreRules(paths: ReturnType<typeof charmPaths>) {
-  const gitignore = join(paths.root, ".gitignore");
-  const header = "# charm: track durable .charm surfaces, ignore ephemeral run state";
-  const required = [
-    ".charm/*",
-    "!.charm/kb/",
-    "!.charm/proposals/",
-    "!.charm/tickets/",
-    "!.charm/scratchpad/",
-  ];
-  const existing = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
-  const present = new Set(existing.split("\n").map((l) => l.trim()));
-  const missing = required.filter((line) => !present.has(line));
-  if (missing.length === 0) return;
-  const block = present.has(header) ? missing : [header, ...missing];
-  let out = existing;
-  if (out.length > 0 && !out.endsWith("\n")) out += "\n"; // finish a dangling last line
-  if (out.length > 0) out += "\n"; // blank separator before our block
-  out += block.join("\n") + "\n";
-  writeFileSync(gitignore, out);
-  console.log(`  gitignore: appended ${missing.length} charm rule(s) to ${gitignore}`);
+function ensureCharmGitignore(
+  paths: ReturnType<typeof charmPaths>,
+  { refresh }: { refresh: boolean },
+) {
+  if (existsSync(paths.charmGitignore) && !refresh) return;
+  const body =
+    "# charm: ignore everything under .charm/ EXCEPT the durable surfaces.\n" +
+    "# Self-contained and committed, so the rules travel with .charm/ and never\n" +
+    "# touch the project's root .gitignore. `/*` matches only direct children;\n" +
+    "# each `!/<dir>` re-includes that whole subtree.\n" +
+    "/*\n" +
+    "!/.gitignore\n" +
+    "!/kb\n" +
+    "!/proposals\n" +
+    "!/scratchpad\n" +
+    "!/skills\n";
+  writeFileSync(paths.charmGitignore, body);
 }
 
 /**

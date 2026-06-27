@@ -33,7 +33,7 @@ Call `report_status(state="blocked", note="<the specific question / decision you
 
 ## Finishing
 
-When your findings are written into the ticket body, call `report_status(state="done", note="<1-2 sentence summary: the problem + your recommended fix>")`. Always pass the note — it pings the orchestrator and lands in the ticket activity log as your hand-off. This marks the ticket `complete` and lets the orchestrator reap your pane. You MUST call it — your pane stays open until you do, so finishing silently leaves a dangling agent.
+When your findings are written into the ticket body, call `report_status(state="done", note="<1-2 sentence summary: the problem + your recommended fix>")`. Always pass the note — it pings the orchestrator and lands in the ticket activity log as your hand-off. This marks the ticket `complete` and lets the daemon reap your pane. You MUST call it — your pane stays open until you do, so finishing silently leaves a dangling agent.
 
 If the question turns out to be unanswerable or incoherent (it rests on something that does not and will not exist, or is self-contradictory), call `report_status(state="failed", note="<why it cannot be answered>")` instead, so the orchestrator can drop or re-scope it.
 

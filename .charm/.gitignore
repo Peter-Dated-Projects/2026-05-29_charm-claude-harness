@@ -1,0 +1,10 @@
+# charm: ignore everything under .charm/ EXCEPT the durable surfaces.
+# Self-contained and committed, so the rules travel with .charm/ and never
+# touch the project's root .gitignore. `/*` matches only direct children;
+# each `!/<dir>` re-includes that whole subtree.
+/*
+!/.gitignore
+!/kb
+!/proposals
+!/scratchpad
+!/skills
