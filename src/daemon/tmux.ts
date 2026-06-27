@@ -282,6 +282,17 @@ export class Tmux {
     return Number.isFinite(n) ? n : null;
   }
 
+  /** The window's current layout string (`#{window_visible_layout}`, incl. the
+   *  checksum prefix) — i.e. the live pane geometry right now, reflecting any
+   *  manual divider drags. Compare against a freshly-computed target to decide
+   *  whether a relayout actually needs to apply. Null if the lookup fails. */
+  async currentLayout(window: string): Promise<string | null> {
+    const r = await tmuxRun(["display-message", "-p", "-t", `${this.session}:${window}`, "#{window_visible_layout}"]);
+    if (r.status !== 0) return null;
+    const s = r.stdout.trim();
+    return s.length > 0 ? s : null;
+  }
+
   /** Apply a tmux custom layout string (incl. checksum prefix) to the named window. */
   async applyLayout(window: string, layout: string): Promise<void> {
     const r = await tmuxRun(["select-layout", "-t", `${this.session}:${window}`, layout]);

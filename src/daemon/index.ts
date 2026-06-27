@@ -329,13 +329,6 @@ async function main() {
     return run;
   }
 
-  // The last layout string we applied, used to break the window-layout-changed
-  // feedback loop: applying a layout fires that hook, which calls relayout again
-  // -- if the recomputed layout is identical (steady state), we skip the apply so
-  // tmux stops re-firing. Spawn/kill/register always change the string (pane set
-  // differs), so those still apply. Reset to null to force the next apply.
-  let lastAppliedLayout: string | null = null;
-
   // The actual relayout work, assuming the caller already holds the layout lock.
   async function relayoutLocked() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
@@ -375,11 +368,20 @@ async function main() {
         consoleWidth,
         agentPaneWidths: agentWidths,
       });
-      // Skip the apply when nothing changed (steady state after a snap-back), so
-      // our own select-layout doesn't re-trigger window-layout-changed forever.
-      if (layout === lastAppliedLayout) return;
+      // Apply only when the live geometry differs from the target. This does two
+      // jobs at once: (1) it ENFORCES the cap -- whenever a divider drag makes the
+      // real layout differ from the clamped target, we snap it back, no matter how
+      // the user got there; and (2) it BREAKS the window-layout-changed feedback
+      // loop -- once the real layout equals the target, the next hook firing
+      // recomputes the same target, sees it already matches, and skips, so our own
+      // select-layout doesn't bounce forever. Comparing to the REAL current layout
+      // (not the last one we applied) is the fix for the earlier wedge, where a
+      // fresh over-drag computed the same target string and was wrongly skipped.
+      // Compare without the leading checksum, which can differ harmlessly.
+      const dropChecksum = (s: string) => s.slice(s.indexOf(",") + 1);
+      const current = await tmux.currentLayout(WINDOW);
+      if (current && dropChecksum(current) === dropChecksum(layout)) return;
       await tmux.applyLayout(WINDOW, layout);
-      lastAppliedLayout = layout;
     } catch (e) {
       console.error("[charmd] relayout failed:", e);
     }
