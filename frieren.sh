@@ -159,7 +159,7 @@ cmd_clean() {
 # src/cli.ts), charm-mcp by every claude process via .charm/charm.json, and
 # charm-graph by the daemon relative to its own path (graphLaunchCmd in
 # src/daemon/index.ts). They must all sit in the same directory.
-INSTALL_BINS=(charmd charm-console charm-mcp charm-graph)   # plus `charm` (from charm-claude)
+INSTALL_BINS=(charmd charm-console charm-mcp charm-graph charm-watch)   # plus `charm` (from charm-claude)
 
 cmd_install() {
     # Build standalone binaries and install them onto PATH so `charm` works
