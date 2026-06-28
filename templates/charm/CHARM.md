@@ -46,10 +46,11 @@ process); and the orchestrator reacts to finish pings but leaves teardown of
 
 ## Operator skills
 
-When the user asks for one of these, read and follow that `SKILL.md` exactly —
-don't improvise the operation.
+These ship in the `charm` Claude Code plugin. When the user asks for one of
+these, invoke that skill via the Skill tool and follow it exactly — don't
+improvise the operation.
 
-| User asks to… | Follow |
+| User asks to… | Invoke |
 | --- | --- |
-| restart charm / reset the tickets / clear the ticket log / wipe the backlog | [charm-restart/SKILL.md](skills/charm-restart/SKILL.md) — kills ticketed agents, wipes tickets + db index, resets `COORDINATION.md`; daemon, KB, and session stay up |
-| reset / wipe the knowledge base / start the kb fresh | [charm-reset-kb/SKILL.md](skills/charm-reset-kb/SKILL.md) — **destructive**; wipes `.charm/kb/` and restores the template scaffold; double-confirm first |
+| restart charm / reset the tickets / clear the ticket log / wipe the backlog | `charm:charm-restart` — kills ticketed agents, wipes tickets + db index, resets `COORDINATION.md`; daemon, KB, and session stay up |
+| reset / wipe the knowledge base / start the kb fresh | `charm:charm-reset-kb` — **destructive**; wipes `.charm/kb/` and restores the template scaffold; double-confirm first |

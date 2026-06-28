@@ -51,6 +51,15 @@ sweep_bun_temp() {
         | xargs -0 rm -f 2>/dev/null || true
 }
 
+# The Claude Code plugin we ship. Canonical (and only) source is plugin/; it
+# installs to ~/.claude/skills/charm/ as a skills-directory plugin (auto-discovered
+# by Claude Code via its .claude-plugin/plugin.json, namespaced as `charm:<skill>`).
+# The operator skills (charm-restart, charm-reset-kb) live ONLY here now — they are
+# no longer copied into a project's .charm/skills/; the orchestrator invokes them as
+# `charm:<skill>` from the installed plugin. The per-project scaffold keeps only the
+# tiny router (templates/skills/INDEX.md), not the skill bodies.
+CLAUDE_PLUGIN_DIR="${HOME}/.claude/skills/charm"
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -170,6 +179,7 @@ cmd_install() {
     #   <prefix>/charm-console                TUI
     #   <prefix>/charm-mcp                    MCP shim
     #   <prefix>/../share/charm/templates/    prompt + kb templates (read at init/start)
+    #   ~/.claude/skills/charm/               Claude Code plugin (charm:* skills)
     local prefix="${HOME}/.local/bin"
     if [[ "${2:-}" == "--prefix" ]]; then
         prefix="${3:?--prefix requires a directory}"
@@ -204,7 +214,16 @@ cmd_install() {
     rm -rf "$sharedir/templates"
     cp -R "$ROOT/templates" "$sharedir/templates"
 
+    # Install the Claude Code plugin (charm:* skills) into the user's Claude home.
+    # Overwriting the dir each time makes this idempotent — always the latest
+    # plugin/ from the repo. Picked up next Claude session (or via /reload-plugins).
+    echo "==> Installing Claude plugin to $CLAUDE_PLUGIN_DIR ..."
+    mkdir -p "$(dirname "$CLAUDE_PLUGIN_DIR")"
+    rm -rf "$CLAUDE_PLUGIN_DIR"
+    cp -R "$ROOT/plugin" "$CLAUDE_PLUGIN_DIR"
+
     echo "==> Installed: charm, ${INSTALL_BINS[*]} -> $bindir"
+    echo "    Claude skills: charm:charm-planning, charm:charm-restart, charm:charm-reset-kb (next Claude session)"
     case ":$PATH:" in
         *":$bindir:"*)
             echo "    $bindir is on PATH. Run 'charm --help' to verify, then 'charm start \"your goal\"'."
@@ -234,6 +253,12 @@ cmd_uninstall() {
     if [[ -d "$sharedir" ]]; then
         rm -rf "$sharedir"
         echo "==> Removed $(cd "$(dirname "$sharedir")" && pwd)/$(basename "$sharedir")"
+        removed=1
+    fi
+    # Remove the installed Claude plugin.
+    if [[ -d "$CLAUDE_PLUGIN_DIR" ]]; then
+        rm -rf "$CLAUDE_PLUGIN_DIR"
+        echo "==> Removed $CLAUDE_PLUGIN_DIR"
         removed=1
     fi
     [[ "$removed" == 0 ]] && echo "    Nothing to remove under $prefix"
@@ -424,7 +449,8 @@ Project lifecycle:
   test [args...]            Typecheck, then 'bun test'
   clean [deep]              Remove dist/ and logs ('deep' also drops node_modules/)
   install [--prefix DIR]    Build, then install charm + siblings to PATH (default: ~/.local/bin)
-  uninstall [--prefix DIR]  Remove the installed charm binaries and templates
+                            and the charm:* Claude plugin to ~/.claude/skills/charm/
+  uninstall [--prefix DIR]  Remove the installed charm binaries, templates, and plugin
 
 Runtime (delegates to ./charm.sh):
   init [--root PATH]        Initialize a charm workspace

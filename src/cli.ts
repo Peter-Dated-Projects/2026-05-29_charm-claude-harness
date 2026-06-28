@@ -28,7 +28,7 @@ program
     scaffoldCharmDir(paths, { refresh: true });
     console.log(`charm initialized at ${paths.charmDir}`);
     console.log(`  prompts:  ${paths.promptsDir}/`);
-    console.log(`  tickets:  ${paths.ticketsDir}/`);
+    console.log(`  tickets:  ${paths.ticketsDir}/  (run state, gitignored)`);
     console.log(`  kb:       ${paths.kbDir}/  (durable, git-tracked)`);
     console.log(`  skills:   ${paths.skillsDir}/  (operator skills + index)`);
     console.log(`  charm:    ${paths.charmMd}  (workspace guardrails, loaded via the root CLAUDE.md import)`);
@@ -600,6 +600,26 @@ program
     console.log(res);
   });
 
+// Operator commands (restart, reset-kb) mutate shared session state — the ticket
+// board, the durable KB. They are for the human operator or the orchestrator only.
+// The charm skills that wrap them ship globally in the charm plugin, so a sub-agent
+// (worker / investigator / tester / researcher) technically has them in its skill
+// list; this is the HARD gate that stops one from actually running the destructive
+// op. CHARM_AGENT_ROLE is exported per spawn (daemon/spawn.ts) and is unset for the
+// human terminal, so the human is always allowed; only main/suborchestrator agents
+// may run it.
+function assertOperatorContext(action: string): void {
+  const role = (process.env.CHARM_AGENT_ROLE ?? "").trim().toLowerCase();
+  const allowed = role === "" || role === "main" || role === "suborchestrator";
+  if (!allowed) {
+    console.error(
+      `[charm] refusing to ${action}: this is an operator action and a ${role} agent must not run it. ` +
+        `Escalate to the orchestrator (report_status with state "blocked") instead.`,
+    );
+    process.exit(3);
+  }
+}
+
 program
   .command("restart")
   .description("reset the ticket backlog: kill ticketed agents, wipe ticket files + the db index, reset COORDINATION.md (daemon, KB, and session stay up)")
@@ -607,6 +627,7 @@ program
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
   .action(async (opts) => {
+    assertOperatorContext("restart");
     const root = resolve(opts.root);
     // The ticket board (tickets/, db, COORDINATION.md) is shared per-directory,
     // but killing the in-flight agents needs a daemon socket — resolve the one
@@ -658,6 +679,7 @@ program
   .description("DESTRUCTIVE: wipe .charm/kb/ and restore the pristine template scaffold (the durable knowledge base)")
   .option("-r, --root <path>", "project root", process.cwd())
   .action((opts) => {
+    assertOperatorContext("reset the knowledge base");
     const paths = charmPaths(resolve(opts.root));
     // Confirm the template exists BEFORE destroying the live copy, so a missing
     // template can't leave the project with no kb at all. The destructive
@@ -949,9 +971,12 @@ function scaffoldCharmDir(
     }
   }
 
-  // Seed the operator skills (restart, reset-kb) + their router index so the
-  // main agent can discover and follow them on demand. Like prompts, these are
-  // tooling (not user data): copy missing files, overwrite existing on refresh.
+  // Seed the operator-skills router index (templates/skills/INDEX.md) so the main
+  // agent knows which operator skills exist and when to invoke them. The skills
+  // themselves are NOT copied here — they ship in the `charm` Claude Code plugin
+  // (installed globally to ~/.claude/skills/charm/) and are invoked as
+  // charm:charm-restart / charm:charm-reset-kb. Like prompts, the router is tooling
+  // (not user data): copy missing files, overwrite existing on refresh.
   const skillTemplates = locateTemplateDir("skills");
   if (skillTemplates) {
     cpSync(skillTemplates, paths.skillsDir, { recursive: true, force: refresh, errorOnExist: false });
@@ -997,7 +1022,39 @@ function scaffoldCharmDir(
   }
 
   ensureCharmGitignore(paths, { refresh });
+  untrackTickets(paths);
   scaffoldClaudeSettings(paths);
+}
+
+/**
+ * Stop tracking .charm/tickets/ in git if a previous charm version committed it.
+ * The .charm/.gitignore keeps tickets untracked GOING FORWARD, but git keeps a
+ * file it already tracks even after it becomes gitignored — so an instance set up
+ * before tickets were made run state still has them in the index, and re-running
+ * init/start would otherwise leave them there. `git rm -r --cached` drops them
+ * from the index (and thus from future commits) while leaving the working files
+ * in place; the next session-close commit (or an operator commit) finalizes the
+ * removal. Tickets are run state that churns on every spawn/status change and must
+ * never live in git.
+ *
+ * Path-scoped (only .charm/tickets/) and non-fatal — a non-repo or any git failure
+ * is logged and swallowed so it can never block init/start, mirroring the
+ * session-close commit's discipline.
+ */
+function untrackTickets(paths: ReturnType<typeof charmPaths>) {
+  const git = (args: string[]) => spawnSync("git", args, { cwd: paths.root, encoding: "utf8" });
+  const inRepo = git(["rev-parse", "--is-inside-work-tree"]);
+  if (inRepo.status !== 0 || inRepo.stdout.trim() !== "true") return;
+  // Only act if something under .charm/tickets/ is actually tracked — otherwise
+  // `git rm` would error ("did not match any files") and there's nothing to do.
+  const tracked = git(["ls-files", "--", paths.ticketsDir]);
+  if (tracked.status !== 0 || tracked.stdout.trim() === "") return;
+  const rm = git(["rm", "-r", "--cached", "--quiet", "--", paths.ticketsDir]);
+  if (rm.status !== 0) {
+    console.error(`[charm] could not untrack ${paths.ticketsDir}: ${rm.stderr?.trim() ?? ""}`);
+    return;
+  }
+  console.error(`[charm] untracked .charm/tickets/ (run state, now gitignored) — commit to finalize`);
 }
 
 /**

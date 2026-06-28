@@ -202,12 +202,20 @@ on Sonnet); override the whole fleet with `-m`:
 ./charm.sh start -m opus-4.8 "..."  # run every agent on one model, overriding the per-type defaults
 ```
 
-Install globally (build + place binaries and templates on PATH at `~/.local/bin`):
+Install globally (build + place binaries and templates on PATH at `~/.local/bin`, and
+install the `charm:*` Claude Code skills plugin into `~/.claude/skills/charm/`):
 
 ```sh
 ./frieren.sh install
 charm start "your goal"
 ```
+
+The plugin ships the charm skills — `charm:charm-planning` (generate a stacked-PR handoff
+brief, charm sessions only), `charm:charm-restart`, and `charm:charm-reset-kb`. Its canonical
+source is `plugin/` in this repo and these skills live nowhere else; `install` overwrites the
+installed copy each run, so it's always the latest. The orchestrator invokes the operator skills
+straight from the plugin — they are no longer copied into a project's `.charm/skills/`. New skills
+are picked up in your next Claude session (or `/reload-plugins`).
 
 Panic button if a session wedges — kills every charm process machine-wide while sparing
 your other (non-charm) `claude` sessions:
@@ -230,8 +238,12 @@ src/
   store/tickets.ts    gray-matter + bun:sqlite ticket store
   console/            Ink TUI: app, markdown, graph, mouse
   cli/                interactive confirm prompts
-templates/            prompts, kb skeleton, skills, CLAUDE.md, settings — copied
-                      into a project's .charm/ on init
+templates/            prompts, kb skeleton, CLAUDE.md, settings — copied into a
+                      project's .charm/ on init. skills/ holds only INDEX.md, the
+                      operator-skills router; the skills themselves live in plugin/.
+plugin/               canonical Claude Code plugin (charm:* skills) — installed to
+                      ~/.claude/skills/charm/ by `frieren install`. Sole home of the
+                      charm-planning, charm-restart, and charm-reset-kb skills.
 frieren.sh            project lifecycle (setup/build/test/install/kill)
 charm.sh              run-from-source wrapper (forwards to src/cli.ts)
 docs/                 full docs, organized by audience (see docs/README.md)

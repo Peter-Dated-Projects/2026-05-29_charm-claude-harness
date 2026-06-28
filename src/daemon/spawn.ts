@@ -203,15 +203,17 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_investigators, spawn_workers, spawn_researchers, request_review). Never attempt to spawn a subagent any other way.",
   ].join("\n");
   // Operator skills router — injected only for the main agent (orchestrator).
-  // Restart/reset-kb are operator actions; a worker or investigator must never run
-  // them. The router lists trigger -> SKILL.md; the agent reads the full file on
-  // demand. Sub-agents (and plain windows) never see this section.
+  // Restart/reset-kb are operator actions; the router scopes the *guidance* to the
+  // orchestrator so a worker or investigator is never told to run them. The skills
+  // themselves ship in the `charm` Claude Code plugin (charm:charm-restart,
+  // charm:charm-reset-kb); the router lists trigger -> skill name and the agent
+  // invokes it on demand. Sub-agents (and plain windows) never see this section.
   const skillsIndex = join(paths.skillsDir, "INDEX.md");
   const CHARM_SKILLS =
     (spec.role === "main" || spec.role === "suborchestrator") && !spec.plain && existsSync(skillsIndex)
-      ? "\n## Charm operator skills (read on demand)\n" +
-        "When the user asks you to perform one of the operator actions below, FIRST read the listed SKILL.md " +
-        "(path relative to the project root) and follow it exactly — including any confirmation gates — before acting.\n\n" +
+      ? "\n## Charm operator skills (invoke on demand)\n" +
+        "When the user asks you to perform one of the operator actions below, FIRST invoke the listed skill " +
+        "(via the Skill tool) and follow it exactly — including any confirmation gates — before acting.\n\n" +
         readFileSync(skillsIndex, "utf8").trim() +
         "\n"
       : "";
@@ -300,6 +302,11 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const thinking = defaultThinkingForRole(spec.role);
   return [
     `export CHARM_AGENT_ID=${shellQuote(agent_id)}`,
+    // The agent's role, exported so operator-only CLI commands (charm restart /
+    // reset-kb) can hard-refuse when invoked by a sub-agent — the operator skills
+    // ship globally in the charm plugin, so a worker/investigator has them in its
+    // skill list but must never run the destructive op. Unset for the human terminal.
+    `export CHARM_AGENT_ROLE=${shellQuote(spec.role)}`,
     `export CHARM_SOCKET=${shellQuote(paths.socket)}`,
     // Disable Claude Code's per-project prompt history — otherwise the previous
     // charm-start prompt gets pre-populated into the input box and re-submitted

@@ -168,22 +168,28 @@ Once the graph is clear, write one ticket per node with `create_tickets(type="im
 
 ### Step 3 — Show the ticket tree, then gate
 
-Once every worker ticket is written, **finalize the plan by rendering the dependency tree** before you gate. Follow the `charm-ticket-tree` skill (`.charm/skills/charm-ticket-tree/SKILL.md`): run `charm tree` (from a source checkout, `./charm.sh tree`) and show its output. It prints the whole backlog as an ASCII spanning tree of the `depends_on` DAG — a status glyph per ticket, with extra dependencies shown inline as `(<- ...)` cross-edges:
+Once every worker ticket is written, **finalize the plan by rendering the dependency graph** before you gate. Render it two ways — a quick terminal scan and a visual the human signs off on:
+
+**1. ASCII tree — `charm tree`.** Run `charm tree` (from a source checkout, `./charm.sh tree`) and show its output verbatim. It reads the ticket `.md` files directly (works with or without a running daemon) and prints the whole backlog as an ASCII spanning tree of the `depends_on` DAG: each ticket hangs under its primary parent (the first id in its `depends_on`), a status glyph after the id (`✓` complete · `✗` failed · `●` running · `⊘` blocked · `○` ready · `·` pending · `⊗` cancelled — a legend prints under the tree), and any further dependencies inline as `(← ...)` cross-edges. Freshly-planned tickets are all `pending`, so a planning-time tree shows mostly structure — which is the point. Don't redraw it by hand; show what the command prints.
 
 ```text
-T-212 [x]  get_post pitch data
-  - T-214 .  backend: create_post + slide CRUD
-  - T-215 .  orchestrator: launch_run + custom vars
-      - T-217 .  agent_mcp: run_processing
-  - T-216 .  prompts: operator-notes + no-pitch
-  - T-218 .  agent.rs: teach tools + no-delete       (<- T-214, T-217)
-      - T-219 .  cleanup: vestigial context plumbing
-          - T-220 .  cleanup: dead-code sweep
+T-212 ✓  get_post pitch data
+  ├─ T-214 ·  backend: create_post + slide CRUD
+  ├─ T-215 ·  orchestrator: launch_run + custom vars
+  │   └─ T-217 ·  agent_mcp: run_processing
+  ├─ T-216 ·  prompts: operator-notes + no-pitch
+  └─ T-218 ·  agent.rs: teach tools + no-delete       (← T-214, T-217)
+      └─ T-219 ·  cleanup: vestigial context plumbing
+          └─ T-220 ·  cleanup: dead-code sweep
 ```
 
-This is the hand-off view: it lets the human take in the shape of the plan — the waves you built, what blocks what, where branches join — in one glance before approving. Show it every time you finish planning, not only when asked. Use it to gut-check your own graph too: a chain that should have been a fan-out, or a cross-edge you didn't intend, jumps out here.
+**2. Visual DAG — through the mermaid MCP.** Express the same `depends_on` graph as a single Mermaid `graph TD` (nodes are ticket ids with their titles; edges run dependency → dependent) and render it with `mcp__mermaid__mermaid_preview` using a descriptive `preview_id` (e.g. `<session>-plan-dag`), then `mcp__mermaid__mermaid_save` the SVG into `.charm/scratchpad/`. The mermaid MCP is the required path for any diagram — never paste a raw ```mermaid``` block and call it rendered. The tree and the DAG are one plan in two views and must match exactly; the rendered diagram is the picture the human actually approves.
 
-Then call `await_approval(stage=2, label="worker-ticket plan ready")` and **stop talking** until it returns. If the gate is rejected, revise the tickets (re-scope, split, drop, add) and render the tree again. Only once the plan is approved do you call `spawn_workers(ticket_ids=...)` to start Stage 3 development.
+Both are the hand-off view: they let the human take in the shape of the plan — the waves you built, what blocks what, where branches join — in one glance before approving. Show them every time you finish planning, not only when asked. Use them to gut-check your own graph too: a chain that should have been a fan-out, or a cross-edge you didn't intend, jumps out here.
+
+A couple of things to flag if they show up: a `depends_on` that names an id not on the board is a **dangling edge** — `charm tree` silently drops it and the ticket may surface as a root, so if a ticket renders higher than expected, check its `depends_on` for a typo'd or deleted id. And the dep graph must be **acyclic** (the daemon enforces this on spawn); if a hand-edit introduces a loop, the tangled tickets list flat at the end marked `(cycle)` instead of hanging in the tree — fix the edges.
+
+Then call `await_approval(stage=2, label="worker-ticket plan ready")` and **stop talking** until it returns. If the gate is rejected, revise the tickets (re-scope, split, drop, add) and render both views again. Only once the plan is approved do you call `spawn_workers(ticket_ids=...)` to start Stage 3 development.
 
 ---
 

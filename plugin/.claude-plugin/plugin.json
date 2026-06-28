@@ -1,0 +1,6 @@
+{
+  "name": "charm",
+  "description": "Charm skills for Claude Code: charm-planning (generate a stacked-PR handoff brief inside a charm session) plus the charm-restart and charm-reset-kb operator skills. Installed into ~/.claude/skills/charm/ by `frieren install`; this repo's plugin/ directory is the canonical source.",
+  "version": "0.1.0",
+  "author": { "name": "Peter Zhang" }
+}
