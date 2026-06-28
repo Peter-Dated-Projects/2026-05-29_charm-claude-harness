@@ -4,9 +4,9 @@
 //   [ console column | orchestrator column | sub-agent grid ]
 //
 // The orchestrator (agentPaneIndexes[0], always registered first and never
-// reordered) gets its own pinned column. Its width is `max(150, 40% of the agent
-// region)` — a 150-col floor so it stays readable, with 40% taking over once the
-// region is wide enough (past ~375 cols). If the region can't even cover the
+// reordered) gets its own pinned column. Its width is `max(90, 40% of the agent
+// region)` — a 90-col floor so it stays readable, with 40% taking over once the
+// region is wide enough (past ~225 cols). If the region can't even cover the
 // floor, the orchestrator takes whatever is available and the sub-agents are
 // hidden by the caller (see shouldHideSubagents).
 //
@@ -33,7 +33,7 @@
 
 // Orchestrator gets at least this many columns, so it stays readable as
 // sub-agents spawn and split the agent region.
-export const ORCH_MIN_WIDTH = 150;
+export const ORCH_MIN_WIDTH = 90;
 // ...but once the agent region is wide enough, it takes this fraction instead.
 export const ORCH_FRACTION = 0.4;
 // A sub-agent pane narrower than this is unusable; when the grid can't give every
@@ -80,7 +80,7 @@ export function buildLayoutString(inp: LayoutInputs): string {
   return wrapChecksum(leftRight(W, H, 0, 0, [consoleNode, agentNode]));
 }
 
-/** Orchestrator column width for a given agent-region width: a 150-col floor,
+/** Orchestrator column width for a given agent-region width: a 90-col floor,
  *  rising to 40% of the region once that exceeds the floor. The caller clamps
  *  this against the actual region in buildLayoutString. */
 export function orchestratorWidth(agentW: number): number {

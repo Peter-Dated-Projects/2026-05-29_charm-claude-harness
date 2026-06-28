@@ -41,22 +41,22 @@ test("gridCols is the widest row's pane count", () => {
   expect(gridCols(0)).toBe(0);
 });
 
-test("orchestrator width is a 150 floor that yields to 40%", () => {
-  expect(orchestratorWidth(300)).toBe(150); // 40% (120) < floor
-  expect(orchestratorWidth(375)).toBe(150); // exactly at the crossover (40% = 150)
+test("orchestrator width is a 90 floor that yields to 40%", () => {
+  expect(orchestratorWidth(200)).toBe(90); // 40% (80) < floor
+  expect(orchestratorWidth(225)).toBe(90); // exactly at the crossover (40% = 90)
   expect(orchestratorWidth(400)).toBe(160); // 40% takes over
   expect(orchestratorWidth(1000)).toBe(400);
 });
 
 test("shouldHideSubagents trips when the sub-region can't fit min-width columns", () => {
-  // agentW=160, n=4: orchW clamps to 150, subW=9, cols=2 -> need 16. Hide.
-  expect(shouldHideSubagents(160, 4)).toBe(true);
-  // agentW=300, n=4: subW=149, cols=2 -> need 16. Keep.
+  // agentW=100, n=4: orchW clamps to 90, subW=9, cols=2 -> need 16. Hide.
+  expect(shouldHideSubagents(100, 4)).toBe(true);
+  // agentW=300, n=4: subW=89, cols=2 -> need 16. Keep.
   expect(shouldHideSubagents(300, 4)).toBe(false);
   // No sub-agents: never hide.
   expect(shouldHideSubagents(50, 0)).toBe(false);
   // Boundary: subW exactly MIN*cols is NOT hidden (strict <).
-  const agentW = 151 + 1 + MIN_SUBAGENT_WIDTH * 1; // orchW=150 (clamped), one col
+  const agentW = 91 + 1 + MIN_SUBAGENT_WIDTH * 1; // orchW=90 (clamped), one col
   expect(shouldHideSubagents(agentW, 1)).toBe(false);
 });
 
