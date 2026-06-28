@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { charmPaths, defaultSessionName, worktreePathFor, assertPlainName } from "../paths.ts";
-import { TicketStore } from "../store/tickets.ts";
+import { TicketStore, authoredBody, LOG_BEGIN, LOG_END } from "../store/tickets.ts";
 import { AgentRegistry, holdsTicketClaim, occupiesLiveSlot } from "./registry.ts";
 import { CoordinationWriter } from "./coord.ts";
 import { Solver, type InFlight, liveDependentsOf } from "./solver.ts";
@@ -313,6 +314,14 @@ async function main() {
   // Pane id of the orchestrator (main agent), set on register_panes. The daemon
   // wakes this pane when a sub-agent finishes so the orchestrator can reap it.
   let orchestratorPaneId: string | null = null;
+
+  // Idle-detection state for interactive investigators (see sweepIdleInvestigators).
+  // baseline: authored-body byte length captured at spawn — the bar an agent must
+  // grow past for "wrote findings" to be true. idleState: the opaque {hash,
+  // unchanged_since} blob charm-watch returns each tick, stored verbatim and fed
+  // back so the Rust detector can measure how long a pane's screen has been stable.
+  const investigatorBaseline = new Map<string, number>();
+  const investigatorIdleState = new Map<string, { hash: string; unchanged_since: number }>();
   const WINDOW = "charm";
   // Background holding window for sub-agent panes when the agent region is too
   // narrow to render the grid (see shouldHideSubagents). Panes are moved here with
@@ -786,6 +795,7 @@ async function main() {
   // sweeps.
   const deadStreak = new Map<string, number>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
+  let investigatorSweepTimer: ReturnType<typeof setInterval> | null = null;
 
   function sweepDeadPanes() {
     if (!tmuxAvailable) return;
@@ -888,6 +898,146 @@ async function main() {
       if (knownPanes.has(pane.pane_id)) continue;
       console.error(`[charmd] sweep: removing orphan dead pane ${pane.pane_id}`);
       try { tmux.killPane(pane.pane_id); } catch { /* ignore */ }
+    }
+  }
+
+  // --- Idle-investigator done-enforcement -----------------------------------
+  // An interactive investigator that writes its findings but forgets the
+  // terminal report_status('done') lingers alive in its pane forever — the
+  // dead-pane sweep only reaps DEAD panes, and a finished-but-idle Claude REPL is
+  // very much alive. So a second sweep catches it: the charm-watch Rust binary
+  // reads each investigator's pane (is the screen output-idle?) and ticket (did
+  // the authored body grow past its spawn baseline?), and when both hold the
+  // daemon auto-completes the ticket and reaps the pane — exactly what the agent's
+  // own report_status('done') would have done. Detection (reading + checking)
+  // lives in Rust; acting (sqlite, tickets, teardown) stays here, the single owner
+  // of that state. CHARM_INVESTIGATOR_IDLE_MS tunes the output-idle grace; 0
+  // disables the feature.
+  const INVESTIGATOR_IDLE_MS = (() => {
+    const raw = Number(process.env.CHARM_INVESTIGATOR_IDLE_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 45_000;
+  })();
+
+  // Resolve the charm-watch binary once. Dev runs it from the cargo target; a
+  // compiled charmd uses the sibling binary next to it. Missing -> feature off
+  // (logged once), so a build without the Rust crate still runs fine.
+  let watchBin: string | null | undefined;
+  function resolveWatchBin(): string | null {
+    if (watchBin !== undefined) return watchBin;
+    const here = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      process.env.CHARM_WATCH_BIN,
+      join(dirname(process.execPath), "charm-watch"),
+      resolve(here, "..", "..", "rust", "target", "release", "charm-watch"),
+      resolve(here, "..", "..", "rust", "target", "debug", "charm-watch"),
+    ].filter((c): c is string => !!c);
+    for (const c of candidates) if (existsSync(c)) return (watchBin = c);
+    console.error("[charmd] charm-watch binary not found; investigator idle-detection disabled (build with `bun run build:watch`).");
+    return (watchBin = null);
+  }
+
+  let investigatorSweepBusy = false;
+  async function sweepIdleInvestigators() {
+    if (INVESTIGATOR_IDLE_MS === 0 || !tmuxAvailable || investigatorSweepBusy) return;
+    const bin = resolveWatchBin();
+    if (!bin) return;
+
+    // Watch only live, non-blocked investigators that hold a pane, a ticket, and a
+    // baseline. A `blocked` agent is legitimately idle awaiting continue_agent, so
+    // it's excluded here (the watch-list, not the Rust binary, enforces that).
+    const entries: {
+      agent_id: string; pane_id: string; ticket_path: string;
+      baseline_authored_len: number; prev_hash: string; prev_unchanged_since: number;
+    }[] = [];
+    for (const a of registry.list()) {
+      if (a.role !== "investigator") continue;
+      if (a.state !== "running" && a.state !== "spawning") continue;
+      if (!a.pane_id || !a.ticket_id) continue;
+      const baseline = investigatorBaseline.get(a.id);
+      if (baseline === undefined) continue;
+      const t = store.read(a.ticket_id);
+      if (!t) continue;
+      const prev = investigatorIdleState.get(a.id);
+      entries.push({
+        agent_id: a.id, pane_id: a.pane_id, ticket_path: t.path,
+        baseline_authored_len: baseline,
+        prev_hash: prev?.hash ?? "", prev_unchanged_since: prev?.unchanged_since ?? 0,
+      });
+    }
+    // Drop idle/baseline state for agents that are gone, regardless of this tick.
+    for (const id of [...investigatorIdleState.keys()]) if (!registry.get(id)) investigatorIdleState.delete(id);
+    for (const id of [...investigatorBaseline.keys()]) if (!registry.get(id)) investigatorBaseline.delete(id);
+    if (entries.length === 0) return;
+
+    investigatorSweepBusy = true;
+    try {
+      const payload = JSON.stringify({
+        log_begin: LOG_BEGIN, log_end: LOG_END,
+        idle_threshold_secs: Math.floor(INVESTIGATOR_IDLE_MS / 1000),
+        entries,
+      });
+      let out: string;
+      try {
+        const proc = Bun.spawn([bin], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        proc.stdin.write(payload);
+        proc.stdin.end();
+        const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+        if (code !== 0) {
+          console.error(`[charmd] charm-watch exited ${code}: ${(await new Response(proc.stderr).text()).trim()}`);
+          return;
+        }
+        out = stdout;
+      } catch (e) {
+        console.error("[charmd] charm-watch spawn failed:", e);
+        return;
+      }
+
+      let verdicts: {
+        agent_id: string; hash: string; unchanged_since: number;
+        idle_secs: number; findings_written: boolean; finished: boolean;
+      }[];
+      try {
+        verdicts = JSON.parse(out);
+      } catch {
+        console.error("[charmd] charm-watch returned unparseable output:", out.slice(0, 200));
+        return;
+      }
+
+      for (const v of verdicts) {
+        // Persist the opaque idle blob for next tick (skip captures that failed,
+        // marked by an empty hash, so a transient tmux hiccup doesn't reset state).
+        if (v.hash) investigatorIdleState.set(v.agent_id, { hash: v.hash, unchanged_since: v.unchanged_since });
+        if (!v.finished) continue;
+
+        // Re-validate against current state — the agent may have reported done,
+        // blocked, or been reaped between building the list and now.
+        const a = registry.get(v.agent_id);
+        if (!a || a.role !== "investigator" || !a.ticket_id) continue;
+        if (a.state !== "running" && a.state !== "spawning") continue;
+
+        try {
+          const cur = store.read(a.ticket_id);
+          const status = cur?.frontmatter.status;
+          if (status !== "complete" && status !== "cancelled") {
+            store.update(a.ticket_id, { status: "complete", stage: "done" });
+            store.appendLog(a.ticket_id, {
+              agent: a.id,
+              kind: "done",
+              text: `system: findings written and pane idle ${v.idle_secs}s without report_status; auto-completed by idle-detection.`,
+            });
+          }
+        } catch (e) {
+          console.error(`[charmd] idle-detection: completing ${a.ticket_id} failed:`, e);
+          continue;
+        }
+        investigatorIdleState.delete(a.id);
+        investigatorBaseline.delete(a.id);
+        refreshCoordination();
+        pingOrchestrator(`${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
+        await tearDownAgent(a.id);
+      }
+    } finally {
+      investigatorSweepBusy = false;
     }
   }
 
@@ -1022,7 +1172,7 @@ async function main() {
           const deferred = input.ticket_ids.slice(slots);
           const ids: string[] = [];
           for (const tid of toSpawn) {
-            ids.push(await spawnAgentLocked({
+            const aid = await spawnAgentLocked({
               role: "investigator",
               ticket_id: tid,
               prompt: `Read .charm/tickets/${tid}.md and investigate it.`,
@@ -1038,7 +1188,15 @@ async function main() {
               // requires a terminal report_status('done') on completion, which marks
               // the ticket `complete`, pings the orchestrator, and lets it reap the pane.
               interactive: true,
-            }, parentId));
+            }, parentId);
+            // Baseline how much the ticket body already holds, so idle-detection
+            // can later tell "wrote findings then went silent" (auto-complete)
+            // from "went silent having written nothing" (leave for the sweep).
+            try {
+              const t = store.read(tid);
+              if (t) investigatorBaseline.set(aid, Buffer.byteLength(authoredBody(t.body).trim(), "utf8"));
+            } catch { /* best-effort; a missing baseline just disables auto-done for this one */ }
+            ids.push(aid);
           }
           if (deferred.length > 0) {
             console.error(
@@ -1684,6 +1842,7 @@ async function main() {
 
   const cleanup = (code = 0) => {
     if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+    if (investigatorSweepTimer) { clearInterval(investigatorSweepTimer); investigatorSweepTimer = null; }
     // Drop any pending auto-reap timers so they can't fire into a torn-down
     // daemon (they're unref'd, but clear them anyway for a clean shutdown).
     for (const t of autoReapTimers.values()) clearTimeout(t);
@@ -1754,6 +1913,12 @@ async function main() {
   // Start the dead-pane liveness sweep once we're listening (no agents exist
   // before this, so there's nothing to reap earlier). Cleared in cleanup().
   sweepTimer = setInterval(sweepDeadPanes, SWEEP_MS);
+  // Same cadence, separate timer: catch interactive investigators that finished
+  // writing findings but never reported done. Skipped entirely when disabled
+  // (CHARM_INVESTIGATOR_IDLE_MS=0) or when the charm-watch binary is absent.
+  if (INVESTIGATOR_IDLE_MS > 0) {
+    investigatorSweepTimer = setInterval(() => { void sweepIdleInvestigators(); }, SWEEP_MS);
+  }
 }
 
 /** Prefix every daemon console line with an ISO timestamp. The daemon's

@@ -10,8 +10,22 @@ import { assertPlainName, type CharmPaths } from "../paths.ts";
 // lines; everything outside the markers (the human/agent-authored ticket
 // description) is never touched. This is what lets COORDINATION.md stay a slim
 // index — the verbose per-ticket history lives in the ticket file itself.
-const LOG_BEGIN = "<!-- CHARM:LOG -->";
-const LOG_END = "<!-- /CHARM:LOG -->";
+export const LOG_BEGIN = "<!-- CHARM:LOG -->";
+export const LOG_END = "<!-- /CHARM:LOG -->";
+
+/** The author-written portion of a ticket body: everything outside the
+ *  daemon-managed activity-log region. Used to baseline how much an interactive
+ *  agent has written into its ticket, so idle-detection can tell "wrote findings"
+ *  from "wrote nothing" without counting the daemon's own log appends. Mirrors the
+ *  strip in charm-watch (rust/src/main.rs); keep the two in sync. */
+export function authoredBody(body: string): string {
+  const begin = body.indexOf(LOG_BEGIN);
+  const end = body.indexOf(LOG_END);
+  if (begin >= 0 && end > begin) {
+    return body.slice(0, begin) + body.slice(end + LOG_END.length);
+  }
+  return body;
+}
 
 /** A ticket as stored in the sqlite index — lighter than a full Ticket (no body).
  *  Returned by queryIndex; this is what callers query when they want ticket state
