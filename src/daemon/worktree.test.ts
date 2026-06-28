@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorktreeManager } from "./worktree.ts";
@@ -107,4 +107,27 @@ test("prune reaps a corrupt orphan but keeps a valid copy", async () => {
   // The valid copy is left intact (worktreesDir is shared across sessions).
   expect(existsSync(good.path)).toBe(true);
   expect(wt.list().some((e) => e.path === good.path)).toBe(true);
+});
+
+test("create symlinks gitignored .env files into the worktree", async () => {
+  // A root env file and a nested one, both gitignored (so worktree add won't
+  // bring them across on its own).
+  writeFileSync(join(REPO, ".env"), "ROOT_SECRET=1\n");
+  mkdirSync(join(REPO, "pkg"), { recursive: true });
+  writeFileSync(join(REPO, "pkg", ".env.local"), "PKG_SECRET=2\n");
+  // `.env` and `.env.*` (no leading slash) match those basenames at any depth.
+  writeFileSync(join(REPO, ".gitignore"), ".charm/worktrees/\n.env\n.env.*\n");
+  git(["add", ".gitignore"]);
+  git(["commit", "-m", "ignore env"]);
+
+  const wt = new WorktreeManager({ root: REPO, worktreesDir: WORKTREES });
+  const r = await wt.create("envy");
+
+  const rootLink = join(r.path, ".env");
+  expect(lstatSync(rootLink).isSymbolicLink()).toBe(true);
+  expect(readFileSync(rootLink, "utf8")).toBe("ROOT_SECRET=1\n"); // resolves to the main tree
+
+  const nestedLink = join(r.path, "pkg", ".env.local");
+  expect(lstatSync(nestedLink).isSymbolicLink()).toBe(true);
+  expect(readFileSync(nestedLink, "utf8")).toBe("PKG_SECRET=2\n");
 });

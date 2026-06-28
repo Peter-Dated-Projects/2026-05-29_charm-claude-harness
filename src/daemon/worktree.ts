@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { assertPlainName } from "../paths.ts";
 
 /**
@@ -78,7 +78,45 @@ export class WorktreeManager {
       this.git(["worktree", "add", "-b", branch, path, base]);
     }
 
+    this.linkEnvFiles(path);
     return { name, path, branch };
+  }
+
+  /**
+   * Symlink the main checkout's gitignored env files into a fresh worktree.
+   * `git worktree add` only populates TRACKED files, so .env / .env.local / etc.
+   * never come across — an agent running in the worktree would be missing the
+   * secrets and config the main checkout has. We mirror each gitignored env file
+   * at its original relative path (root or nested, e.g. packages/x/.env) as a
+   * symlink back to the main tree, so the worktree shares one source of truth.
+   *
+   * Best-effort: env linking must never fail a create, so the git enumeration and
+   * each individual link are guarded. The pathspec limits the walk to env files,
+   * so this never enumerates all of node_modules.
+   */
+  private linkEnvFiles(worktreePath: string): void {
+    let listed: string;
+    try {
+      listed = this.git([
+        "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
+        "--", ":(glob,top)**/.env", ":(glob,top)**/.env.*",
+      ]);
+    } catch {
+      return;
+    }
+    for (const rel of listed.split("\0").filter(Boolean)) {
+      const base = rel.slice(rel.lastIndexOf("/") + 1);
+      if (!/^\.env(\..+)?$/.test(base)) continue; // belt-and-suspenders vs the pathspec
+      const src = join(this.root, rel);
+      const dst = join(worktreePath, rel);
+      try {
+        mkdirSync(dirname(dst), { recursive: true });
+        rmSync(dst, { force: true }); // replace any stale link from a reused path
+        symlinkSync(src, dst);
+      } catch (e) {
+        console.error(`[charmd] worktree: linking ${rel} into ${worktreePath} failed:`, e);
+      }
+    }
   }
 
   /**
