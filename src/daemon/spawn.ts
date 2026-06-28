@@ -72,11 +72,12 @@ export const MODEL_ALIASES: Record<string, string> = {
  *    investigation          -> Opus 4.8            (deep reasoning over the codebase)
  *    review (tester)        -> Sonnet 4.6          (validation; fast and cheap)
  *    research (researcher)  -> Sonnet 4.6 [1M ctx] (broad context-gathering over lots of material)
- *    main / suborchestrator -> Opus 4.8            (the reasoning-heavy coordinator)
+ *    main                   -> Opus 4.8 [1M ctx]   (the reasoning-heavy coordinator; long-lived session)
+ *    suborchestrator        -> Opus 4.8            (the reasoning-heavy coordinator)
  *  Override per-role with CHARM_MODEL_<ROLE> (e.g. CHARM_MODEL_WORKER=opus-4.7),
  *  or the whole fleet at once with `charm start -m/--model` (CHARM_MODEL). */
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
-  main: "opus-4.8",
+  main: "opus-4.8-1m",
   investigator: "opus-4.8",
   worker: "opus-4.8-1m",
   tester: "sonnet-4.6",
