@@ -215,10 +215,13 @@ export class Tmux {
    *  something kills it — which is exactly what the daemon's liveness sweep keys
    *  off to reap agents that exited without reporting. A pane that was killed is
    *  simply absent from the list. */
-  listPanes(): { pane_id: string; pid: number; cmd: string; dead: boolean }[] {
+  listPanes(): { pane_id: string; pid: number; cmd: string; dead: boolean; window_name: string }[] {
     const r = spawnSync(
       "tmux",
-      ["list-panes", "-s", "-t", this.session, "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}"],
+      [
+        "list-panes", "-s", "-t", this.session,
+        "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{window_name}",
+      ],
       { encoding: "utf8" },
     );
     if (r.status !== 0) return [];
@@ -227,9 +230,28 @@ export class Tmux {
       .split("\n")
       .filter(Boolean)
       .map((line) => {
-        const [pane_id, pid, cmd, dead] = line.split("\t");
-        return { pane_id: pane_id!, pid: Number(pid), cmd: cmd!, dead: dead === "1" };
+        const [pane_id, pid, cmd, dead, window_name] = line.split("\t");
+        return { pane_id: pane_id!, pid: Number(pid), cmd: cmd!, dead: dead === "1", window_name: window_name ?? "" };
       });
+  }
+
+  /** Move a pane OUT of its current window into a brand-new window named `name`,
+   *  detached (`-d`, so focus stays put). Used to hide the sub-agent grid when the
+   *  agent region is too narrow to render it: the first hidden pane creates the
+   *  holding window, the rest join it via joinPaneToWindow. */
+  async breakPaneToWindow(paneId: string, name: string): Promise<void> {
+    const r = await tmuxRun(["break-pane", "-d", "-s", paneId, "-n", name]);
+    if (r.status !== 0) throw new Error(`tmux break-pane failed: ${r.stderr}`);
+  }
+
+  /** Move a pane INTO an existing window (`dstWindow` is a `session:window`
+   *  target), detached (`-d`). tmux splits an existing pane in the destination to
+   *  make room; the caller immediately re-applies a layout afterward, so the
+   *  intermediate split position doesn't matter. Used both to pile hidden panes
+   *  into the holding window and to bring them back into the main window. */
+  async joinPaneToWindow(paneId: string, dstWindow: string): Promise<void> {
+    const r = await tmuxRun(["join-pane", "-d", "-s", paneId, "-t", dstWindow]);
+    if (r.status !== 0) throw new Error(`tmux join-pane failed: ${r.stderr}`);
   }
 
   attach(): void {

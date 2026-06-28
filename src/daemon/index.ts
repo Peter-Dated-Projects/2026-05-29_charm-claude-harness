@@ -9,7 +9,7 @@ import { AgentRegistry, holdsTicketClaim, occupiesLiveSlot } from "./registry.ts
 import { CoordinationWriter } from "./coord.ts";
 import { Solver, type InFlight, liveDependentsOf } from "./solver.ts";
 import { Tmux } from "./tmux.ts";
-import { buildLayoutString } from "./layout.ts";
+import { buildLayoutString, shouldHideSubagents } from "./layout.ts";
 import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
@@ -314,6 +314,11 @@ async function main() {
   // wakes this pane when a sub-agent finishes so the orchestrator can reap it.
   let orchestratorPaneId: string | null = null;
   const WINDOW = "charm";
+  // Background holding window for sub-agent panes when the agent region is too
+  // narrow to render the grid (see shouldHideSubagents). Panes are moved here with
+  // break-pane/join-pane and moved back when room returns; tmux destroys this
+  // window automatically once its last pane leaves.
+  const SUBAGENT_BG_WINDOW = "subagents";
 
   // The tmux pane-grid operations (splitPane/killPane/relayout) are now async and
   // mutate shared state (`agentPaneIds`) and the window layout. Serialize them
@@ -335,56 +340,110 @@ async function main() {
   // (which snaps just this column back to it on a manual divider drag).
   const MAX_CONSOLE_WIDTH = 32;
 
+  // Move all sub-agent panes OUT of the main window into the background holding
+  // window, leaving the main window showing only console + orchestrator. The
+  // first pane creates the holding window (break-pane); the rest join it. Panes
+  // already hidden (or gone) are skipped. Pane ids are stable across window moves,
+  // so the registry, orchestrator wake, and auto-reap all keep working on hidden
+  // panes. Best-effort per pane: a failed move logs and continues.
+  async function hideSubagents(subPaneIds: string[]) {
+    const panes = tmux.listPanes();
+    const inMain = new Set(panes.filter((p) => p.window_name === WINDOW).map((p) => p.pane_id));
+    let holdingExists = panes.some((p) => p.window_name === SUBAGENT_BG_WINDOW);
+    for (const id of subPaneIds) {
+      if (!inMain.has(id)) continue; // already hidden, or no longer present
+      try {
+        if (!holdingExists) {
+          await tmux.breakPaneToWindow(id, SUBAGENT_BG_WINDOW);
+          holdingExists = true;
+        } else {
+          await tmux.joinPaneToWindow(id, `${tmux.session}:${SUBAGENT_BG_WINDOW}`);
+        }
+      } catch (e) {
+        console.error(`[charmd] hideSubagents: move ${id} failed:`, e);
+      }
+    }
+  }
+
+  // Bring any hidden sub-agent panes back into the main window. tmux destroys the
+  // holding window once its last pane leaves; the caller re-applies the grid
+  // layout immediately after, which positions the returned panes by index.
+  async function restoreSubagents(subPaneIds: string[]) {
+    const panes = tmux.listPanes();
+    const hidden = new Set(panes.filter((p) => p.window_name !== WINDOW).map((p) => p.pane_id));
+    for (const id of subPaneIds) {
+      if (!hidden.has(id)) continue;
+      try {
+        await tmux.joinPaneToWindow(id, `${tmux.session}:${WINDOW}`);
+      } catch (e) {
+        console.error(`[charmd] restoreSubagents: move ${id} failed:`, e);
+      }
+    }
+  }
+
   // The actual relayout work, assuming the caller already holds the layout lock.
+  // agentPaneIds[0] is the orchestrator (main agent), [1..] the sub-agents in
+  // spawn order. When the agent region is too narrow to render the sub-grid at the
+  // minimum per-pane width, the sub-agents are moved to a background window and
+  // the orchestrator fills the region (Peter's "hide all sub-agents" rule).
   async function relayoutLocked() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
     try {
       const win = await tmux.windowSize(WINDOW);
-      const cIdx = await tmux.paneIndex(consolePaneId);
-      if (cIdx === null) return;
-      const agentIdxs: number[] = [];
-      const agentWidths: number[] = [];
-      for (const pid of agentPaneIds) {
-        const idx = await tmux.paneIndex(pid);
-        if (idx === null) continue;
-        agentIdxs.push(idx);
-        agentWidths.push((await tmux.paneWidth(pid)) ?? 0);
-      }
-      if (agentIdxs.length === 0) return;
-      // Preserve whatever width the console column currently has -- the user
-      // may have dragged the divider, narrower or wider. No minimum: the user
-      // can shrink it freely. The only constraints are MAX_CONSOLE_WIDTH (the
-      // cap the user asked for) and never wider than the window minus 20 so the
-      // agent grid keeps room. Fall back to a 35% share only on the first
-      // layout, when the pane hasn't been sized yet.
-      // The cap is what stops a too-wide sidebar from surviving: on a full
-      // relayout (spawn/kill/terminal-resize) it's baked into the layout string
-      // via Math.min. A manual divider drag does NOT come through here anymore —
-      // it routes to clampConsoleLocked, which snaps just this column back
-      // without recomputing the agent grid (see the hook split in cli.ts).
+      const orchPaneId = agentPaneIds[0]!;
+      const subPaneIds = agentPaneIds.slice(1);
+
+      // Preserve whatever width the console column currently has -- the user may
+      // have dragged the divider, narrower or wider. No minimum: the user can
+      // shrink it freely. The only constraints are MAX_CONSOLE_WIDTH (the cap the
+      // user asked for) and never wider than the window minus 20 so the agent grid
+      // keeps room. Fall back to a 35% share only on the first layout, when the
+      // pane hasn't been sized yet. A manual divider drag does NOT come through
+      // here -- it routes to clampConsoleLocked (see the hook split in cli.ts).
       const cur = await tmux.paneWidth(consolePaneId);
       const consoleWidth = Math.max(
         1,
         Math.min(MAX_CONSOLE_WIDTH, win.w - 20, cur ?? Math.floor(win.w * 0.35)),
       );
+
+      const agentW = win.w - consoleWidth - 1;
+      const n = subPaneIds.length;
+      const hide = shouldHideSubagents(agentW, n);
+
+      // Reconcile background-window placement BEFORE reading the fresh pane
+      // indexes the layout string needs (the moves renumber panes).
+      if (n > 0) {
+        if (hide) await hideSubagents(subPaneIds);
+        else await restoreSubagents(subPaneIds);
+      }
+
+      const cIdx = await tmux.paneIndex(consolePaneId);
+      if (cIdx === null) return;
+      const orchIdx = await tmux.paneIndex(orchPaneId);
+      if (orchIdx === null) return;
+      // Orchestrator first; then the visible sub-agents (none when hidden, so the
+      // orchestrator fills the whole agent region).
+      const agentIdxs = [orchIdx];
+      if (!hide) {
+        for (const pid of subPaneIds) {
+          const idx = await tmux.paneIndex(pid);
+          if (idx !== null) agentIdxs.push(idx);
+        }
+      }
+
       const layout = buildLayoutString({
         windowWidth: win.w,
         windowHeight: win.h,
         consolePaneIndex: cIdx,
         agentPaneIndexes: agentIdxs,
         consoleWidth,
-        agentPaneWidths: agentWidths,
       });
-      // Apply only when the live geometry differs from the target. This does two
-      // jobs at once: (1) it ENFORCES the cap -- whenever a divider drag makes the
-      // real layout differ from the clamped target, we snap it back, no matter how
-      // the user got there; and (2) it BREAKS the window-layout-changed feedback
-      // loop -- once the real layout equals the target, the next hook firing
-      // recomputes the same target, sees it already matches, and skips, so our own
-      // select-layout doesn't bounce forever. Comparing to the REAL current layout
-      // (not the last one we applied) is the fix for the earlier wedge, where a
-      // fresh over-drag computed the same target string and was wrongly skipped.
-      // Compare without the leading checksum, which can differ harmlessly.
+      // Apply only when the live geometry differs from the target. This both
+      // ENFORCES the console cap (a divider drag that makes the real layout differ
+      // gets snapped back) and BREAKS the window-layout-changed feedback loop (once
+      // the real layout equals the target, the next hook firing recomputes the same
+      // target, sees it already matches, and skips). Compare without the leading
+      // checksum, which can differ harmlessly.
       const dropChecksum = (s: string) => s.slice(s.indexOf(",") + 1);
       const current = await tmux.currentLayout(WINDOW);
       if (current && dropChecksum(current) === dropChecksum(layout)) return;
