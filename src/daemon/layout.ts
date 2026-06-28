@@ -4,9 +4,9 @@
 //   [ console column | orchestrator column | sub-agent region ]
 //
 // The orchestrator (agentPaneIndexes[0], always registered first and never
-// reordered) gets its own pinned column, guaranteed at least
-// ORCHESTRATOR_MIN_FRACTION of the agent region's width so it can't be squeezed
-// to a sliver as sub-agents spawn. A wider manual resize is preserved.
+// reordered) gets its own pinned column. Its width is whatever the user last
+// dragged it to (seeded to ~a third of the agent region on the first layout) —
+// there is no min/max clamp, so resizes are honored exactly rather than snapped.
 //
 // The sub-agents (agentPaneIndexes[1..]) fill the remaining space as a
 // VS-Code-like editor-group grid (m = sub-agent count):
@@ -18,10 +18,6 @@
 //
 // Pane indexes are tmux #{pane_index} values at the moment of relayout — caller
 // is responsible for looking them up fresh, since tmux renumbers on pane kills.
-
-// The orchestrator column never drops below this fraction of the agent region
-// (the window width minus the console/sidebar column). It can be dragged wider.
-const ORCHESTRATOR_MIN_FRACTION = 0.3;
 
 export type LayoutInputs = {
   windowWidth: number;
@@ -50,19 +46,20 @@ export function buildLayoutString(inp: LayoutInputs): string {
     return wrapChecksum(leftRight(W, H, 0, 0, [consoleNode, agentNode]));
   }
 
-  // Pin the orchestrator (a[0]) to a full-height left column of at least
-  // ORCHESTRATOR_MIN_FRACTION of the agent region; the sub-agents grid fills the
-  // rest. agentPaneWidths is in agentPaneIndexes order, so [0] is the
-  // orchestrator's current width — honor a wider manual drag, floor at the min.
+  // Give the orchestrator (a[0]) a full-height left column; the sub-agents grid
+  // fills the rest. No min/max clamp on the claude panes: honor the
+  // orchestrator's current width exactly so manual drags and window resizes are
+  // never snapped back (the snap-back was the resize glitch — both the min and
+  // max were recomputed from agentW, so they re-snapped every frame of a window
+  // resize and made the sub-grid jump). agentPaneWidths is in agentPaneIndexes
+  // order, so [0] is the orchestrator's current width. On the first layout there
+  // is no hint yet, so seed it with ~a third of the agent region as a starting
+  // size only. The Math.max/Math.min here are pure layout-validity guards (widths
+  // must stay positive and leave room for the sub-grid), not a size policy.
   const subIdxs = a.slice(1);
-  const orchMin = Math.max(1, Math.ceil(agentW * ORCHESTRATOR_MIN_FRACTION));
   const orchHint = inp.agentPaneWidths?.[0] ?? 0;
-  // Leave room for the divider plus the sub-grid's widest row (its top row needs
-  // ceil(m/2) cells + their dividers), so the orchestrator can't starve it.
-  const topCount = Math.ceil(subIdxs.length / 2);
-  const subMin = Math.max(1, 2 * topCount - 1);
-  const maxOrch = Math.max(1, agentW - 1 - subMin);
-  const orchW = Math.min(Math.max(orchMin, orchHint > 0 ? orchHint : orchMin), maxOrch);
+  const orchSeed = Math.max(1, Math.floor(agentW * 0.35));
+  const orchW = Math.max(1, Math.min(agentW - 2, orchHint > 0 ? orchHint : orchSeed));
 
   const orchNode = leaf(orchW, H, agentX, 0, a[0]!);
   const subX = agentX + orchW + 1;

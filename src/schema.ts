@@ -60,7 +60,7 @@ export const Ticket = z.object({
 });
 export type Ticket = z.infer<typeof Ticket>;
 
-export const AgentRole = z.enum(["main", "investigator", "worker", "tester", "suborchestrator"]);
+export const AgentRole = z.enum(["main", "investigator", "worker", "tester", "researcher", "suborchestrator"]);
 export type AgentRole = z.infer<typeof AgentRole>;
 
 export const AgentState = z.enum(["spawning", "running", "blocked", "done", "failed"]);
@@ -197,6 +197,20 @@ export const SpawnWorkersInput = z.object({
   worktree: z.string().optional(),
 });
 export type SpawnWorkersInput = z.infer<typeof SpawnWorkersInput>;
+
+// Researchers are spawned AD-HOC, not off a ticket: the orchestrator passes the
+// research question(s) directly as free text. Unlike investigators (which work a
+// canonical investigation ticket and write findings into its body), a researcher
+// is a lightweight, ticket-less context-gathering agent — it reads broadly (code,
+// docs, the web) and writes its findings to a scratchpad file it reports back. One
+// agent is spawned per prompt in the batch. `worktree` mirrors the other spawn
+// inputs (plain name of an open .charm/worktrees/<name>/), applied to every agent.
+export const SpawnResearchersInput = z.object({
+  caller_id: z.string().optional(),
+  prompts: z.array(z.string().min(1)).min(1),
+  worktree: z.string().optional(),
+});
+export type SpawnResearchersInput = z.infer<typeof SpawnResearchersInput>;
 
 // Worktree management tools. A worktree is an orchestrator-managed side resource
 // (a parallel line of work in a completely separate repo COPY — its own clone

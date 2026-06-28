@@ -176,7 +176,7 @@ execs its siblings and every `claude` resolves `charm-mcp` by name.
 ## Documentation
 
 Full docs live in [docs/](docs/README.md), organized by audience — operating charm
-(getting started, running a session, modes, the CLI, keybindings, troubleshooting),
+(getting started, running a session, models, the CLI, keybindings, troubleshooting),
 developing charm (architecture, MCP tools, build, the knowledge base, preflight), and the
 design notes behind the harness.
 
@@ -186,21 +186,20 @@ From source, no install:
 
 ```sh
 ./frieren.sh setup                      # checks deps, runs bun install
-./charm.sh start "build a markdown to-do CLI"   # prompts research vs development mode
+./charm.sh start "build a markdown to-do CLI"
 ```
 
 `start` opens a tmux session: the console on the left, the main agent on the right. Watch
 investigators gather context, let the orchestrator synthesize their findings into a
 worker-ticket plan, approve that plan, and watch workers fan out. Inside the session, the
-`:` key opens a command prompt — `:q` quits the charm, `:a` detaches, `:dev` / `:research`
-swap the fleet's model mid-session.
+`:` key opens a command prompt — `:q` quits the charm, `:a` detaches, `:so` spawns a
+suborchestrator.
 
-Mode and model:
+Each agent runs on a model chosen by its type (coding/investigation on Opus, review/research
+on Sonnet); override the whole fleet with `-m`:
 
 ```sh
-./charm.sh start --research "..."   # fleet defaults to Sonnet
-./charm.sh start --development "..."  # fleet defaults to Opus
-./charm.sh start -m opus-4.8 "..."  # pin the whole fleet to a model in any mode
+./charm.sh start -m opus-4.8 "..."  # run every agent on one model, overriding the per-type defaults
 ```
 
 Install globally (build + place binaries and templates on PATH at `~/.local/bin`):
@@ -230,7 +229,7 @@ src/
   mcp/server.ts       charm-mcp stdio MCP server
   store/tickets.ts    gray-matter + bun:sqlite ticket store
   console/            Ink TUI: app, markdown, graph, mouse
-  cli/                interactive mode + confirm prompts
+  cli/                interactive confirm prompts
 templates/            prompts, kb skeleton, skills, CLAUDE.md, settings — copied
                       into a project's .charm/ on init
 frieren.sh            project lifecycle (setup/build/test/install/kill)

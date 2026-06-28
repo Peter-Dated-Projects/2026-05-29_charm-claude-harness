@@ -83,8 +83,9 @@ export class Tmux {
    * max-width clamp — in sync when the terminal is resized, since the daemon's
    * relayout otherwise only runs on fleet-grid mutations (spawn/kill/register).
    */
-  setHook(hook: string, cmd: string): void {
-    spawnSync("tmux", ["set-hook", "-t", this.session, hook, `run-shell '${cmd.replace(/'/g, `'\\''`)}'`]);
+  setHook(hook: string, cmd: string, { background = false } = {}): void {
+    const flag = background ? "-b " : "";
+    spawnSync("tmux", ["set-hook", "-t", this.session, hook, `run-shell ${flag}'${cmd.replace(/'/g, `'\\''`)}'`]);
   }
 
   /**
@@ -113,6 +114,7 @@ export class Tmux {
     const args = [
       "split-window",
       opts.direction === "v" ? "-v" : "-h",
+      "-d",
       "-P",
       "-F", "#{pane_id}",
       "-c", opts.cwd,

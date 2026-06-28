@@ -15,7 +15,7 @@ This is the fastest way to try charm without putting binaries on your PATH.
 
 ```sh
 ./frieren.sh setup                                 # checks deps, runs bun install
-./charm.sh start "build a markdown to-do CLI"      # prompts research vs development mode
+./charm.sh start "build a markdown to-do CLI"
 ```
 
 `charm.sh` is a thin wrapper that forwards to `src/cli.ts` through Bun, so every CLI command
@@ -59,7 +59,7 @@ Inside the tmux session, the `:` key opens a command prompt:
 
 - `:q` — quit this charm (tears down only the session you pressed it in).
 - `:a` — detach from the tmux session (it keeps running; re-`attach` later).
-- `:dev` / `:research` — swap the whole fleet's model mid-session.
+- `:so` — spawn a suborchestrator (an operator-facing agent with orchestrator-level tools).
 
 The complete keymap is in [Console keybindings](keybindings.md).
 

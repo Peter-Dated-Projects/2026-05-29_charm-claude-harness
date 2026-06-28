@@ -42,14 +42,12 @@ charm start [goal...] [options]
 
 | Option | Effect |
 |---|---|
-| `--research` | research mode: default the fleet to Sonnet (overridable with `-m`) |
-| `--development` (alias `--dev`) | development mode: default the fleet to Opus (overridable with `-m`) |
-| `-m, --model <model>` | model for the **whole** fleet (main agent + every sub-agent), honored in any mode and overriding the mode default. Accepts `sonnet-4.6`, `sonnet-4.6-1m`, `opus-4.6`, `opus-4.7`, `opus-4.7-1m`, `opus-4.8`, `opus-4.8-1m`, or a raw `claude-*` id |
+| `-m, --model <model>` | override the model for the **whole** fleet (main agent + every sub-agent), replacing the per-type defaults. Accepts `sonnet-4.6`, `sonnet-4.6-1m`, `opus-4.6`, `opus-4.7`, `opus-4.7-1m`, `opus-4.8`, `opus-4.8-1m`, or a raw `claude-*` id |
 | `--max-agents <n>` | max concurrent agent sessions **including** the orchestrator (so `n=10` allows the orchestrator plus 9 sub-agents). Default `10` |
 | `--no-attach` | do not auto-attach to the tmux session |
 | `-s, --session <name>` | name the tmux session (default: derived from the project dir) |
 
-See [Modes and models](modes-and-models.md) for the full mode/model story.
+See [Models](models.md) for the per-type model each agent runs on and the override precedence.
 
 ### `resume`
 
@@ -125,6 +123,6 @@ charm reset-kb [-r <path>]
 
 These exist for charm's own plumbing and are not part of the normal operator workflow:
 
-- `ctl <cmd>` — handles a vim-style command (`:q`, `:a`, `:dev` / `:research`) sent from a
+- `ctl <cmd>` — handles a vim-style command (`:q`, `:a`, `:so`) sent from a
   tmux key binding. You trigger these through the keybindings, not by typing `ctl`.
 - `session-name` — prints a session's tmux name for a root; used by `charm.sh`.

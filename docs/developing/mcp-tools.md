@@ -33,7 +33,10 @@ sub-agent calling them is rejected.
 |---|---|---|
 | `spawn_investigators` | orchestrator | Spawn one interactive investigator agent per investigation-ticket id (resumable; a blocked investigator waits in its pane for `continue_agent`). Investigators are read-only on code — they gather context, propose a fix, and write findings into the ticket body. |
 | `spawn_workers` | orchestrator | Spawn interactive worker agents on implementation tickets. The daemon enforces dep + file-scope conflicts; conflicting tickets come back as `deferred` (retry on a later tick). Tickets marked `blocked_by_cancelled_dependency` can never run — re-plan rather than retry them. |
+| `spawn_researchers` | orchestrator | Spawn one interactive researcher agent per free-text prompt — ad-hoc, ticket-less context-gathering (reads code/docs/KB/web, writes findings to `.charm/scratchpad/`, reports the path). Not gated by the pipeline; usable in any stage. Resumable like investigators. |
 | `request_review` | worker | Spawn a tester agent on a finished ticket. |
+
+Each spawn tool runs its agent on a model chosen by the work type: coding (`spawn_workers`) = Opus 4.8 / 1M ctx, investigation (`spawn_investigators`) = Opus 4.8, review (`request_review`) = Sonnet 4.6, research (`spawn_researchers`) = Sonnet 4.6 / 1M ctx. Override per role with the `CHARM_MODEL_<ROLE>` env var, or the whole fleet with `charm start -m`. See [Models](../operating/models.md).
 
 ## Approvals and coordination
 

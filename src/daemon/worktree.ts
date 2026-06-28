@@ -1,36 +1,29 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { assertPlainName } from "../paths.ts";
 
 /**
  * A charm worktree is an ORCHESTRATOR-MANAGED SIDE RESOURCE: a parallel line of
- * work that is a COMPLETELY SEPARATE COPY of the repo, checked out under
- * .charm/worktrees/<name>/. It is NOT a linked `git worktree` — it is a full
- * standalone clone with its OWN .git (its own object store, index, and HEAD).
- * That isolation is the point: an agent working in a copy can edit anything,
- * including its own .charm (kb, proposals, scratchpad), and NONE of it touches
- * the main checkout. The copy shares the main repo's history at creation time and
- * wires main as its `origin`, so committed work can be merged back deliberately
- * and separately (e.g. `git fetch`/merge from main, or push the branch) — charm
- * itself does NO automatic merge-back.
+ * work checked out under .charm/worktrees/<name>/ via `git worktree add`. Each
+ * worktree shares the main repo's object store but has its own working tree and
+ * index — agents work independently without touching the main checkout, and
+ * gitignored control-plane state (.charm/db.sqlite, tickets, etc.) is separate
+ * per working tree. Worktrees appear in `git worktree list`, so GitHub Desktop
+ * and other git tooling see them. The orchestrator opens worktrees via MCP tools
+ * and is responsible for closing them; this class owns the git plumbing plus a
+ * prune safety-net for orphans left by a crashed daemon.
  *
- * The orchestrator opens copies via MCP tools and is responsible for closing
- * them by session end; this class owns the git plumbing plus a prune safety-net
- * for half-created orphans left by a crashed daemon.
- *
- * This is the ONE place that shells out to git for worktrees. The clone runs with
- * cwd = root (the main checkout); per-copy git commands run with cwd = the copy.
- * A non-zero exit throws with the git stderr so failures surface loudly rather
- * than silently no-op.
+ * This is the ONE place that shells out to git for worktrees. All git calls run
+ * with cwd = root (the main checkout) except where noted.
+ * A non-zero exit throws with the git stderr so failures surface loudly.
  */
 export class WorktreeManager {
   private readonly root: string;
   private readonly worktreesDir: string;
 
-  // Serializes create() (see create's doc). Each create awaits the current tail
-  // and replaces it with its own settled promise, so concurrent calls run
-  // strictly one-after-another rather than racing two clones into the same dir.
+  // Serializes create() so two concurrent creates can't interleave their
+  // collision check and `git worktree add`.
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(opts: { root: string; worktreesDir: string }) {
@@ -48,39 +41,19 @@ export class WorktreeManager {
   }
 
   /**
-   * Open a worktree (standalone copy) under worktreesDir.
+   * Open a linked worktree under worktreesDir.
    *
    * Two modes:
-   *  - opts.branch given (the Graphite-stack case): check out that EXISTING
-   *    branch in the copy (it comes across as origin/<branch> in the clone, and
-   *    `git checkout <branch>` materializes a local tracking branch from it).
-   *  - otherwise: cut a fresh `charm/<name>` branch off opts.base (default the
-   *    main checkout's current HEAD).
+   *  - opts.branch given: check out that EXISTING branch in the new worktree.
+   *  - otherwise: cut a fresh `charm/<name>` branch off opts.base (default HEAD).
    *
-   * The name is guarded with assertPlainName (it arrives from an LLM agent via
-   * MCP) and a collision — an existing path — fails loud rather than reusing a
-   * dir that may hold another line of work.
-   *
-   * The clone uses --no-hardlinks so the copy is genuinely independent: its
-   * objects are copied, not hardlinked, so neither repo's gc can ever disturb the
-   * other. This is what makes it a "completely separate copy". Only committed
-   * content is copied — gitignored run state (db.sqlite, run/, tickets, etc.) and
-   * uncommitted edits in main are deliberately NOT carried in, so a copy never
-   * duplicates the live control plane.
-   *
-   * SERIALIZED: every create runs inside the promise-chain mutex so two
-   * concurrent creates can't interleave their collision check and clone.
+   * SERIALIZED: every create runs inside the promise-chain mutex.
    */
   async create(
     name: string,
     opts?: { branch?: string; base?: string },
   ): Promise<{ name: string; path: string; branch: string }> {
-    // Chain the entire create so two concurrent calls can't interleave their
-    // collision check and clone. We capture the prior tail, await it, and
-    // publish our own settled promise as the new tail before returning.
     const run = this.chain.then(() => this.createLocked(name, opts));
-    // Swallow rejection on the shared tail so one failed create doesn't poison
-    // every subsequent create; the awaited `run` below still sees the real error.
     this.chain = run.catch(() => {});
     return run;
   }
@@ -92,125 +65,86 @@ export class WorktreeManager {
     assertPlainName(name);
     const path = join(this.worktreesDir, name);
 
-    if (existsSync(path)) {
-      throw new Error(`worktree path already exists: ${path}`);
-    }
-
-    // Ensure the parent exists; `git clone` creates the leaf dir but not its parents.
+    // Ensure the parent exists; `git worktree add` creates the leaf dir but not parents.
     mkdirSync(this.worktreesDir, { recursive: true });
-
-    // Full, independent copy of the main repo. --no-hardlinks copies objects
-    // rather than sharing inodes; origin is set to the main checkout, which is
-    // what later enables a deliberate merge-back.
-    this.git(["clone", "--no-hardlinks", this.root, path]);
 
     let branch: string;
     if (opts?.branch) {
-      // Graphite-stack case: materialize the existing branch in the copy. It
-      // arrives as origin/<branch>; `git checkout <branch>` creates the matching
-      // local branch (or just switches to it if it's already the cloned HEAD).
       branch = opts.branch;
-      this.git(["checkout", branch], path);
+      this.git(["worktree", "add", path, branch]);
     } else {
-      // Fresh-branch case: cut charm/<name> off base (default the cloned HEAD,
-      // i.e. main's current HEAD). A `base` may be a sha or a branch name; the
-      // bare name resolves first, and we retry against origin/<base> for a branch
-      // that only exists as a remote-tracking ref in the fresh clone.
       branch = `charm/${name}`;
-      if (opts?.base) {
-        try {
-          this.git(["checkout", "-b", branch, opts.base], path);
-        } catch {
-          this.git(["checkout", "-b", branch, `origin/${opts.base}`], path);
-        }
-      } else {
-        this.git(["checkout", "-b", branch], path);
-      }
+      const base = opts?.base ?? "HEAD";
+      this.git(["worktree", "add", "-b", branch, path, base]);
     }
 
     return { name, path, branch };
   }
 
   /**
-   * Enumerate every worktree copy under worktreesDir. Each is a standalone clone
-   * (its own .git), so — unlike the old linked-worktree model — there is no git
-   * registry to consult: we scan the dir and read each copy's branch + HEAD with
-   * git run inside it. A child dir without a .git is skipped here (prune() reaps
-   * it). The main checkout is NOT included, since it lives at root, not under
-   * worktreesDir.
+   * Enumerate every worktree under worktreesDir via `git worktree list --porcelain`.
+   * The main checkout (root) is excluded. Worktrees outside worktreesDir are excluded.
    */
   list(): { name: string; path: string; branch: string | null; head: string }[] {
-    if (!existsSync(this.worktreesDir)) return [];
+    let raw: string;
+    try {
+      raw = this.git(["worktree", "list", "--porcelain"]);
+    } catch {
+      return [];
+    }
     const records: { name: string; path: string; branch: string | null; head: string }[] = [];
-    for (const entry of readdirSync(this.worktreesDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const full = join(this.worktreesDir, entry.name);
-      if (!existsSync(join(full, ".git"))) continue;
-      let branch: string | null = null;
+    for (const block of raw.trim().split(/\n\n+/)) {
+      const lines = block.trim().split("\n");
+      let wPath = "";
       let head = "";
-      try {
-        branch = this.git(["rev-parse", "--abbrev-ref", "HEAD"], full).trim() || null;
-      } catch { /* corrupt/half-created copy — leave branch null */ }
-      try {
-        head = this.git(["rev-parse", "HEAD"], full).trim();
-      } catch { /* same */ }
-      records.push({ name: entry.name, path: full, branch, head });
+      let branch: string | null = null;
+      for (const line of lines) {
+        if (line.startsWith("worktree ")) wPath = line.slice("worktree ".length);
+        else if (line.startsWith("HEAD ")) head = line.slice("HEAD ".length);
+        else if (line.startsWith("branch refs/heads/")) branch = line.slice("branch refs/heads/".length);
+      }
+      if (!wPath || wPath === this.root) continue;
+      if (!wPath.startsWith(this.worktreesDir + "/")) continue;
+      const entryName = wPath.slice(this.worktreesDir.length + 1).split("/")[0];
+      if (!entryName) continue;
+      records.push({ name: entryName, path: wPath, branch, head });
     }
     return records;
   }
 
   /**
-   * Close a worktree copy: delete its directory. Because the copy is a standalone
-   * repo, removing the dir removes its branch and any committed-but-unmerged work
-   * with it — there is nothing else to clean up. `force` is accepted for call-site
-   * compatibility but is a no-op (the rm always forces). `deleteBranch`
-   * additionally tries to drop a `charm/<name>` branch in the MAIN repo —
-   * best-effort, for the case where the work was merged/pushed back and the
-   * leftover branch should go too.
+   * Close a worktree: `git worktree remove --force` deregisters it from
+   * .git/worktrees and deletes the working tree. Falls back to rmSync if git
+   * refuses (e.g. the worktree was never registered — half-created orphan).
+   * `deleteBranch` additionally drops the charm/<name> branch in the main repo.
    */
   remove(name: string, opts?: { force?: boolean; deleteBranch?: boolean }): void {
     assertPlainName(name);
     const path = join(this.worktreesDir, name);
-    rmSync(path, { recursive: true, force: true });
-
+    const r = spawnSync("git", ["worktree", "remove", "--force", path], { cwd: this.root, encoding: "utf8" });
+    if (r.status !== 0) {
+      // Fallback: worktree dir exists but wasn't registered (half-created orphan).
+      rmSync(path, { recursive: true, force: true });
+    }
     if (opts?.deleteBranch) {
-      // Best-effort: the branch may not exist in main at all; that is not fatal.
       spawnSync("git", ["branch", "-D", `charm/${name}`], { cwd: this.root, encoding: "utf8" });
     }
   }
 
   /**
-   * Reap orphan dirs left by a crashed daemon. An orphan is a child of
-   * worktreesDir that is NOT a valid standalone copy — no .git, or a .git whose
-   * HEAD won't resolve (a clone killed mid-create). Those are always safe to
-   * delete. Complete copies are deliberately LEFT in place: worktreesDir is
-   * per-directory, shared by every session running in this repo, so blindly
-   * wiping intact copies could destroy a co-resident session's in-flight work.
-   * The normal teardown path is close_worktree (remove()), not prune().
+   * Reap orphans: `git worktree prune` removes stale metadata from .git/worktrees/
+   * for any worktree whose directory no longer exists. Intact worktrees are left alone.
    */
   prune(): void {
-    if (!existsSync(this.worktreesDir)) return;
-    for (const entry of readdirSync(this.worktreesDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const full = join(this.worktreesDir, entry.name);
-      const valid =
-        existsSync(join(full, ".git")) &&
-        spawnSync("git", ["rev-parse", "--git-dir"], { cwd: full, encoding: "utf8" }).status === 0;
-      if (!valid) {
-        // Half-created / corrupt orphan git no longer needs — safe to delete.
-        rmSync(full, { recursive: true, force: true });
-      }
-    }
+    spawnSync("git", ["worktree", "prune"], { cwd: this.root, encoding: "utf8" });
   }
 
   /**
-   * Provision a freshly-created copy (deps, etc.) so an agent can run in it.
+   * Provision a freshly-created worktree (deps, etc.) so an agent can run in it.
    * TODO(phase-later): Bun-only frozen install (`bun install --frozen-lockfile`)
-   * lands in a later phase. Intentionally a no-op for now — do not implement
-   * installs here yet.
+   * lands in a later phase. Intentionally a no-op for now.
    */
   async provision(path: string): Promise<void> {
-    // No-op stub; see TODO above.
     void path;
   }
 }

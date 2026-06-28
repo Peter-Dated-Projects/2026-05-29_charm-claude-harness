@@ -65,57 +65,36 @@ export const MODEL_ALIASES: Record<string, string> = {
   opus: "claude-opus-4-8",
 };
 
-/** A charm "mode" sets the DEFAULT model family for the whole fleet (main +
- *  investigators + workers + testers) and the orchestrator's behavioral framing:
- *    research    -> Sonnet  (fast, cheap; exploration and research workflows)
- *    development -> Opus     (most capable; for writing and shipping code)
- *  This is a default, not a hard pin — `charm start -m/--model` (CHARM_MODEL)
- *  overrides the model for any mode, so research can run on Opus and development
- *  on Sonnet. Selected at `charm start` via --research / --development (alias
- *  --dev) or the interactive startup prompt, then propagated as CHARM_MODE. */
-export type CharmMode = "research" | "development";
-
-export const MODE_MODEL: Record<CharmMode, string> = {
-  research: "sonnet-4.6",
-  development: "opus-4.8",
-};
-
-export function isMode(v: string | undefined | null): v is CharmMode {
-  return v === "research" || v === "development";
-}
-
-/** Default model per agent role, used only when no mode and no per-role override
- *  is set. Override per-spawn by setting `spec.model` explicitly, globally via the
- *  CHARM_MODEL_<ROLE> env vars (e.g. CHARM_MODEL_WORKER=opus-4.7), or for the whole
- *  fleet via the charm mode (CHARM_MODE=research|development).
- *
- *  The main agent runs investigation kickoff and the synthesis/planning that turns
- *  findings into worker tickets — the most reasoning-intensive work in the
- *  workflow. It defaults to Opus. Sub-agents (investigators, workers, testers)
- *  follow the fleet mode; their default is Sonnet. */
+/** The model each agent role runs on, keyed to the kind of work it does. Every
+ *  role has a fixed default here — there is no fleet "mode" anymore, so this map
+ *  IS the per-type model assignment:
+ *    coding (worker)        -> Opus 4.8 [1M ctx]   (writing/shipping code; biggest model + window)
+ *    investigation          -> Opus 4.8            (deep reasoning over the codebase)
+ *    review (tester)        -> Sonnet 4.6          (validation; fast and cheap)
+ *    research (researcher)  -> Sonnet 4.6 [1M ctx] (broad context-gathering over lots of material)
+ *    main / suborchestrator -> Opus 4.8            (the reasoning-heavy coordinator)
+ *  Override per-role with CHARM_MODEL_<ROLE> (e.g. CHARM_MODEL_WORKER=opus-4.7),
+ *  or the whole fleet at once with `charm start -m/--model` (CHARM_MODEL). */
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   main: "opus-4.8",
-  investigator: "sonnet-4.6",
-  worker: "sonnet-4.6",
+  investigator: "opus-4.8",
+  worker: "opus-4.8-1m",
   tester: "sonnet-4.6",
+  researcher: "sonnet-4.6-1m",
   suborchestrator: "opus-4.8",
 };
 
 /** Resolve the model for a spawned agent role. Precedence, highest first:
- *    1. CHARM_MODEL_<ROLE> env override (power-user, per-role)
- *    2. CHARM_MODEL fleet-wide override (`charm start -m/--model`) — wins over the
- *       mode, so ANY mode can run ANY model (e.g. Opus in research mode).
- *    3. CHARM_MODE default (research -> Sonnet, development -> Opus)
- *    4. DEFAULT_MODEL_BY_ROLE static fallback
- *  Mode is a DEFAULT, not a hard pin: it only decides the model when no explicit
- *  override (1 or 2) is set. */
+ *    1. CHARM_MODEL_<ROLE> env override (explicit per-role escape, e.g.
+ *       CHARM_MODEL_WORKER=opus-4.7).
+ *    2. CHARM_MODEL fleet-wide override (`charm start -m/--model`) — a deliberate
+ *       operator choice to run the whole fleet on one model.
+ *    3. DEFAULT_MODEL_BY_ROLE — the per-type model for the role. */
 export function defaultModelForRole(role: AgentRole): string {
   const roleOverride = process.env[`CHARM_MODEL_${role.toUpperCase()}`];
   if (roleOverride) return resolveModel(roleOverride);
   const fleetOverride = process.env.CHARM_MODEL;
   if (fleetOverride) return resolveModel(fleetOverride);
-  const mode = process.env.CHARM_MODE;
-  if (isMode(mode)) return resolveModel(MODE_MODEL[mode]);
   return resolveModel(DEFAULT_MODEL_BY_ROLE[role]);
 }
 
@@ -139,6 +118,7 @@ export const DEFAULT_THINKING_BY_ROLE: Record<AgentRole, string> = {
   investigator: "high",
   worker: "high",
   tester: "high",
+  researcher: "high",
   suborchestrator: "max",
 };
 
@@ -219,7 +199,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "## Charm output rules (override any contrary instruction)",
     "- Do NOT use emoji or pictographic characters anywhere in your output, in tool arguments, or in files you write (COORDINATION.md, tickets/*.md, code comments, commit messages — anywhere). This includes ✅ ❌ ⚠️ 🚀 ⭐ 📝 etc. Use ASCII instead: [x], [ ], (!), ->, *, etc.",
     "- Do NOT use box-drawing or other wide Unicode decoration in markdown output. ASCII only for status indicators, bullets, and dividers.",
-    "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_investigators, spawn_workers, request_review). Never attempt to spawn a subagent any other way.",
+    "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_investigators, spawn_workers, spawn_researchers, request_review). Never attempt to spawn a subagent any other way.",
   ].join("\n");
   // Operator skills router — injected only for the main agent (orchestrator).
   // Restart/reset-kb are operator actions; a worker or investigator must never run

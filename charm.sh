@@ -4,8 +4,8 @@
 #
 # Usage:
 #   ./charm.sh init [--root PATH]
-#   ./charm.sh start "your goal here"     (prompts for research vs development mode)
-#   ./charm.sh start --research "goal"     (Sonnet fleet) | --development / --dev (Opus fleet)
+#   ./charm.sh start "your goal here"      (each agent runs on its per-type model)
+#   ./charm.sh start -m opus-4.8 "goal"    (override the whole fleet's model)
 #   ./charm.sh status
 #   ./charm.sh approve <gate_id> [--reject]
 #   ./charm.sh attach

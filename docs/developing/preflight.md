@@ -13,7 +13,7 @@ paste in (Part A) and a checklist you drive by hand against the live session (Pa
 Run it with a cheap, fast model — you're testing the harness, not output quality:
 
 ```sh
-./charm.sh start -m haiku-4.5 --development "<Part A goal below>"
+./charm.sh start -m haiku-4.5 "<Part A goal below>"
 ```
 
 ---
@@ -105,8 +105,8 @@ These cannot be triggered by the agent. Run them against the live session.
 - **CLI subcommands** — run each against the session: `charm status`, `charm attach`,
   `charm session-name`, `charm ctl <cmd>`, `charm restart`, `charm stop`. Test `init` and
   `reset-kb` only in a scratch dir — **`reset-kb` wipes the durable `.charm/kb/`**.
-- **In-session `:` commands** — `:dev` / `:research` to swap the fleet model mid-session
-  (new spawns should pick up the new model), `:a` to detach, `:q` to tear down. After `:q`,
+- **In-session `:` commands** — `:so` to spawn a suborchestrator, `:a` to detach, `:q` to
+  tear down. After `:q`,
   confirm it killed **only** this UUID's panes and `run/<uuid>/` dir, leaving other
   charm/claude sessions untouched.
 - **Durable KB** — confirm `.charm/kb/` survives a full `:q` + fresh `start` in the same

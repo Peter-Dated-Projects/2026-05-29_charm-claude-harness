@@ -40,12 +40,9 @@ program
   .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
-  .option("--research", "research mode: default the fleet to Sonnet (overridable with -m/--model)", false)
-  .option("--development", "development mode: default the fleet to Opus (overridable with -m/--model)", false)
-  .option("--dev", "alias for --development", false)
   .option(
     "-m, --model <model>",
-    "model for the WHOLE fleet (main agent + every sub-agent), honored in any mode and overriding the mode default: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
+    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
   )
   .option(
     "--max-agents <n>",
@@ -89,22 +86,16 @@ program
     const goal = (goalParts ?? []).join(" ").trim();
     const plain = goal.length === 0;
 
-    // 0. Resolve the charm mode. Mode is the DEFAULT model selector and the
-    // orchestrator's behavioral framing — research defaults the fleet to Sonnet,
-    // development to Opus. From flags if given; otherwise an in-terminal prompt
-    // (or research as the non-interactive fallback so piped/--no-attach usage
-    // doesn't hang).
-    const mode = await resolveMode(opts);
-
-    // Resolve the fleet model. The mode sets the default; -m/--model overrides it
-    // for the WHOLE fleet (main agent + every sub-agent) and is honored in ANY
-    // mode — so you can run Opus in research mode or Sonnet in development mode.
-    // Resolved up front so a bad alias fails before we spawn anything, and so the
-    // daemon receives (via CHARM_MODEL) the exact id it will hand to sub-agents.
-    const { resolveModel, MODE_MODEL, buildClaudeCommand, defaultPermissionMode, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
+    // Resolve the orchestrator's model. Each agent role runs on a per-type model
+    // (see DEFAULT_MODEL_BY_ROLE); the orchestrator (main) defaults to Opus.
+    // -m/--model overrides the model for the WHOLE fleet (main + every sub-agent),
+    // replacing the per-type defaults. Resolved up front so a bad alias fails
+    // before we spawn anything; when -m is given the daemon receives it via
+    // CHARM_MODEL so it hands the same id to every sub-agent.
+    const { resolveModel, defaultModelForRole, buildClaudeCommand, defaultPermissionMode, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
     let fleetModel: string;
     try {
-      fleetModel = resolveModel(opts.model ?? MODE_MODEL[mode]);
+      fleetModel = opts.model ? resolveModel(opts.model) : defaultModelForRole("main");
     } catch (e: any) {
       console.error(e.message);
       process.exit(2);
@@ -120,9 +111,9 @@ program
       process.exit(2);
     }
 
-    // 1. Spawn charmd in background. CHARM_MODE sets the fleet's default model and
-    // behavioral framing; CHARM_MODEL (set only when -m/--model was given) pins the
-    // model for every role the daemon spawns, independent of mode.
+    // 1. Spawn charmd in background. CHARM_MODEL (set only when -m/--model was
+    // given) pins the model for every role the daemon spawns, overriding the
+    // per-type defaults.
     const logFile = join(paths.logsDir, "charmd.log");
     // Point the daemon's stdout/stderr at its log file rather than inheriting
     // this CLI's TTY. The daemon outlives `start`, so an inherited TTY would
@@ -133,7 +124,7 @@ program
     const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", session, "--uuid", sessionId], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
-      env: { ...process.env, CHARM_MODE: mode, CHARM_MAX_AGENTS: String(maxAgents), ...(opts.model ? { CHARM_MODEL: fleetModel } : {}) },
+      env: { ...process.env, CHARM_MAX_AGENTS: String(maxAgents), ...(opts.model ? { CHARM_MODEL: fleetModel } : {}) },
     });
     child.unref();
     console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
@@ -170,12 +161,14 @@ program
 
     // Layout: console on the left (pane 0), main agent on the right (pane 1).
     // fleetModel + buildClaudeCommand + MAIN_AGENT_ID were resolved/imported above.
-    const modelNote = opts.model ? "-m override, all agents" : `${mode} default`;
-    console.log(`[charm] mode: ${mode} | fleet model: ${fleetModel} (${modelNote}) | max agents: ${maxAgents}${plain ? " | plain window, no goal" : ""}`);
+    const modelNote = opts.model
+      ? `all agents on ${fleetModel} (-m override)`
+      : `orchestrator on ${fleetModel}, sub-agents on per-type defaults`;
+    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${plain ? " | plain window, no goal" : ""}`);
     // Mint and persist the orchestrator's Claude-side conversation id plus the
     // launch settings it was spawned with. charm launches the main agent under
     // `claude --session-id <uuid>` (so it owns the id rather than discovering it),
-    // then records {claude_session_id, model, permission_mode, mode} to
+    // then records {claude_session_id, model, permission_mode} to
     // orchestratorSessionFile — the conversation the operator wants back via
     // `charm resume`, along with the model + permission mode resume must re-supply
     // to relaunch it faithfully. Its own file (not meta.json) keeps it readable
@@ -189,7 +182,6 @@ program
       claude_session_id: orchestratorSessionId,
       model: fleetModel,
       permission_mode: defaultPermissionMode(),
-      mode,
       max_agents: maxAgents,
     };
     writeFileSync(paths.orchestratorSessionFile, JSON.stringify(sessionRecord, null, 2) + "\n");
@@ -250,17 +242,16 @@ program
       `--socket "#{@charm_socket}" --session "#{session_name}" %1`;
     tmux.bindCommandPrompt(ctlTemplate);
 
-    // Re-clamp the layout whenever the terminal is resized OR the user drags a
-    // pane divider. The daemon's relayout (which enforces the sidebar's
-    // max-width) otherwise only runs on fleet-grid mutations, so dragging the
-    // console divider past the cap would stick until the next spawn.
-    // `window-layout-changed` catches divider drags; `client-resized` catches
-    // terminal resizes. The daemon skips re-applying an unchanged layout, so the
-    // select-layout it issues can't feed window-layout-changed back into a loop.
-    // Same `#{@charm_socket}` token as the `:` binding: resolves per-session.
+    // Re-clamp the layout whenever the terminal is resized or the user drags a
+    // pane divider. Both hooks use run-shell -b (background) so tmux never
+    // blocks key/mouse processing waiting for the RPC roundtrip.
+    // `window-layout-changed` fires when select-layout is called (including from
+    // our own relayout), but the daemon's layout-equality guard breaks the loop
+    // after one round: drag → relayout → select-layout → hook → relayout →
+    // layout matches → skip. client-resized handles terminal resize.
     const relayoutCmd = `${selfArgv.map(shellQuote).join(" ")} ctl relayout --socket "#{@charm_socket}"`;
-    tmux.setHook("window-layout-changed", relayoutCmd);
-    tmux.setHook("client-resized", relayoutCmd);
+    tmux.setHook("window-layout-changed", relayoutCmd, { background: true });
+    tmux.setHook("client-resized", relayoutCmd, { background: true });
 
     // Focus the main agent pane so keystrokes go to Claude, not the console.
     tmux.selectPane(`${session}:charm.1`);
@@ -339,7 +330,6 @@ program
       claude_session_id?: string;
       model?: string;
       permission_mode?: string;
-      mode?: string;
       max_agents?: number;
       console_pane_id?: string;
       orchestrator_pane_id?: string;
@@ -409,7 +399,6 @@ program
           detached: true,
           env: {
             ...process.env,
-            ...(record.mode ? { CHARM_MODE: record.mode } : {}),
             ...(record.model ? { CHARM_MODEL: record.model } : {}),
             ...(record.permission_mode ? { CHARM_PERMISSION_MODE: record.permission_mode } : {}),
             ...(record.max_agents ? { CHARM_MAX_AGENTS: String(record.max_agents) } : {}),
@@ -431,17 +420,13 @@ program
       console.log(`[charm] daemon restarted (pid=${d.pid}).`);
     }
 
-    // Re-supply the original launch settings. The mode framing isn't reconstructed
-    // (the orchestrator's own conversation history carries it); model + permission
-    // mode are re-applied so the resumed session behaves like the original spawn.
-    const { buildClaudeCommand, resolveModel, MODE_MODEL, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
+    // Re-supply the original launch settings: model + permission mode are
+    // re-applied so the resumed session behaves like the original spawn. With no
+    // recorded model, fall back to the orchestrator's per-type default.
+    const { buildClaudeCommand, resolveModel, defaultModelForRole, MAIN_AGENT_ID } = await import("./daemon/spawn.ts");
     let model: string | undefined;
     try {
-      model = record.model
-        ? resolveModel(record.model)
-        : record.mode && (record.mode === "research" || record.mode === "development")
-        ? resolveModel(MODE_MODEL[record.mode])
-        : undefined;
+      model = record.model ? resolveModel(record.model) : defaultModelForRole("main");
     } catch { model = undefined; }
     if (record.permission_mode) process.env.CHARM_PERMISSION_MODE = record.permission_mode;
 
@@ -680,7 +665,7 @@ program
 
 program
   .command("ctl <cmd>")
-  .description("internal: handle a vim-style command (`:q`, `:a`, `:dev`/`:research`) from the tmux key binding")
+  .description("internal: handle a vim-style command (`:q`, `:a`, `:so`) from the tmux key binding")
   .option("--socket <path>", "daemon socket of the session the key was pressed in")
   .option("-s, --session <name>", "tmux session the key was pressed in")
   .action(async (cmd: string, opts) => {
@@ -707,23 +692,6 @@ program
     }
     if (c === "a" || c === "detach") {
       if (session) spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
-      return;
-    }
-    // Swap the fleet mode mid-session: research <-> development. Accepts the
-    // mode's short aliases so `:d`/`:dev`/`:development` and `:r`/`:res`/
-    // `:research` all work, mirroring the [r]/[d] startup picker. The daemon
-    // re-points future spawns at the new model AND live-swaps the orchestrator
-    // onto it via `/model` (its context is preserved). No socket -> no daemon to
-    // tell, so just surface that in the status line.
-    const DEV_ALIASES = new Set(["d", "dev", "development"]);
-    const RES_ALIASES = new Set(["r", "res", "research"]);
-    if (DEV_ALIASES.has(c) || RES_ALIASES.has(c)) {
-      const mode = DEV_ALIASES.has(c) ? "development" : "research";
-      if (socket) {
-        try { await rpcCall(socket, "set_mode", { mode }); return; }
-        catch { /* daemon gone — fall through to the status-line notice */ }
-      }
-      spawn("tmux", ["display-message", `charm: cannot switch to ${mode} mode (no daemon)`], { stdio: "ignore" });
       return;
     }
     // Spawn a suborchestrator: an interactive, operator-facing agent in its own
@@ -899,29 +867,6 @@ function writeSessionMeta(
   };
   mkdirSync(dirname(paths.metaJson), { recursive: true });
   writeFileSync(paths.metaJson, JSON.stringify(meta, null, 2) + "\n");
-}
-
-type StartOpts = { research?: boolean; development?: boolean; dev?: boolean };
-
-/** Decide the charm mode for a `start` run. Explicit flags win; conflicting flags
- *  error out. With no flag we show the in-terminal selector on a TTY, and fall
- *  back to research (the historical default) for non-interactive invocations. */
-async function resolveMode(opts: StartOpts): Promise<"research" | "development"> {
-  const wantsResearch = !!opts.research;
-  const wantsDev = !!opts.development || !!opts.dev;
-  if (wantsResearch && wantsDev) {
-    console.error("[charm] pick one mode: --research or --development (not both).");
-    process.exit(2);
-  }
-  if (wantsResearch) return "research";
-  if (wantsDev) return "development";
-
-  if (process.stdin.isTTY) {
-    const { promptMode } = await import("./cli/mode-prompt.tsx");
-    return promptMode();
-  }
-  console.error("[charm] no mode flag and no TTY for the prompt; defaulting to --research (Sonnet).");
-  return "research";
 }
 
 /**

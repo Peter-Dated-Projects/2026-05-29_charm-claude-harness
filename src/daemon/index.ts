@@ -13,7 +13,7 @@ import { buildLayoutString } from "./layout.ts";
 import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, isMode, MAIN_AGENT_ID, MODE_MODEL, newClaudeSessionId, resolveModel, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import {
@@ -23,6 +23,7 @@ import {
   FinishProposalInput,
   SpawnInvestigatorsInput,
   SpawnWorkersInput,
+  SpawnResearchersInput,
   AwaitApprovalInput,
   UpdatePlanInput,
   ReportStatusInput,
@@ -354,7 +355,7 @@ async function main() {
       // The cap is what stops a divider-drag from widening the sidebar past
       // MAX_CONSOLE_WIDTH: the window-layout-changed hook re-runs this, the drag
       // shows up as a larger `cur`, and Math.min clamps it back down.
-      const MAX_CONSOLE_WIDTH = 25;
+      const MAX_CONSOLE_WIDTH = 32;
       const cur = await tmux.paneWidth(consolePaneId);
       const consoleWidth = Math.max(
         1,
@@ -948,6 +949,45 @@ async function main() {
           return { agent_ids: ids, ...(deferred.length > 0 ? { deferred, max_agents: maxAgents } : {}) };
         });
       }
+      case "spawn_researchers": {
+        const input = SpawnResearchersInput.parse(params);
+        assertOrchestrator(input.caller_id, "spawn_researchers");
+        // Ad-hoc, ticket-less context-gathering agents. Unlike investigators
+        // (one per investigation ticket, prompt synthesized from the ticket file),
+        // a researcher is spawned directly off a free-text prompt the orchestrator
+        // passes — ticket_id is null. One agent per prompt in the batch. Same
+        // slot-clamp + parent-edge discipline as spawn_investigators (no `touches`
+        // claim, so only the agent cap is the shared resource to serialize).
+        const researchCwd = resolveSpawnCwd(input.worktree);
+        const researchParentId = input.caller_id ?? null;
+        return withLayoutLock(async () => {
+          const slots = remainingAgentSlots();
+          const toSpawn = input.prompts.slice(0, slots);
+          const deferred = input.prompts.slice(slots);
+          const ids: string[] = [];
+          for (const prompt of toSpawn) {
+            ids.push(await spawnAgentLocked({
+              role: "researcher",
+              ticket_id: null,
+              prompt,
+              cwd: researchCwd,
+              // Interactive, like every other sub-agent: a researcher that needs a
+              // decision it can't make reports_status('blocked') and waits in its
+              // pane for the orchestrator to continue_agent it. Its prompt (and
+              // researcher.md) requires a terminal report_status('done'/'failed')
+              // so the orchestrator is pinged and reaps the otherwise-idle pane.
+              interactive: true,
+            }, researchParentId));
+          }
+          if (deferred.length > 0) {
+            console.error(
+              `[charmd] spawn_researchers: agent cap ${maxAgents} reached (${liveAgentCount()} live); ` +
+                `deferred ${deferred.length} prompt(s).`,
+            );
+          }
+          return { agent_ids: ids, ...(deferred.length > 0 ? { deferred, max_agents: maxAgents } : {}) };
+        });
+      }
       case "spawn_workers": {
         const input = SpawnWorkersInput.parse(params);
         assertOrchestrator(input.caller_id, "spawn_workers");
@@ -1394,41 +1434,6 @@ async function main() {
         };
         writeFileSync(paths.metaJson, JSON.stringify(meta, null, 2) + "\n");
         return { ok: true };
-      }
-      case "set_mode": {
-        // Mid-session fleet-mode swap (research <-> development), driven by the
-        // `:dev`/`:research` tmux command. Two effects:
-        //  1. Re-point future spawns. defaultModelForRole() reads CHARM_MODE live
-        //     on every spawn, so mutating it here means every agent the
-        //     orchestrator spawns from now on runs on the new mode's model.
-        //     Already-running panes keep the model they were spawned with.
-        //  2. Live-swap the orchestrator itself. Its pane is an interactive
-        //     Claude Code session, so injecting `/model <id>` switches its model
-        //     WITHOUT losing context; a follow-up note tells it the mode changed
-        //     so it can adjust its approach.
-        const { mode } = params as { mode: string };
-        if (!isMode(mode)) throw new Error(`invalid mode: ${mode} (expected research|development)`);
-        process.env.CHARM_MODE = mode;
-        // Clear any start-time fleet override (-m/--model / CHARM_MODEL). Switching
-        // mode is an explicit request for that mode's model; leaving the override
-        // set would shadow it in defaultModelForRole and the swap would silently
-        // no-op for sub-agents.
-        delete process.env.CHARM_MODEL;
-        const model = resolveModel(MODE_MODEL[mode]);
-        if (tmuxAvailable && orchestratorPaneId && (await tmux.paneAlive(orchestratorPaneId))) {
-          try {
-            await tmux.sendText(orchestratorPaneId, `/model ${model}`);
-            await tmux.sendText(
-              orchestratorPaneId,
-              `[charm] Mode switched to ${mode}: you are now running on ${model}, and every sub-agent you ` +
-              `spawn from here on will run on ${model} too. Adjust your approach to match ${mode} mode.`,
-            );
-          } catch (e) {
-            console.error("[charmd] set_mode orchestrator notify failed:", e);
-          }
-        }
-        try { spawnSync("tmux", ["display-message", `charm: mode -> ${mode} (${model})`]); } catch { /* ignore */ }
-        return { ok: true, mode, model };
       }
       case "shutdown": {
         // Kill the tmux session first so panes (console, agents) tear down
