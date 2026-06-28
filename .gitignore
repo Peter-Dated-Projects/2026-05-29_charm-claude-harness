@@ -8,6 +8,6 @@ dist/
 
 testing/
 
-# Local-only Rust port scratch; never tracked on main.
-rust/
+# Rust crate build output (the charm-watch source under rust/ IS tracked).
+rust/target/
 
