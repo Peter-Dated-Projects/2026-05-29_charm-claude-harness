@@ -242,16 +242,27 @@ program
       `--socket "#{@charm_socket}" --session "#{session_name}" %1`;
     tmux.bindCommandPrompt(ctlTemplate);
 
-    // Re-clamp the layout whenever the terminal is resized or the user drags a
-    // pane divider. Both hooks use run-shell -b (background) so tmux never
-    // blocks key/mouse processing waiting for the RPC roundtrip.
-    // `window-layout-changed` fires when select-layout is called (including from
-    // our own relayout), but the daemon's layout-equality guard breaks the loop
-    // after one round: drag → relayout → select-layout → hook → relayout →
-    // layout matches → skip. client-resized handles terminal resize.
-    const relayoutCmd = `${selfArgv.map(shellQuote).join(" ")} ctl relayout --socket "#{@charm_socket}"`;
-    tmux.setHook("window-layout-changed", relayoutCmd, { background: true });
-    tmux.setHook("client-resized", relayoutCmd, { background: true });
+    // Two layout hooks, deliberately split by what each event needs. Both use
+    // run-shell -b (background) so tmux never blocks key/mouse processing on the
+    // RPC roundtrip.
+    //
+    // `window-layout-changed` fires on every manual divider drag (and on our own
+    // select-layout). It routes to `clamp_console`, which only snaps the sidebar
+    // back under its cap and NEVER recomputes the agent grid. The Claude panes
+    // have no width policy — the user drags them freely — so re-applying a full
+    // computed layout on each frame of a drag fought the cursor (the daemon read
+    // a stale mid-drag width and select-layout snapped it back) and round-trip
+    // rounding nudged untouched dividers. Clamp-only removes that friction, and
+    // because the clamp is a no-op once the sidebar is within its cap, it also
+    // can't feed itself a layout-changed loop.
+    //
+    // `client-resized` fires on terminal size changes and routes to a full
+    // `relayout` — there the agent grid genuinely must be re-fit to the new
+    // window, not just the sidebar clamped.
+    const base = `${selfArgv.map(shellQuote).join(" ")} ctl`;
+    const sock = `--socket "#{@charm_socket}"`;
+    tmux.setHook("window-layout-changed", `${base} clamp_console ${sock}`, { background: true });
+    tmux.setHook("client-resized", `${base} relayout ${sock}`, { background: true });
 
     // Focus the main agent pane so keystrokes go to Claude, not the console.
     tmux.selectPane(`${session}:charm.1`);
@@ -708,11 +719,21 @@ program
       return;
     }
     // Recompute the layout: fired by the session's `client-resized` tmux hook so
-    // the sidebar's max-width clamp re-applies on terminal resize, not just on
-    // spawn/kill. Fail silently if the daemon's gone — a resize must never error.
+    // the agent grid is re-fit and the sidebar's max-width clamp re-applies on
+    // terminal resize. Fail silently if the daemon's gone — a resize must never error.
     if (c === "relayout") {
       if (socket) {
         try { await rpcCall(socket, "relayout"); } catch { /* daemon gone — nothing to relayout */ }
+      }
+      return;
+    }
+    // Clamp only the sidebar column back under its cap: fired by the session's
+    // `window-layout-changed` hook on every manual divider drag. Deliberately does
+    // NOT recompute the agent grid, so dragging Claude-pane dividers is
+    // frictionless. Fail silently if the daemon's gone — a drag must never error.
+    if (c === "clamp_console") {
+      if (socket) {
+        try { await rpcCall(socket, "clamp_console"); } catch { /* daemon gone — nothing to clamp */ }
       }
       return;
     }

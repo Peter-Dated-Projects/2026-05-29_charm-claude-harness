@@ -300,4 +300,15 @@ export class Tmux {
     const r = await tmuxRun(["select-layout", "-t", `${this.session}:${window}`, layout]);
     if (r.status !== 0) throw new Error(`tmux select-layout failed: ${r.stderr}`);
   }
+
+  /** Resize a single pane to an exact cell width. tmux gives the reclaimed (or
+   *  borrowed) columns to the adjacent pane and leaves every other divider — in
+   *  particular the agent grid's internal dividers — untouched. This is the
+   *  surgical alternative to a full select-layout: used to snap the console
+   *  column back to its cap on a manual divider drag without recomputing (and
+   *  thereby nudging) the agent panes. */
+  async resizePaneWidth(paneId: string, width: number): Promise<void> {
+    const r = await tmuxRun(["resize-pane", "-t", paneId, "-x", String(width)]);
+    if (r.status !== 0) throw new Error(`tmux resize-pane failed: ${r.stderr}`);
+  }
 }

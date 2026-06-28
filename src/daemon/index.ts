@@ -330,6 +330,11 @@ async function main() {
     return run;
   }
 
+  // Hard cap on the console/sidebar column width, in cells. Shared by the full
+  // relayout (which bakes it into the layout string) and the console-only clamp
+  // (which snaps just this column back to it on a manual divider drag).
+  const MAX_CONSOLE_WIDTH = 32;
+
   // The actual relayout work, assuming the caller already holds the layout lock.
   async function relayoutLocked() {
     if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
@@ -352,10 +357,11 @@ async function main() {
       // cap the user asked for) and never wider than the window minus 20 so the
       // agent grid keeps room. Fall back to a 35% share only on the first
       // layout, when the pane hasn't been sized yet.
-      // The cap is what stops a divider-drag from widening the sidebar past
-      // MAX_CONSOLE_WIDTH: the window-layout-changed hook re-runs this, the drag
-      // shows up as a larger `cur`, and Math.min clamps it back down.
-      const MAX_CONSOLE_WIDTH = 32;
+      // The cap is what stops a too-wide sidebar from surviving: on a full
+      // relayout (spawn/kill/terminal-resize) it's baked into the layout string
+      // via Math.min. A manual divider drag does NOT come through here anymore —
+      // it routes to clampConsoleLocked, which snaps just this column back
+      // without recomputing the agent grid (see the hook split in cli.ts).
       const cur = await tmux.paneWidth(consolePaneId);
       const consoleWidth = Math.max(
         1,
@@ -391,6 +397,34 @@ async function main() {
   /** Standalone relayout (takes the lock). Use from handlers that aren't already
    *  inside a withLayoutLock section (e.g. register_panes). */
   const relayout = () => withLayoutLock(relayoutLocked);
+
+  // Console-only clamp: enforce MAX_CONSOLE_WIDTH on the sidebar column WITHOUT
+  // recomputing the agent grid. This is the manual-drag path (the
+  // window-layout-changed hook). The agent panes have no width policy — the user
+  // is meant to drag their dividers freely — so re-applying a full computed
+  // layout on every frame of a drag was pure friction: the daemon read a stale
+  // mid-drag width snapshot, rebuilt a layout from it, and select-layout snapped
+  // the cursor back to where it was ~50ms ago (a tug-of-war), while proportional
+  // re-scaling rounding nudged dividers the user never touched. So here we only
+  // touch the one column that actually has a cap: if the sidebar got dragged
+  // past the cap, resize JUST it back (tmux hands the reclaimed columns to the
+  // adjacent orchestrator pane and leaves the agent grid alone); otherwise this
+  // is a no-op and the drag is honored exactly. Full relayout still runs on
+  // spawn/kill (direct relayoutLocked calls) and terminal resize (client-resized).
+  async function clampConsoleLocked() {
+    if (!tmuxAvailable || !consolePaneId || agentPaneIds.length === 0) return;
+    try {
+      const cur = await tmux.paneWidth(consolePaneId);
+      if (cur === null) return;
+      const win = await tmux.windowSize(WINDOW);
+      const target = Math.max(1, Math.min(MAX_CONSOLE_WIDTH, win.w - 20));
+      if (cur <= target) return; // within the cap — honor the drag, touch nothing
+      await tmux.resizePaneWidth(consolePaneId, target);
+    } catch (e) {
+      console.error("[charmd] console clamp failed:", e);
+    }
+  }
+  const clampConsole = () => withLayoutLock(clampConsoleLocked);
 
   // The core spawn, assuming the caller already holds the layout lock. This is
   // the read-solve-spawn critical section's building block: registry.create()
@@ -858,13 +892,20 @@ async function main() {
       }
       case "relayout": {
         // Fired by the session's `client-resized` tmux hook (see cli.ts start):
-        // recompute the grid so the sidebar's max-width clamp is re-applied when
-        // the terminal is resized, not just on spawn/kill. Safe to call any time;
-        // it's a no-op when no agent panes are registered yet. This routes through
-        // `client-resized` (terminal size change) — NOT `window-layout-changed` —
-        // precisely because relayout calls select-layout, which would re-fire a
-        // layout hook and loop; resizing the client is not self-induced.
+        // recompute the grid so the sidebar's max-width clamp is re-applied AND
+        // the agent grid is re-fit when the terminal is resized — both genuinely
+        // need a fresh full layout. Safe to call any time; a no-op when no agent
+        // panes are registered yet. Manual divider drags do NOT route here (they
+        // go to `clamp_console`): select-layout would fight the user's drag.
         await relayout();
+        return { ok: true };
+      }
+      case "clamp_console": {
+        // Fired by the session's `window-layout-changed` tmux hook (every manual
+        // divider drag). Enforces ONLY the sidebar cap — never recomputes the
+        // agent grid — so dragging Claude-pane dividers is frictionless. No-op
+        // when no panes are registered or the sidebar is within its cap.
+        await clampConsole();
         return { ok: true };
       }
       // ---- MCP-facing tools ----
