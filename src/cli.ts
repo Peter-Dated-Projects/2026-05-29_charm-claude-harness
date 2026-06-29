@@ -1154,6 +1154,12 @@ function scaffoldClaudeSettings(paths: ReturnType<typeof charmPaths>) {
   }
   const template = JSON.parse(readFileSync(join(tmplDir, "settings.json"), "utf8"));
   const wanted = template.permissions.allow as string[];
+  // Spawned agents run unattended in tmux panes: a project `.mcp.json` would
+  // otherwise stall them on a "do you trust this MCP server?" prompt. This key
+  // auto-approves all project-scoped MCP servers so every spawned agent picks
+  // them up silently. (Servers we pass via --mcp-config are already trusted; this
+  // covers the ones Claude Code loads from .mcp.json on its own.)
+  const wantMcpAutoApprove = template.enableAllProjectMcpServers === true;
 
   const fileExists = existsSync(paths.claudeSettings);
   let existing: any = {};
@@ -1175,6 +1181,13 @@ function scaffoldClaudeSettings(paths: ReturnType<typeof charmPaths>) {
     : (existing.permissions = {});
   const allow: string[] = Array.isArray(perms.allow) ? perms.allow : (perms.allow = []);
   for (const entry of wanted) if (!allow.includes(entry)) allow.push(entry);
+
+  // Set the MCP auto-approve key only when the file doesn't already carry a value
+  // for it — an explicit user choice (even `false`) is left untouched, matching
+  // the never-clobber ethos above.
+  if (wantMcpAutoApprove && !("enableAllProjectMcpServers" in existing)) {
+    existing.enableAllProjectMcpServers = true;
+  }
 
   // Nothing to add (and the file already exists) — don't rewrite/reformat it.
   if (fileExists && JSON.stringify(existing) === before) return;

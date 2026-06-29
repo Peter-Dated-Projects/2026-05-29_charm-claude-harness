@@ -3,5 +3,6 @@
     "allow": [
       "mcp__charm__*"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true
 }
