@@ -273,7 +273,7 @@ server.registerTool(
       "(.charm/tickets/<id>.md) and reflected on the coordination board.",
     inputSchema: {
       status: z.enum(["pending", "ready", "running", "blocked", "complete", "failed"]).optional(),
-      stage: z.enum(["generated", "review", "approved", "in_progress", "testing", "done", "failed"]).optional(),
+      stage: z.enum(["generated", "investigating", "approved", "in_progress", "testing", "done", "failed"]).optional(),
       note: z.string().optional(),
     },
   },

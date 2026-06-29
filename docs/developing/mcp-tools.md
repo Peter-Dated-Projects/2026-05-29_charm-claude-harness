@@ -88,7 +88,7 @@ self-scoped — never another agent's ticket. At least one of `status`/`stage` m
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `status` | `pending` \| `ready` \| `running` \| `blocked` \| `complete` \| `failed` | no | `cancelled` is not settable here. |
-| `stage` | `generated` \| `review` \| `approved` \| `in_progress` \| `testing` \| `done` \| `failed` | no | ⚠️ The MCP shim accepts `review` here, but the daemon validates `stage` against the canonical `TicketStage` (`generated`/`investigating`/`approved`/`in_progress`/`testing`/`done`/`failed`) and rejects `review`. The two enums are out of sync — the stages that actually round-trip are the ones common to both. |
+| `stage` | `generated` \| `investigating` \| `approved` \| `in_progress` \| `testing` \| `done` \| `failed` | no | |
 | `note` | string | no | Recorded in the ticket's activity log. |
 
 ---
