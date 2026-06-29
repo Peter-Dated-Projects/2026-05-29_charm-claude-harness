@@ -91,9 +91,9 @@ export class AgentRegistry {
     return a;
   }
 
-  /** Record the worktree copy this agent is isolated in (the subdir name under
-   *  .charm/worktrees/), or null to mark it back on the shared tree. Set by the
-   *  daemon after a copy is opened for the agent — create() always starts at
+  /** Record the worktree this agent is isolated in (the subdir name under
+   *  ~/.charm-worktrees/<repo>/), or null to mark it back on the shared tree. Set by
+   *  the daemon after a worktree is opened for the agent — create() always starts at
    *  null since most agents run in the shared tree. */
   setWorktree(id: string, name: string | null): Agent {
     const a = this.require(id);

@@ -86,10 +86,10 @@ export const Agent = z.object({
   // built without a parent (the orchestrator itself, an operator `:so`) still
   // parses, exactly like ticket_id/worktree_name.
   parent_id: z.string().nullable().default(null),
-  // The orchestrator-managed worktree copy this agent is isolated in
-  // (.charm/worktrees/<name>/), or null for the default shared-tree execution.
-  // Nullable like ticket_id: most agents run in the shared tree, and the daemon
-  // sets the real value later via setWorktree once a copy is opened.
+  // The orchestrator-managed worktree this agent is isolated in
+  // (~/.charm-worktrees/<repo>/<name>/), or null for the default shared-tree
+  // execution. Nullable like ticket_id: most agents run in the shared tree, and the
+  // daemon sets the real value later via setWorktree once a worktree is opened.
   worktree_name: z.string().nullable(),
   pane_id: z.string().nullable(),
   pid: z.number().nullable(),
@@ -179,7 +179,7 @@ export const SpawnInvestigatorsInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
   // Optional worktree to run the spawned agents in: the plain `name` of an
-  // already-open worktree (.charm/worktrees/<name>/). When set, the daemon
+  // already-open worktree (~/.charm-worktrees/<repo>/<name>/). When set, the daemon
   // resolves it to that checkout's cwd so the agent runs on its own branch and
   // its registry `worktree_name` is populated (the field is otherwise always null
   // because no spawn path passes a cwd today). Omit for default shared-tree
@@ -191,8 +191,8 @@ export type SpawnInvestigatorsInput = z.infer<typeof SpawnInvestigatorsInput>;
 export const SpawnWorkersInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
-  // Optional worktree (plain name of an open .charm/worktrees/<name>/) to run the
-  // spawned workers in; see SpawnInvestigatorsInput.worktree. Applies to every
+  // Optional worktree (plain name of an open ~/.charm-worktrees/<repo>/<name>/) to
+  // run the spawned workers in; see SpawnInvestigatorsInput.worktree. Applies to every
   // worker in the batch.
   worktree: z.string().optional(),
 });
@@ -204,7 +204,7 @@ export type SpawnWorkersInput = z.infer<typeof SpawnWorkersInput>;
 // is a lightweight, ticket-less context-gathering agent — it reads broadly (code,
 // docs, the web) and writes its findings to a scratchpad file it reports back. One
 // agent is spawned per prompt in the batch. `worktree` mirrors the other spawn
-// inputs (plain name of an open .charm/worktrees/<name>/), applied to every agent.
+// inputs (plain name of an open ~/.charm-worktrees/<repo>/<name>/), applied to every agent.
 export const SpawnResearchersInput = z.object({
   caller_id: z.string().optional(),
   prompts: z.array(z.string().min(1)).min(1),
@@ -213,9 +213,10 @@ export const SpawnResearchersInput = z.object({
 export type SpawnResearchersInput = z.infer<typeof SpawnResearchersInput>;
 
 // Worktree management tools. A worktree is an orchestrator-managed side resource
-// (a parallel line of work in a completely separate repo COPY — its own clone
-// with its own .git — under .charm/worktrees/<name>/), so every tool is
-// caller-gated to the orchestrator like spawn_workers. `name` is a plain segment
+// (a parallel line of work in its own `git worktree` — own working tree + index,
+// sharing the main repo's object store — under ~/.charm-worktrees/<repo>/<name>/),
+// so every tool is caller-gated to the orchestrator like spawn_workers. `name` is a
+// plain segment
 // (assertPlainName guards it daemon-side before it's joined into a path).
 // branch/base steer create(); delete_branch steers close().
 export const CreateWorktreeInput = z.object({
@@ -313,7 +314,7 @@ export type SetTicketStateInput = z.infer<typeof SetTicketStateInput>;
 export const RequestReviewInput = z.object({
   caller_id: z.string().optional(),
   ticket_id: z.string(),
-  // Optional worktree (plain name of an open .charm/worktrees/<name>/) to run the
+  // Optional worktree (plain name of an open ~/.charm-worktrees/<repo>/<name>/) to run the
   // tester in; see SpawnInvestigatorsInput.worktree. A tester validating a worker
   // that ran in a worktree needs the same checkout to see its commit.
   worktree: z.string().optional(),

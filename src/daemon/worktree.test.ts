@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorktreeManager } from "./worktree.ts";
 
@@ -9,7 +9,8 @@ import { WorktreeManager } from "./worktree.ts";
  * Exercises WorktreeManager against a real throwaway git repo. The whole point
  * of this module is correct git plumbing, so we don't mock git — we init a repo
  * under os.tmpdir(), drive the manager, and assert against real git state. A
- * worktree here is a STANDALONE COPY (its own .git), not a linked git worktree.
+ * worktree here is a real linked `git worktree`: its .git is a pointer file back
+ * to the main repo's object store, not a separate clone with its own `origin`.
  */
 
 // Canonicalize through realpathSync: on macOS tmpdir() is `/var/...`, a symlink
@@ -33,8 +34,9 @@ beforeAll(() => {
   git(["config", "user.email", "test@charm.local"]);
   git(["config", "user.name", "charm test"]);
   writeFileSync(join(REPO, "README.md"), "hello\n");
-  // Mirror the real repo: worktree copies live under an ignored dir so they
-  // never show up as untracked changes in the main checkout.
+  // Keep the test hermetic: park the worktrees under an ignored dir inside the
+  // throwaway repo so they never show up as untracked changes in the main
+  // checkout (the real layout puts them outside the repo, at ~/.charm-worktrees/).
   writeFileSync(join(REPO, ".gitignore"), ".charm/worktrees/\n");
   git(["add", "README.md", ".gitignore"]);
   git(["commit", "-m", "init"]);
@@ -42,22 +44,26 @@ beforeAll(() => {
 
 afterAll(() => rmSync(REPO, { recursive: true, force: true }));
 
-test("create makes a standalone copy on a fresh charm/<name> branch", async () => {
+test("create makes a linked worktree on a fresh charm/<name> branch", async () => {
   const wt = new WorktreeManager({ root: REPO, worktreesDir: WORKTREES });
   const r = await wt.create("alpha");
   expect(r.name).toBe("alpha");
   expect(r.branch).toBe("charm/alpha");
   expect(r.path).toBe(join(WORKTREES, "alpha"));
   expect(existsSync(r.path)).toBe(true);
-  // It is its OWN repo: a .git of its own, on the cut branch, with origin -> main.
-  expect(existsSync(join(r.path, ".git"))).toBe(true);
+  // It is a LINKED worktree: its .git is a pointer FILE (not a dir), on the cut
+  // branch, and its common git dir resolves back to the main repo's .git (shared
+  // object store — no separate clone, no `origin`).
+  expect(lstatSync(join(r.path, ".git")).isFile()).toBe(true);
   expect(git(["rev-parse", "--abbrev-ref", "HEAD"], r.path).trim()).toBe("charm/alpha");
-  expect(realpathSync(git(["remote", "get-url", "origin"], r.path).trim())).toBe(realpathSync(REPO));
-  // The committed content came across as a real copy.
+  const commonDir = git(["rev-parse", "--git-common-dir"], r.path).trim();
+  const resolvedCommon = realpathSync(isAbsolute(commonDir) ? commonDir : join(r.path, commonDir));
+  expect(resolvedCommon).toBe(realpathSync(join(REPO, ".git")));
+  // The committed content is checked out from the shared object store.
   expect(readFileSync(join(r.path, "README.md"), "utf8")).toBe("hello\n");
 });
 
-test("list includes the copy with its branch; main root is not listed", async () => {
+test("list includes the worktree with its branch; main root is not listed", async () => {
   const wt = new WorktreeManager({ root: REPO, worktreesDir: WORKTREES });
   const entries = wt.list();
   expect(entries.some((e) => e.path === REPO)).toBe(false);
@@ -67,14 +73,14 @@ test("list includes the copy with its branch; main root is not listed", async ()
   expect(alpha!.head.length).toBeGreaterThan(0);
 });
 
-test("edits in a copy never touch the main checkout", async () => {
+test("edits in a worktree never touch the main checkout", async () => {
   const wt = new WorktreeManager({ root: REPO, worktreesDir: WORKTREES });
   const r = await wt.create("isolated");
-  // Commit a new file inside the copy on its own branch.
+  // Commit a new file inside the worktree on its own branch.
   writeFileSync(join(r.path, "only-in-copy.txt"), "secret\n");
   git(["add", "only-in-copy.txt"], r.path);
-  git(["commit", "-m", "copy-only change"], r.path);
-  // Main is untouched: no file, still on main, HEAD unchanged from the copy's parent.
+  git(["commit", "-m", "worktree-only change"], r.path);
+  // Main is untouched: no file, still on main, HEAD unchanged from the worktree's parent.
   expect(existsSync(join(REPO, "only-in-copy.txt"))).toBe(false);
   expect(git(["rev-parse", "--abbrev-ref", "HEAD"], REPO).trim()).toBe("main");
   expect(git(["status", "--porcelain"], REPO).trim()).toBe("");
@@ -85,7 +91,7 @@ test("collision (same name twice) throws", async () => {
   await expect(wt.create("alpha")).rejects.toThrow();
 });
 
-test("remove deletes the copy", async () => {
+test("remove deletes the worktree", async () => {
   const wt = new WorktreeManager({ root: REPO, worktreesDir: WORKTREES });
   await wt.create("beta");
   const path = join(WORKTREES, "beta");
@@ -95,16 +101,17 @@ test("remove deletes the copy", async () => {
   expect(wt.list().some((e) => e.path === path)).toBe(false);
 });
 
-test("prune reaps a corrupt orphan but keeps a valid copy", async () => {
+test("prune reaps a worktree whose dir vanished but keeps a valid one", async () => {
   const wt = new WorktreeManager({ root: REPO, worktreesDir: WORKTREES });
   const good = await wt.create("gamma");
-  // A half-created orphan: a dir with no .git, as a crashed mid-clone would leave.
-  const orphan = join(WORKTREES, "orphan");
-  mkdirSync(orphan, { recursive: true });
-  writeFileSync(join(orphan, "stray.txt"), "junk\n");
+  const gone = await wt.create("vanished");
+  // Simulate a crashed session: the working tree dir disappears, leaving a stale
+  // admin entry in .git/worktrees/. `git worktree prune` reaps that entry.
+  rmSync(gone.path, { recursive: true, force: true });
+  expect(git(["worktree", "list", "--porcelain"]).includes(gone.path)).toBe(true);
   wt.prune();
-  expect(existsSync(orphan)).toBe(false);
-  // The valid copy is left intact (worktreesDir is shared across sessions).
+  expect(git(["worktree", "list", "--porcelain"]).includes(gone.path)).toBe(false);
+  // The valid worktree is left intact (worktreesDir is shared across sessions).
   expect(existsSync(good.path)).toBe(true);
   expect(wt.list().some((e) => e.path === good.path)).toBe(true);
 });

@@ -25,7 +25,7 @@ export type SpawnSpec = {
    *  that's still wired to the charm MCP config and output rules, but carries
    *  no orchestration instructions. Used by `charm start` with no goal. */
   plain?: boolean;
-  /** Working directory for this agent. Defaults to repo root (shared tree). Set to a worktree-copy path to isolate the agent in its own standalone repo clone. */
+  /** Working directory for this agent. Defaults to repo root (shared tree). Set to a worktree path to isolate the agent in its own `git worktree` (own working tree + branch, sharing the main repo's object store). */
   cwd?: string;
   /** Claude-side session UUID, passed to `claude --session-id <uuid>` so charm
    *  owns (rather than discovers) the conversation id. Recorded on the registry

@@ -539,11 +539,11 @@ program
 // race the daemon's worktree set. The CLI stays read-only.
 const worktreeCmd = program
   .command("worktree")
-  .description("inspect the worktree copies a charm session is managing (.charm/worktrees/<name>/)");
+  .description("inspect the worktrees a charm session is managing (~/.charm-worktrees/<repo>/<name>/)");
 
 worktreeCmd
   .command("list")
-  .description("list the orchestrator-managed worktree copies (asks a live daemon for the annotated view; falls back to scanning .charm/worktrees/ when no daemon is up)")
+  .description("list the orchestrator-managed worktrees (asks a live daemon for the annotated view; falls back to scanning ~/.charm-worktrees/<repo>/ when no daemon is up)")
   .option("-r, --root <path>", "project root", process.cwd())
   .action(async (opts) => {
     const root = resolve(opts.root);
@@ -562,11 +562,12 @@ worktreeCmd
         // the dir-scan fallback rather than erroring; the question is read-only.
       }
     }
-    // No daemon: scan .charm/worktrees/ directly, same no-daemon-required ethos as
-    // `tree`. Charm copies are standalone clones (not linked git worktrees), so we
-    // enumerate the subdirs and read each one's branch from its own .git. This
-    // mirrors WorktreeManager.list() without needing the daemon.
-    const worktreesDir = join(root, ".charm", "worktrees");
+    // No daemon: scan this repo's worktree group directly (~/.charm-worktrees/<repo>/),
+    // same no-daemon-required ethos as `tree`. Each subdir is a `git worktree add`
+    // worktree, so its .git is a gitdir-pointer FILE (not a dir) — existsSync matches
+    // either. We read each one's branch from inside it. This mirrors
+    // WorktreeManager.list() without needing the daemon.
+    const worktreesDir = charmPaths(root).worktreesDir;
     if (!existsSync(worktreesDir)) {
       console.log("[]");
       return;
@@ -1061,8 +1062,8 @@ function untrackTickets(paths: ReturnType<typeof charmPaths>) {
  * Write the self-contained .charm/.gitignore — the single source of truth for
  * what under .charm/ is committed. It ignores every child of .charm/ EXCEPT the
  * durable surfaces (kb, proposals, scratchpad, skills) and the file itself; the
- * ephemeral run state (run/, worktrees/, db.sqlite, charm.json, CHARM.md,
- * prompts/, tickets/, …) is left untracked. Tickets are intentionally NOT a
+ * ephemeral run state (run/, db.sqlite, charm.json, CHARM.md, prompts/,
+ * tickets/, …) is left untracked. Tickets are intentionally NOT a
  * durable surface — the daemon's session-close commit treats them as run state.
  *
  * The anchored `/*` matches only direct children of .charm/, so a `!/kb` style

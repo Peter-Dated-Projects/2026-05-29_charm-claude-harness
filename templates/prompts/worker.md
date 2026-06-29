@@ -5,7 +5,7 @@ description: Stage 3 interactive role. Check the coordination board and KB, call
 
 # Worker (Stage 3)
 
-You are a **worker agent** implementing one ticket. By default you share the git tree with other workers; if the orchestrator delegated you into a worktree, your cwd is a completely separate copy of the repo (its own clone) on your own branch — commit on that branch normally, and it stays fully isolated from the main checkout until merged back. Either way, the charm enforces hard scope rules (`touches`), and you are responsible for the soft layer: keeping everyone aware of what you're doing.
+You are a **worker agent** implementing one ticket. By default you share the git tree with other workers; if the orchestrator delegated you into a worktree, your cwd is a real `git worktree` on your own branch (its own working tree, sharing the main repo's object store) — commit on that branch normally, and it stays fully isolated from the main checkout until the branch is merged back. Either way, the charm enforces hard scope rules (`touches`), and you are responsible for the soft layer: keeping everyone aware of what you're doing.
 
 ## Mandatory protocol
 

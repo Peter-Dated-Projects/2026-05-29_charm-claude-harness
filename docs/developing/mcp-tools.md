@@ -77,23 +77,25 @@ A lightweight design-doc surface under `.charm/proposals/`, separate from the ti
 
 ## Worktrees
 
-Worktrees let the orchestrator run parallel, non-overlapping lines of work in **completely separate
-copies of the repo** under `.charm/worktrees/<name>/`. Each copy is a full clone with its own `.git`,
-not a linked `git worktree` — an agent spawned into one sees only that copy (including its own
-`.charm` and KB), so nothing it does races with or touches the main checkout. The copy's `origin`
-points back at the main repo, so work is merged back deliberately. All three tools are
+Worktrees let the orchestrator run parallel, non-overlapping lines of work in isolated
+**`git worktree` checkouts** under `~/.charm-worktrees/<repo>/<name>/`. Each is a real
+`git worktree` (`git worktree add`) — its own working tree, index, and branch, sharing the
+main repo's object store via a `.git` pointer file, not a separate clone with its own `origin`.
+An agent spawned into one sees only that working tree (including its own `.charm` and KB), so
+nothing it does races with or touches the main checkout. Because the branch lives in the same
+repo, work is merged back deliberately with a plain branch merge. All three tools are
 orchestrator-only — the daemon rejects calls from investigators and workers.
 
 Use worktrees when two tickets touch the same files (scope conflict), when you want to stack
 Graphite PRs in parallel, or when a line of work must be sealed off from the main checkout entirely.
-The default shared-tree model is simpler and covers most cases; reach for a copy only when full
+The default shared-tree model is simpler and covers most cases; reach for a worktree only when full
 isolation or separate branches are genuinely needed.
 
 | Tool | Caller | Effect |
 |---|---|---|
-| `create_worktree` | orchestrator | Clones the repo into a standalone copy under `.charm/worktrees/<name>/` on a new `charm/<name>` branch cut from HEAD (or a named `base`), with `origin` pointing at the main repo. Pass `branch` to check out an existing branch instead (e.g. for a Graphite-stack PR). Carries the committed state (including the tracked `.charm/kb`, `proposals`, `scratchpad`) but not gitignored run state. Every opened copy must be closed before session end. |
-| `list_worktrees` | orchestrator | Lists all copies currently under `.charm/worktrees/` — name, path, branch, and the live agent (if any) occupying each one. |
-| `close_worktree` | orchestrator | Deletes a copy by `name`, removing its whole repo — any committed-but-unmerged work on its branch goes with it (merge first to keep it). Pass `delete_branch: true` to also drop a leftover `charm/<name>` branch in the main repo if the work was already merged back. Must be called when the work is merged or abandoned. |
+| `create_worktree` | orchestrator | Runs `git worktree add` to create an isolated worktree under `~/.charm-worktrees/<repo>/<name>/` on a new `charm/<name>` branch cut from HEAD (or a named `base`), sharing the main repo's object store. Pass `branch` to check out an existing branch instead (e.g. for a Graphite-stack PR). Checks out the committed state (including the tracked `.charm/kb`, `proposals`, `scratchpad`) but not gitignored run state; gitignored `.env` files are symlinked back. Every opened worktree must be closed before session end. |
+| `list_worktrees` | orchestrator | Lists all worktrees currently under `~/.charm-worktrees/<repo>/` — name, path, branch, and the live agent (if any) occupying each one. |
+| `close_worktree` | orchestrator | Runs `git worktree remove` to delete a worktree by `name`, removing its working tree. Commits on its `charm/<name>` branch stay reachable in the repo unless you pass `delete_branch: true`, which also drops that branch (orphaning its commits to eventual GC) — merge first if you want to keep the work. Must be called when the work is merged or abandoned. |
 
 ## Viewers
 

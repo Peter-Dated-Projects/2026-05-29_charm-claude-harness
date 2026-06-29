@@ -149,12 +149,13 @@ server.registerTool(
   "create_worktree",
   {
     description:
-      "Open an isolated worktree COPY for a parallel / non-overlapping line of work (e.g. a second " +
-      "Graphite-stack PR, or tickets whose changes would collide). This is a completely separate clone " +
-      "of the repo with its own .git — edits inside it, including to its own .charm, never touch the main " +
-      "checkout; merge back deliberately when done. You name it. Pass `branch` to check out an existing " +
-      "branch (the Graphite-stack case), or omit it to cut a fresh charm/<name> branch off `base` " +
-      "(default HEAD). You MUST close every copy you open before session end.",
+      "Open an isolated `git worktree` for a parallel / non-overlapping line of work (e.g. a second " +
+      "Graphite-stack PR, or tickets whose changes would collide). This is a real `git worktree add` — " +
+      "its own working tree and branch, sharing the main repo's object store (not a separate clone) — so " +
+      "edits inside it, including to its own .charm, never touch the main checkout; merge the branch back " +
+      "deliberately when done. You name it. Pass `branch` to check out an existing branch (the " +
+      "Graphite-stack case), or omit it to cut a fresh charm/<name> branch off `base` (default HEAD). You " +
+      "MUST close every worktree you open before session end.",
     inputSchema: { name: z.string(), branch: z.string().optional(), base: z.string().optional() },
   },
   async (args) => ok(await call("create_worktree", { caller_id: AGENT_ID, ...args })),
@@ -164,7 +165,7 @@ server.registerTool(
   "list_worktrees",
   {
     description:
-      "List the open worktree copies in this repo, each with its path, branch, and the live agent (if " +
+      "List the open worktrees in this repo, each with its path, branch, and the live agent (if " +
       "any) occupying it. Use this to see which lines of work are in flight vs. closeable.",
     inputSchema: {},
   },
@@ -175,10 +176,10 @@ server.registerTool(
   "close_worktree",
   {
     description:
-      "Close a worktree copy you opened, addressed by `name`. This deletes the whole copy, so any " +
-      "committed-but-unmerged work on its branch is gone with it (charm does no merge-back — merge first " +
-      "if you want to keep it). Pass `delete_branch` to also drop a leftover charm/<name> branch in the " +
-      "main repo if you already merged the work back.",
+      "Close a worktree you opened, addressed by `name`. This runs `git worktree remove`, deleting its " +
+      "working tree; commits on its charm/<name> branch stay reachable in the repo (charm does no " +
+      "merge-back — merge the branch first to land the work). Pass `delete_branch` to also drop the " +
+      "charm/<name> branch, orphaning its commits — do that only once you've merged the work back.",
     inputSchema: { name: z.string(), delete_branch: z.boolean().optional() },
   },
   async (args) => ok(await call("close_worktree", { caller_id: AGENT_ID, ...args })),

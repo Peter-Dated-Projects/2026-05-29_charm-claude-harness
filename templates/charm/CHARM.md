@@ -10,12 +10,13 @@ workspace facts and guardrails every agent shares.
 - **Respect your file scope.** By default all agents share one tree: each ticket
   declares `touches:`, the daemon serializes overlapping scopes, and agents
   coordinate through `.charm/COORDINATION.md`. Read it before editing, and stay
-  inside your declared scope. Separately, the orchestrator may open worktree
-  copies under `.charm/worktrees/<name>/` (a side tool) to run parallel or
-  non-overlapping lines of work — each is a completely separate clone of the repo
-  on its own branch. If your cwd is one of those, you're in an isolated copy, not
-  the shared tree: everything you edit (including this `.charm`) stays in the copy
-  and is merged back deliberately, never touching the main checkout.
+  inside your declared scope. Separately, the orchestrator may open worktrees
+  under `~/.charm-worktrees/<repo>/<name>/` (a side tool) to run parallel or
+  non-overlapping lines of work — each is a real `git worktree` on its own branch
+  (its own working tree, sharing the main repo's object store). If your cwd is one
+  of those, you're in an isolated working tree, not the shared tree: everything you
+  edit (including this `.charm`) stays on that branch and is merged back
+  deliberately, never touching the main checkout.
 - **Never hand-edit or delete tickets.** `.charm/tickets/*.md` are canonical and
   `.charm/db.sqlite` is a rebuilt index over them — touching either by hand
   desyncs them. Ticket changes go through charm's MCP tools; to wipe the backlog,

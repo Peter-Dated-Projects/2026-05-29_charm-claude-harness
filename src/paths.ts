@@ -1,5 +1,5 @@
 import { join, basename } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 
 /**
@@ -79,16 +79,17 @@ export function charmPaths(root: string, sessionId?: string) {
     // into ticketsDir and indexes it, which is what makes it a real, spawnable
     // ticket. Drafts here are NOT indexed and never appear on the board.
     scratchpadDir: join(charmDir, "scratchpad"),
-    // Orchestrator-managed worktree copies, one subdir per parallel line of work
-    // (.charm/worktrees/<name>/). Each is a COMPLETELY SEPARATE clone of the repo
-    // (its own .git), not a linked `git worktree`, so an agent's edits there —
-    // including to its own .charm — never touch the main checkout; work is merged
-    // back deliberately and separately. This is a side resource, not part of the
-    // default shared-tree execution model: charm opens copies via MCP tools and
-    // must close them by session end, and the daemon owns the git plumbing + a
-    // prune safety-net. Gitignored (see .charm/.gitignore) — a copy is ephemeral
-    // run state, never committed.
-    worktreesDir: join(charmDir, "worktrees"),
+    // Orchestrator-managed worktrees, one subdir per parallel line of work. These
+    // are real `git worktree add` worktrees (their own working tree + index,
+    // sharing the main repo's object store), each on its own branch — an agent's
+    // edits there never touch the main checkout; work is merged back deliberately.
+    // They live OUTSIDE the repo at ~/.charm-worktrees/<repo>/<name>/, one group
+    // per repo (keyed by the repo dir's basename), so worktrees never nest inside
+    // the working tree and multiple repos coexist under one root. This is a side
+    // resource, not the default shared-tree execution model: charm opens worktrees
+    // via MCP tools and must close them by session end, and the daemon owns the git
+    // plumbing + a prune safety-net. Outside the repo tree, so nothing to gitignore.
+    worktreesDir: join(homedir(), ".charm-worktrees", basename(root)),
     // Design proposals / feature requests (PROP-*.md). list_proposals reads this;
     // finish_proposal moves an accepted/superseded file into proposals/finished/.
     proposalsDir: join(charmDir, "proposals"),
@@ -184,11 +185,11 @@ export function assertPlainName(name: string): void {
 }
 
 /**
- * Resolve the on-disk path for a named worktree under .charm/worktrees/. The
- * name arrives from an LLM agent via MCP tools, so it is run through
- * assertPlainName (the same path-injection guard used for draft/proposal names)
- * before being joined — an un-guarded `../../x` would let the agent stand up a
- * git worktree anywhere on disk.
+ * Resolve the on-disk path for a named worktree under worktreesDir
+ * (~/.charm-worktrees/<repo>/). The name arrives from an LLM agent via MCP tools,
+ * so it is run through assertPlainName (the same path-injection guard used for
+ * draft/proposal names) before being joined — an un-guarded `../../x` would let
+ * the agent stand up a git worktree anywhere on disk.
  */
 export function worktreePathFor(p: CharmPaths, name: string): string {
   assertPlainName(name);

@@ -5,14 +5,17 @@ import { assertPlainName } from "../paths.ts";
 
 /**
  * A charm worktree is an ORCHESTRATOR-MANAGED SIDE RESOURCE: a parallel line of
- * work checked out under .charm/worktrees/<name>/ via `git worktree add`. Each
- * worktree shares the main repo's object store but has its own working tree and
- * index — agents work independently without touching the main checkout, and
- * gitignored control-plane state (.charm/db.sqlite, tickets, etc.) is separate
- * per working tree. Worktrees appear in `git worktree list`, so GitHub Desktop
- * and other git tooling see them. The orchestrator opens worktrees via MCP tools
- * and is responsible for closing them; this class owns the git plumbing plus a
- * prune safety-net for orphans left by a crashed daemon.
+ * work checked out under ~/.charm-worktrees/<repo>/<name>/ via `git worktree add`,
+ * one group per repo (keyed by the repo dir's basename). Living outside the repo
+ * tree keeps worktrees from nesting inside the working checkout and lets multiple
+ * repos coexist under one root. Each worktree shares the main repo's object store
+ * but has its own working tree and index — agents work independently without
+ * touching the main checkout, and gitignored control-plane state (.charm/db.sqlite,
+ * tickets, etc.) is separate per working tree. Worktrees appear in
+ * `git worktree list`, so GitHub Desktop and other git tooling see them. The
+ * orchestrator opens worktrees via MCP tools and is responsible for closing them;
+ * this class owns the git plumbing plus a prune safety-net for orphans left by a
+ * crashed daemon.
  *
  * This is the ONE place that shells out to git for worktrees. All git calls run
  * with cwd = root (the main checkout) except where noted.

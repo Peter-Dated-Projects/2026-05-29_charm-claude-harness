@@ -76,14 +76,15 @@ full in [Running a session](../operating/running-a-session.md):
 ### Worktrees (optional, orchestrator-managed)
 
 Worktrees are an opt-in side tool for parallel lines of work that need full isolation — for
-example, separate feature branches or Graphite stacked PRs. Each is a **completely separate
-copy of the repo** (a clone with its own `.git`, `origin` pointing at the main repo), not a
-linked `git worktree`, so an agent's edits there — including to its own `.charm` and KB —
-never touch the main checkout; work is merged back deliberately. The orchestrator creates and
-tears them down via `create_worktree` / `list_worktrees` / `close_worktree`; they live under
-`.charm/worktrees/<name>/`. Worktrees are not the default execution model: the shared-tree
-approach covers the common case, and a copy is opened only when the orchestrator explicitly
-decides a line of work needs its own isolated repo. See
+example, separate feature branches or Graphite stacked PRs. Each is a real **`git worktree`**
+(`git worktree add`) — its own working tree, index, and branch, sharing the main repo's object
+store via a `.git` pointer file, not a separate clone with its own `origin`. An agent's edits
+there — including to its own `.charm` and KB — never touch the main checkout; work is merged
+back deliberately with a plain branch merge. The orchestrator creates and tears them down via
+`create_worktree` / `list_worktrees` / `close_worktree`; they live under
+`~/.charm-worktrees/<repo>/<name>/`. Worktrees are not the default execution model: the shared-tree
+approach covers the common case, and a worktree is opened only when the orchestrator explicitly
+decides a line of work needs its own isolated working tree. See
 [docs/operating/worktrees.md](../operating/worktrees.md).
 
 ## The ticket store

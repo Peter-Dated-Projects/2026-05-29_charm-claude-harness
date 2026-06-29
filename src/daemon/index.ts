@@ -204,12 +204,12 @@ async function main() {
   }
   const registry = new AgentRegistry();
   // Owns the git plumbing for orchestrator-managed worktrees (the side-resource
-  // model: parallel branches checked out under .charm/worktrees/<name>/) plus the
-  // prune safety-net for orphans a crashed daemon left behind.
+  // model: parallel branches checked out under ~/.charm-worktrees/<repo>/<name>/)
+  // plus the prune safety-net for orphans a crashed daemon left behind.
   const worktrees = new WorktreeManager({ root: paths.root, worktreesDir: paths.worktreesDir });
   // Prune-on-boot safety-net: a daemon that crashed mid-session may have left
   // orphan worktrees (registry entries whose dir vanished, or dirs git no longer
-  // tracks) under .charm/worktrees/. Reconcile them now so a fresh session starts
+  // tracks) under ~/.charm-worktrees/<repo>/. Reconcile them now so a fresh session starts
   // clean. Best-effort: a non-repo or transient git failure must not abort boot.
   try { worktrees.prune(); } catch (e) {
     console.error(`[charmd] worktree prune on boot failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
@@ -544,7 +544,7 @@ async function main() {
       const pane = await tmux.splitPane({ cmd, cwd: spec.cwd ?? paths.root, direction: "h", target: `${session}:${WINDOW}` });
       registry.attach(agent.id, { pane_id: pane });
       // Record which worktree this agent is isolated in (the subdir name under
-      // .charm/worktrees/), so list_worktrees can annotate each worktree with its
+      // ~/.charm-worktrees/<repo>/), so list_worktrees can annotate each worktree with its
       // occupying agent. A non-worktree spawn (cwd === root) leaves it null.
       if (spec.cwd && spec.cwd !== paths.root) registry.setWorktree(agent.id, basename(spec.cwd));
       refreshCoordination();
@@ -584,7 +584,7 @@ async function main() {
 
   /** Resolve an optional worktree NAME (from a spawn RPC) to the cwd an agent
    *  should run in, or undefined for default shared-tree execution. The name is a
-   *  plain segment naming an already-open worktree under .charm/worktrees/; we
+   *  plain segment naming an already-open worktree under ~/.charm-worktrees/<repo>/; we
    *  guard it with assertPlainName (same path-injection guard create_worktree
    *  uses) and require the checkout to already exist, so a typo'd or never-opened
    *  worktree fails loud here instead of spawning an agent into a missing dir.
