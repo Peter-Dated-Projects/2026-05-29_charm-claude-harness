@@ -217,12 +217,26 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
         readFileSync(skillsIndex, "utf8").trim() +
         "\n"
       : "";
-  // The shared workspace guardrails (.charm/CHARM.md) are NOT appended here. They
-  // reach every agent file-based instead: `charm init` makes the project's root
-  // CLAUDE.md import `@.charm/CHARM.md`, and Claude Code natively loads that root
-  // CLAUDE.md for any session whose cwd is the repo root — which every charm spawn
-  // is. Appending here too would double-inject the same content into each agent's
-  // context, so we rely solely on the import.
+  // The shared workspace guardrails (.charm/CHARM.md) normally are NOT appended
+  // here. They reach every agent file-based instead: `charm init` makes the
+  // project's root CLAUDE.md import `@.charm/CHARM.md`, and Claude Code natively
+  // loads that root CLAUDE.md for any session whose cwd is the repo root.
+  // Appending here too would double-inject the same content, so for a shared-tree
+  // spawn (cwd === repo root) we rely solely on the import.
+  //
+  // A WORKTREE spawn breaks that assumption: its cwd is the worktree checkout, not
+  // the repo root, and .charm/CHARM.md is gitignored (see .charm/.gitignore — only
+  // kb/proposals/scratchpad/skills are re-included) so `git worktree add` never
+  // checks it out. The worktree's root CLAUDE.md is tracked and loads, but its
+  // `@.charm/CHARM.md` import resolves to a missing file — the guardrails go dark.
+  // So when (and only when) the agent runs in a worktree, append the main repo's
+  // CHARM.md directly, by absolute path, restoring the same guardrails without
+  // double-injecting in the shared-tree case.
+  const charmMdPath = join(paths.charmDir, "CHARM.md");
+  const CHARM_WORKSPACE =
+    spec.cwd && !spec.plain && existsSync(charmMdPath)
+      ? "\n\n" + readFileSync(charmMdPath, "utf8").trim() + "\n"
+      : "";
   // Shared coordination ethos for every sub-agent (worker / investigator / tester) —
   // NOT the orchestrator (which carries the other side of this in orchestrator.md)
   // and NOT plain windows. Injected from this single place so the three roles stay
@@ -248,7 +262,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
-  const systemPrompt = rolePrompt + CHARM_RULES + CHARM_COORDINATION + CHARM_SKILLS + modelLine;
+  const systemPrompt = rolePrompt + CHARM_RULES + CHARM_COORDINATION + CHARM_SKILLS + CHARM_WORKSPACE + modelLine;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   // Conversation identity. A fresh spawn launches under a charm-owned

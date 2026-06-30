@@ -115,7 +115,15 @@ server.registerTool(
   "spawn_investigators",
   {
     description: "Spawn one interactive investigator agent per investigation-ticket id. An investigator gathers context, identifies the real problem, proposes a fix (or several options), and writes its findings into the ticket body. Investigators are resumable: a blocked investigator waits in its pane for the orchestrator to continue_agent it with an answer.",
-    inputSchema: { ticket_ids: z.array(z.string()) },
+    inputSchema: {
+      ticket_ids: z.array(z.string()),
+      worktree: z
+        .string()
+        .optional()
+        .describe(
+          "Optional: the plain name of an already-open worktree (one you created with create_worktree) to run the spawned agent(s) in, so they work on that worktree's branch in its isolated checkout. Omit for the default shared tree.",
+        ),
+    },
   },
   async (args) => ok(await call("spawn_investigators", { caller_id: AGENT_ID, ...args })),
 );
@@ -124,7 +132,15 @@ server.registerTool(
   "spawn_workers",
   {
     description: "Spawn interactive worker agents. The daemon enforces dep + file-scope conflicts; conflicting tickets are returned as 'deferred' (retry on the next tick). Tickets in 'blocked_by_cancelled_dependency' depend on a cancelled ticket and can NEVER run — do not retry them; re-plan (drop the dependency, re-scope, or cancel them).",
-    inputSchema: { ticket_ids: z.array(z.string()) },
+    inputSchema: {
+      ticket_ids: z.array(z.string()),
+      worktree: z
+        .string()
+        .optional()
+        .describe(
+          "Optional: the plain name of an already-open worktree (one you created with create_worktree) to run every worker in this batch in, so they work on that worktree's branch in its isolated checkout. Omit for the default shared tree.",
+        ),
+    },
   },
   async (args) => ok(await call("spawn_workers", { caller_id: AGENT_ID, ...args })),
 );
@@ -140,7 +156,15 @@ server.registerTool(
       "external docs) — it is NOT gated like build tools. This differs from spawn_investigators, which works a " +
       "canonical investigation ticket and writes findings into the ticket body for the gated pipeline. Researchers " +
       "are resumable: a blocked researcher waits in its pane for continue_agent.",
-    inputSchema: { prompts: z.array(z.string().min(1)).min(1) },
+    inputSchema: {
+      prompts: z.array(z.string().min(1)).min(1),
+      worktree: z
+        .string()
+        .optional()
+        .describe(
+          "Optional: the plain name of an already-open worktree (one you created with create_worktree) to run every researcher in this batch in, so they read from that worktree's isolated checkout. Omit for the default shared tree.",
+        ),
+    },
   },
   async (args) => ok(await call("spawn_researchers", { caller_id: AGENT_ID, ...args })),
 );
@@ -323,7 +347,15 @@ server.registerTool(
   "request_review",
   {
     description: "Worker-only: spawn a tester agent on a finished ticket.",
-    inputSchema: { ticket_id: z.string() },
+    inputSchema: {
+      ticket_id: z.string(),
+      worktree: z
+        .string()
+        .optional()
+        .describe(
+          "Optional: the plain name of an already-open worktree to run the tester in. A tester validating a worker that ran in a worktree needs the same checkout to see its commit. Omit for the default shared tree.",
+        ),
+    },
   },
   async (args) => ok(await call("request_review", { caller_id: AGENT_ID, ...args })),
 );

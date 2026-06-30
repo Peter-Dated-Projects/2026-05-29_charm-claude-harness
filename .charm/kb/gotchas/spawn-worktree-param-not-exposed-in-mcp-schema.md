@@ -2,10 +2,36 @@
 id: spawn-worktree-param-not-exposed-in-mcp-schema
 root: gotchas
 type: gotcha
-status: current
-summary: "The spawn RPCs (spawn_workers/spawn_investigators/request_review) now accept a `worktree` name param daemon-side to populate Agent.worktree_name, but the MCP tool schemas in src/mcp/server.ts do NOT declare it, so an orchestrator agent cannot pass it through the MCP surface yet -- only a direct RPC / console caller can."
+status: resolved
+summary: "RESOLVED: the `worktree` param is now declared in the MCP inputSchemas for all four spawn tools (spawn_workers/spawn_investigators/spawn_researchers/request_review), so an orchestrator agent can direct agents into a worktree through the MCP surface. The fix also closed two downstream gaps a worktree spawn exposed: the ticket-read path and the CHARM.md guardrail injection (see Resolution below)."
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
+---
+
+**Resolution (2026-06-29).** Exposing the param turned out to be only the first
+of three coupled fixes — a worktree spawn doesn't work end-to-end with just the
+schema change, because a worktree checkout omits all gitignored `.charm/`
+control-plane state:
+
+1. **Schema exposure.** Added `worktree: z.string().optional()` (with a `.describe()`)
+   to the `inputSchema` of `spawn_workers`, `spawn_investigators`, `spawn_researchers`,
+   and `request_review` in `src/mcp/server.ts`. The handlers already spread `...args`
+   into the RPC, so it now threads straight through to the daemon.
+2. **Ticket-read path.** The spawn prompts hard-coded a *relative* `Read .charm/tickets/<id>.md`.
+   Tickets are gitignored, so a worktree checkout has no `.charm/tickets/`. Added
+   `ticketReadPath(ticketId, cwd)` in `src/daemon/index.ts`: when cwd is a worktree it
+   returns the absolute main-repo path (`join(paths.root, ".charm/tickets", ...)`),
+   else the relative path unchanged. All ticket *mutations* already flow through the
+   daemon to the main-repo store, so only the initial read needed redirecting.
+3. **CHARM.md guardrails.** They reach agents via the root `CLAUDE.md` `@.charm/CHARM.md`
+   import, which Claude Code loads only when cwd is the repo root. A worktree cwd plus a
+   gitignored (absent) `.charm/CHARM.md` makes that import go dark. `buildClaudeCommand`
+   in `src/daemon/spawn.ts` now appends the main-repo `CHARM.md` directly to the system
+   prompt **only** when `spec.cwd` is set (a worktree spawn), avoiding double-injection
+   in the shared-tree case.
+
+The original gotcha, preserved below for context:
+
 ---
 
 The daemon hierarchy backend (T-053) added an optional `worktree` param to the

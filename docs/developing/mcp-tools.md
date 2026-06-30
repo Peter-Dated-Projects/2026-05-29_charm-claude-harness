@@ -111,6 +111,7 @@ read-only on code and resumable: a blocked investigator waits in its pane for `c
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `ticket_ids` | string[] | yes | One investigation ticket per agent. |
+| `worktree` | string | no | Plain name of an already-open worktree (from `create_worktree`) to run the agents in. Omit for the default shared tree. |
 
 ### `spawn_workers`
 
@@ -123,6 +124,7 @@ them) rather than retry.
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `ticket_ids` | string[] | yes | One implementation ticket per agent. |
+| `worktree` | string | no | Plain name of an already-open worktree (from `create_worktree`) to run every worker in this batch in. Omit for the default shared tree. |
 
 ### `spawn_researchers`
 
@@ -134,6 +136,7 @@ gated by the pipeline; usable in any stage. Resumable like investigators.
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `prompts` | string[] (min 1, each non-empty) | yes | One research question per agent. |
+| `worktree` | string | no | Plain name of an already-open worktree (from `create_worktree`) to run every researcher in this batch in. Omit for the default shared tree. |
 
 ### `request_review`
 
@@ -142,6 +145,7 @@ gated by the pipeline; usable in any stage. Resumable like investigators.
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `ticket_id` | string | yes | The finished ticket to review. |
+| `worktree` | string | no | Plain name of an already-open worktree to run the tester in — a tester validating a worker that ran in a worktree needs the same checkout to see its commit. Omit for the default shared tree. |
 
 ---
 
@@ -321,6 +325,21 @@ entirely. The default shared-tree model is simpler and covers most cases; reach 
 only when full isolation or separate branches are genuinely needed. See
 [Worktrees](../operating/worktrees.md).
 
+**Spawning agents into a worktree.** Once a worktree is open, pass its name as the optional
+`worktree` arg to `spawn_workers`, `spawn_investigators`, `spawn_researchers`, or
+`request_review` to run those agents in it (cwd = the worktree checkout). The control-plane
+surfaces an agent needs still resolve to the **main repo**, not the worktree copy, because the
+worktree only checks out tracked files and `.charm/`'s control-plane state (`tickets/`,
+`COORDINATION.md`, `CHARM.md`, `db.sqlite`) is gitignored and therefore absent in it:
+
+- The spawn prompt points the agent at the ticket via an **absolute** main-repo path
+  (`<root>/.charm/tickets/<id>.md`), not a relative one, so it reads the canonical ticket.
+- Every ticket mutation already goes through the daemon (`update_plan`, `set_ticket_status`,
+  `report_status`, `read_coordination`), which operates on the main-repo store regardless of cwd.
+- The shared `.charm/CHARM.md` guardrails — normally reached via the root `CLAUDE.md`
+  `@`-import, which only fires when cwd is the repo root — are injected directly into a worktree
+  agent's system prompt instead, since that import goes dark in a worktree checkout.
+
 ### `create_worktree`
 
 **Caller:** orchestrator. **Effect:** run `git worktree add` to create an isolated worktree
@@ -372,6 +391,7 @@ visualize the graph / map / dependency view. No parameters.
 The authoritative contract for each tool's inputs and the daemon-side checks is `src/schema.ts`
 (zod schemas for RPC envelopes, tool I/O, and frontmatter) and `src/mcp/server.ts` (the tool
 registrations). The parameter tables above describe the **MCP surface** — exactly what an agent
-passes — which is the `inputSchema` in `src/mcp/server.ts`; the daemon may accept additional
-internal fields not exposed to agents. When this page and the code disagree, the code wins —
-these descriptions are derived from it, not the other way around.
+passes — which is the `inputSchema` in `src/mcp/server.ts`. The daemon-side schema may carry a
+few fields the shim injects automatically (e.g. `caller_id` / `agent_id`), which is why those
+don't appear in the tables. When this page and the code disagree, the code wins — these
+descriptions are derived from it, not the other way around.

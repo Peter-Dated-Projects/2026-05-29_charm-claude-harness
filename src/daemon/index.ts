@@ -603,6 +603,18 @@ async function main() {
     return dir;
   }
 
+  /** The path a spawned agent should READ its ticket from. Tickets are gitignored
+   *  (see .charm/.gitignore — only kb/proposals/scratchpad/skills are re-included),
+   *  so a worktree checkout has no .charm/tickets/ of its own. When an agent runs in
+   *  a worktree (cwd set), point it at the MAIN repo's canonical ticket file via an
+   *  absolute path; in the shared tree (cwd undefined) cwd IS the main repo, so the
+   *  relative path resolves there unchanged. Only this initial read needs the
+   *  redirect — every ticket MUTATION (update_plan, set_ticket_status, report_status)
+   *  already flows through the daemon to the central main-repo store regardless of cwd. */
+  function ticketReadPath(ticketId: string, cwd: string | undefined): string {
+    return cwd ? join(paths.root, ".charm", "tickets", `${ticketId}.md`) : `.charm/tickets/${ticketId}.md`;
+  }
+
   /** Kill an agent's pane and drop it from the registry, coordination doc, and
    *  pane grid, then relayout. Shared by dismiss_agent (done/failed cleanup) and
    *  kill_agent (forced termination). No-op if the agent is already gone. */
@@ -1175,7 +1187,7 @@ async function main() {
             const aid = await spawnAgentLocked({
               role: "investigator",
               ticket_id: tid,
-              prompt: `Read .charm/tickets/${tid}.md and investigate it.`,
+              prompt: `Read ${ticketReadPath(tid, cwd)} and investigate it.`,
               cwd,
               // Interactive (like workers), NOT headless. An investigator that needs
               // a decision it can't make must be able to report_status('blocked')
@@ -1292,7 +1304,7 @@ async function main() {
             ids.push(await spawnAgentLocked({
               role: "worker",
               ticket_id: tid,
-              prompt: `Read .charm/tickets/${tid}.md and complete it.`,
+              prompt: `Read ${ticketReadPath(tid, workerCwd)} and complete it.`,
               cwd: workerCwd,
               interactive: true,
             }, workerParentId));
@@ -1772,11 +1784,12 @@ async function main() {
       case "request_review": {
         const input = RequestReviewInput.parse(params);
         assertOrchestrator(input.caller_id, "request_review");
+        const reviewCwd = resolveSpawnCwd(input.worktree);
         const id = await spawnAgent({
           role: "tester",
           ticket_id: input.ticket_id,
-          prompt: `Read .charm/tickets/${input.ticket_id}.md and validate it.`,
-          cwd: resolveSpawnCwd(input.worktree),
+          prompt: `Read ${ticketReadPath(input.ticket_id, reviewCwd)} and validate it.`,
+          cwd: reviewCwd,
           // Interactive, same as investigators (and workers): a tester that can't run
           // the validation — unclear acceptance criteria, the diff doesn't match the
           // ticket, a broken environment — must report_status('blocked') and WAIT
