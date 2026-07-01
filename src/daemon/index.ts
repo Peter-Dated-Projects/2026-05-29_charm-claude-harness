@@ -1072,11 +1072,17 @@ async function main() {
             status: so.state,
             agent_count: agents.filter((a) => a.parent_id === so.id).length,
           }));
+        // The pane the user currently has focused, so the console can highlight
+        // the matching agent row even while a sub-agent pane (not the console)
+        // holds focus. Best-effort: a tmux hiccup just leaves it null and the
+        // sidebar keeps its last selection.
+        const active_pane_id = tmuxAvailable ? await tmux.activePane() : null;
         return {
           tickets: store.list().map((t) => t.frontmatter),
           agents,
           pending_approvals: approvals.pending(),
           sub_orchestrators,
+          active_pane_id,
         };
       }
       case "list_tickets": {

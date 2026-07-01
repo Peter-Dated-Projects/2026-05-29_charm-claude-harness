@@ -24,6 +24,10 @@ type Status = {
   tickets: TicketFrontmatter[];
   agents: Agent[];
   pending_approvals: ApprovalGate[];
+  // The tmux pane the user currently has focused (or null). The Agents tab uses
+  // it to auto-select whichever agent's pane is focused, so the sidebar tracks
+  // the pane you're looking at without the console needing focus itself.
+  active_pane_id?: string | null;
 };
 
 function useStatus(intervalMs = 1500): Status {
@@ -49,8 +53,8 @@ function ApprovalsTab({ status, inputActive }: { status: Status; inputActive: bo
   const gates = status.pending_approvals;
   useInput(async (input, key) => {
     if (!gates.length) return;
-    if (key.upArrow || input === "k") setIdx((i) => Math.max(0, i - 1));
-    if (key.downArrow || input === "j") setIdx((i) => Math.min(gates.length - 1, i + 1));
+    if (key.upArrow) setIdx((i) => Math.max(0, i - 1));
+    if (key.downArrow) setIdx((i) => Math.min(gates.length - 1, i + 1));
     if (input === "y" || input === "a") {
       const g = gates[idx];
       if (!g) return;
@@ -116,10 +120,21 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
   const canDismiss = selected && (selected.state === "done" || selected.state === "failed");
   const canKill = selected && (selected.state === "spawning" || selected.state === "running");
 
+  // Follow the focused pane: when the user focuses a sub-agent's tmux pane, snap
+  // the sidebar selection to that agent's row. This is inert while the console
+  // pane itself is focused (its pane_id matches no agent), so manual ↑/↓
+  // navigation is never fought — the two only ever fire in disjoint focus states.
+  const activePaneId = status.active_pane_id;
+  useEffect(() => {
+    if (!activePaneId) return;
+    const i = agents.findIndex((a) => a.pane_id === activePaneId);
+    if (i >= 0 && i !== idx) { setIdx(i); setKillArm(null); }
+  }, [activePaneId, agents, idx]);
+
   useInput(async (input, key) => {
     if (!agents.length) return;
-    if (key.upArrow || input === "k") { setIdx((i) => Math.max(0, i - 1)); setKillArm(null); return; }
-    if (key.downArrow || input === "j") { setIdx((i) => Math.min(agents.length - 1, i + 1)); setKillArm(null); return; }
+    if (key.upArrow) { setIdx((i) => Math.max(0, i - 1)); setKillArm(null); return; }
+    if (key.downArrow) { setIdx((i) => Math.min(agents.length - 1, i + 1)); setKillArm(null); return; }
     if (input === "d") {
       setKillArm(null);
       if (!selected) return;

@@ -177,6 +177,35 @@ test.skipIf(!tmuxAvailable)(
   },
 );
 
+test.skipIf(!tmuxAvailable)(
+  "activePane reports the focused pane and follows selectPane",
+  async () => {
+    const cwd = tmpdir();
+    const tmux = new Tmux(OWN);
+    tmux.newSession("charm", cwd);
+
+    // The session's original pane is the active one at boot.
+    const original = spawnSync(
+      "tmux", ["display-message", "-p", "-t", `${OWN}:charm`, "#{pane_id}"],
+      { encoding: "utf8" },
+    ).stdout.trim();
+    expect(await tmux.activePane()).toBe(original);
+
+    // splitPane uses `-d` (detached), so focus stays on the original pane...
+    const other = await tmux.splitPane({ cmd: "sh -c 'sleep 30'", cwd, direction: "h" });
+    expect(await tmux.activePane()).toBe(original);
+
+    // ...until we explicitly select the new pane.
+    tmux.selectPane(other);
+    expect(await tmux.activePane()).toBe(other);
+  },
+);
+
+test("activePane returns null for a session that does not exist", async () => {
+  const tmux = new Tmux(`charm-test-absent-${STAMP}`);
+  expect(await tmux.activePane()).toBeNull();
+});
+
 test("listPanes returns [] for a session that does not exist", () => {
   // The status!==0 fallback: querying a nonexistent session must not throw.
   const tmux = new Tmux(`charm-test-absent-${STAMP}`);

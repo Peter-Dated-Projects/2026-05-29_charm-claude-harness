@@ -290,6 +290,26 @@ export class Tmux {
     return p !== undefined && !p.dead;
   }
 
+  /** The pane_id of the pane that currently holds focus in this session — the
+   *  active pane of the active window. Scans `list-panes -s` (session-wide, so it
+   *  still resolves when sub-agent panes have been broken out into the holding
+   *  window) and returns the row where both `window_active` and `pane_active` are
+   *  set. Null if the session has no active pane or the query fails. Used by the
+   *  status RPC so the console can highlight whichever agent's pane the user has
+   *  focused, without the console itself holding focus. */
+  async activePane(): Promise<string | null> {
+    const r = await tmuxRun([
+      "list-panes", "-s", "-t", this.session,
+      "-F", "#{window_active} #{pane_active} #{pane_id}",
+    ]);
+    if (r.status !== 0) return null;
+    for (const line of r.stdout.trim().split("\n")) {
+      const [win, pane, id] = line.split(" ");
+      if (win === "1" && pane === "1" && id) return id;
+    }
+    return null;
+  }
+
   /** Look up the current pane_index for a stable pane_id. Returns null if the pane no longer exists. */
   async paneIndex(paneId: string): Promise<number | null> {
     const r = await tmuxRun(["display-message", "-p", "-t", paneId, "#{pane_index}"]);
