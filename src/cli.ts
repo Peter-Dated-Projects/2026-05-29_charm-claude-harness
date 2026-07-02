@@ -50,9 +50,20 @@ program
     "10",
   )
   .option("--no-attach", "do not auto-attach to the tmux session")
+  .option(
+    "--workflow-enable",
+    "keep Claude Code's built-in Workflow tool enabled for the WHOLE fleet (main agent + every sub-agent); off by default so all fan-out goes through charm's MCP tools",
+    false,
+  )
   .option("-u, --uuid <id>", "internal: pin this session's UUID (default: a fresh random one)")
   .action(async (goalParts: string[], opts) => {
     const root = resolve(opts.root);
+    // --workflow-enable opts the whole environment back into the built-in Workflow
+    // tool (charm strips it by default; see buildClaudeCommand). Set it on this CLI's
+    // env now so it (a) reaches the in-process main-agent spawn below via
+    // workflowEnabled() and (b) is inherited by the daemon through its {...process.env}
+    // spread, so every sub-agent the daemon spawns keeps Workflow too.
+    if (opts.workflowEnable) process.env.CHARM_WORKFLOW_ENABLE = "1";
     // Each `charm start` mints a fresh session UUID. It is this session's primary
     // key: its socket, pidfile, daemon log, meta, and graph-viewer pids all live
     // under .charm/run/<uuid>/, and its tmux name carries the uuid — so multiple
@@ -164,7 +175,8 @@ program
     const modelNote = opts.model
       ? `all agents on ${fleetModel} (-m override)`
       : `orchestrator on ${fleetModel}, sub-agents on per-type defaults`;
-    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${plain ? " | plain window, no goal" : ""}`);
+    const workflowNote = opts.workflowEnable ? " | Workflow tool enabled fleet-wide" : "";
+    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${workflowNote}${plain ? " | plain window, no goal" : ""}`);
     // Mint and persist the orchestrator's Claude-side conversation id plus the
     // launch settings it was spawned with. charm launches the main agent under
     // `claude --session-id <uuid>` (so it owns the id rather than discovering it),
@@ -183,6 +195,9 @@ program
       model: fleetModel,
       permission_mode: defaultPermissionMode(),
       max_agents: maxAgents,
+      // Persist so `charm resume` re-supplies CHARM_WORKFLOW_ENABLE to the relaunched
+      // daemon + orchestrator, keeping the fleet's Workflow posture across a resume.
+      workflow_enable: !!opts.workflowEnable,
     };
     writeFileSync(paths.orchestratorSessionFile, JSON.stringify(sessionRecord, null, 2) + "\n");
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
@@ -342,6 +357,7 @@ program
       model?: string;
       permission_mode?: string;
       max_agents?: number;
+      workflow_enable?: boolean;
       console_pane_id?: string;
       orchestrator_pane_id?: string;
     } = {};
@@ -413,6 +429,7 @@ program
             ...(record.model ? { CHARM_MODEL: record.model } : {}),
             ...(record.permission_mode ? { CHARM_PERMISSION_MODE: record.permission_mode } : {}),
             ...(record.max_agents ? { CHARM_MAX_AGENTS: String(record.max_agents) } : {}),
+            ...(record.workflow_enable ? { CHARM_WORKFLOW_ENABLE: "1" } : {}),
           },
         },
       );
@@ -440,6 +457,10 @@ program
       model = record.model ? resolveModel(record.model) : defaultModelForRole("main");
     } catch { model = undefined; }
     if (record.permission_mode) process.env.CHARM_PERMISSION_MODE = record.permission_mode;
+    // Restore the fleet's Workflow posture for the in-process orchestrator relaunch
+    // (the restarted daemon already got it via its env above; this covers the pane
+    // buildClaudeCommand builds here in the CLI process).
+    if (record.workflow_enable) process.env.CHARM_WORKFLOW_ENABLE = "1";
 
     const resumeCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
