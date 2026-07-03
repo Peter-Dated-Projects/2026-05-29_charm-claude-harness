@@ -338,6 +338,12 @@ async function main() {
   // the whole point of going async. Errors are swallowed off the chain so one
   // failed layout op can't poison every subsequent one.
   let layoutChain: Promise<unknown> = Promise.resolve();
+  // Dedup for the "untracked live pane" relayout warning: an unmanaged live pane
+  // in the main window can't be laid out around and can't be safely reaped, so
+  // relayout logs it and bails. Without dedup that fires on every relayout
+  // trigger (the exact 630-line storm this whole reconcile guards against);
+  // remember the last set of stray ids and only re-log when it changes.
+  let lastLiveStrayWarning: string | null = null;
   function withLayoutLock<T>(fn: () => Promise<T>): Promise<T> {
     const run = layoutChain.then(fn, fn);
     layoutChain = run.then(() => {}, () => {});
@@ -424,6 +430,46 @@ async function main() {
       if (n > 0) {
         if (hide) await hideSubagents(subPaneIds);
         else await restoreSubagents(subPaneIds);
+      }
+
+      // Reconcile STRAY panes before building the layout. select-layout counts
+      // panes: it hard-fails ("have N panes but need M") unless the layout string
+      // enumerates every pane in the window. After the hide/restore step the main
+      // window should hold exactly what this layout lists — console + orchestrator
+      // + the visible sub-agents — so any OTHER pane is a desync that breaks EVERY
+      // relayout until it's gone (this guards the observed failure: one untracked
+      // pane -> 630 identical select-layout errors in a tight retrigger loop).
+      // A stray DEAD pane is a zombie a prior kill-pane failed to remove: kill it
+      // here and the count converges. A stray LIVE pane can't be safely reaped (it
+      // may be an operator's own shell), so warn once (deduped) and skip — a layout
+      // we can't apply isn't worth flooding the log over, and once that pane exits
+      // it becomes a dead stray the next tick cleans up.
+      {
+        const expected = new Set<string>([consolePaneId, orchPaneId]);
+        if (!hide) for (const id of subPaneIds) expected.add(id);
+        const stray = tmux
+          .listPanes()
+          .filter((p) => p.window_name === WINDOW && !expected.has(p.pane_id));
+        for (const p of stray.filter((p) => p.dead)) {
+          console.error(`[charmd] relayout: killing stray dead pane ${p.pane_id} in ${WINDOW}`);
+          if (!(await tmux.killPane(p.pane_id)))
+            console.error(
+              `[charmd] relayout: kill-pane ${p.pane_id} failed; grid layout will keep failing until it's gone`,
+            );
+        }
+        const liveStray = stray.filter((p) => !p.dead).map((p) => p.pane_id);
+        if (liveStray.length > 0) {
+          const ids = liveStray.join(", ");
+          if (lastLiveStrayWarning !== ids) {
+            console.error(
+              `[charmd] relayout: ${liveStray.length} untracked live pane(s) in ${WINDOW} (${ids}); ` +
+                `skipping grid layout until they leave the window`,
+            );
+            lastLiveStrayWarning = ids;
+          }
+          return;
+        }
+        lastLiveStrayWarning = null;
       }
 
       const cIdx = await tmux.paneIndex(consolePaneId);
@@ -909,7 +955,17 @@ async function main() {
       if (!pane.dead) continue;
       if (knownPanes.has(pane.pane_id)) continue;
       console.error(`[charmd] sweep: removing orphan dead pane ${pane.pane_id}`);
-      try { tmux.killPane(pane.pane_id); } catch { /* ignore */ }
+      // Fire-and-forget (keeps the sweep sync), but DON'T swallow the outcome: a
+      // silently-failed kill leaves the zombie in place and breaks every grid
+      // relayout, which is exactly how one lingering pane snowballs into a storm.
+      const orphanId = pane.pane_id;
+      void tmux
+        .killPane(orphanId)
+        .then((ok) => {
+          if (!ok)
+            console.error(`[charmd] sweep: kill-pane ${orphanId} failed; zombie pane may linger and break relayout`);
+        })
+        .catch((e) => console.error(`[charmd] sweep: kill-pane ${orphanId} threw:`, e));
     }
   }
 

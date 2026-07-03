@@ -168,8 +168,15 @@ export class Tmux {
     return pane;
   }
 
-  async killPane(paneId: string): Promise<void> {
-    await tmuxRun(["kill-pane", "-t", paneId]);
+  /** Kill a pane. Returns true if tmux accepted the kill, false if it rejected
+   *  it (the pane id is already gone, or a remain-on-exit pane that won't die
+   *  normally). Never throws — every caller treats a kill as best-effort — so a
+   *  caller that cares whether the pane actually went away inspects the boolean.
+   *  A silently-failed kill leaves a zombie pane that breaks the grid relayout
+   *  (select-layout counts panes), so the callers that can leak one log on false. */
+  async killPane(paneId: string): Promise<boolean> {
+    const r = await tmuxRun(["kill-pane", "-t", paneId]);
+    return r.status === 0;
   }
 
   /**
