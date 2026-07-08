@@ -30,6 +30,21 @@ function ok(payload: unknown) {
   };
 }
 
+// Shared per-spawn model controls for every spawn_* tool. Omit `model` to keep the
+// role's default; set it to pick a family, and `context_1m` to pick the window.
+const MODEL_PARAM = z
+  .enum(["sonnet", "haiku", "opus"])
+  .optional()
+  .describe(
+    "Optional: the model family for the spawned agent(s) — sonnet (Sonnet 5), haiku (Haiku 4.5), or opus (Opus 4.8). Omit to use this role's default model.",
+  );
+const CONTEXT_1M_PARAM = z
+  .boolean()
+  .optional()
+  .describe(
+    "Optional: use the 1M-token context window (default true). Only applies when `model` is set; ignored for families without a 1M window (Haiku).",
+  );
+
 const server = new McpServer({ name: "charm-mcp", version: "0.0.1" });
 
 server.registerTool(
@@ -123,6 +138,8 @@ server.registerTool(
         .describe(
           "Optional: the plain name of an already-open worktree (one you created with create_worktree) to run the spawned agent(s) in, so they work on that worktree's branch in its isolated checkout. Omit for the default shared tree.",
         ),
+      model: MODEL_PARAM,
+      context_1m: CONTEXT_1M_PARAM,
     },
   },
   async (args) => ok(await call("spawn_investigators", { caller_id: AGENT_ID, ...args })),
@@ -140,6 +157,8 @@ server.registerTool(
         .describe(
           "Optional: the plain name of an already-open worktree (one you created with create_worktree) to run every worker in this batch in, so they work on that worktree's branch in its isolated checkout. Omit for the default shared tree.",
         ),
+      model: MODEL_PARAM,
+      context_1m: CONTEXT_1M_PARAM,
     },
   },
   async (args) => ok(await call("spawn_workers", { caller_id: AGENT_ID, ...args })),
@@ -164,6 +183,8 @@ server.registerTool(
         .describe(
           "Optional: the plain name of an already-open worktree (one you created with create_worktree) to run every researcher in this batch in, so they read from that worktree's isolated checkout. Omit for the default shared tree.",
         ),
+      model: MODEL_PARAM,
+      context_1m: CONTEXT_1M_PARAM,
     },
   },
   async (args) => ok(await call("spawn_researchers", { caller_id: AGENT_ID, ...args })),

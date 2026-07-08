@@ -42,7 +42,7 @@ program
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .option(
     "-m, --model <model>",
-    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-4.6 | sonnet-4.6-1m | opus-4.6 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m (or a raw claude-* id)",
+    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-5 | sonnet-5-1m | haiku-4.5 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m | fable-5 (or a raw claude-* id)",
   )
   .option(
     "--max-agents <n>",

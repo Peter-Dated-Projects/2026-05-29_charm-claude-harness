@@ -17,7 +17,7 @@ export type SpawnSpec = {
   ticket_id: string | null;
   prompt: string;
   interactive: boolean;
-  /** Resolved Claude Code model id (e.g. "claude-opus-4-7", "claude-sonnet-4-6[1m]").
+  /** Resolved Claude Code model id (e.g. "claude-opus-4-8", "claude-sonnet-5[1m]").
    *  When set, passed via `--model` and surfaced to the agent in its system prompt
    *  so it knows which model it is running as. */
   model?: string;
@@ -52,26 +52,53 @@ export function newClaudeSessionId(): string {
   return randomUUID();
 }
 
-/** User-facing aliases resolved to Claude Code model ids. */
+/** User-facing aliases resolved to Claude Code model ids. Kept aligned with the
+ *  current lineup: Sonnet 5, Haiku 4.5, Opus 4.7/4.8, Fable 5. The `-1m` keys select
+ *  the 1M-token window; only families that offer one have a `-1m` variant (Haiku and
+ *  Fable don't). The bare `sonnet`/`haiku`/`opus` aliases point at the latest of each. */
 export const MODEL_ALIASES: Record<string, string> = {
-  "sonnet-4.6": "claude-sonnet-4-6",
-  "sonnet-4.6-1m": "claude-sonnet-4-6[1m]",
-  "opus-4.6": "claude-opus-4-6",
+  "sonnet-5": "claude-sonnet-5",
+  "sonnet-5-1m": "claude-sonnet-5[1m]",
+  "haiku-4.5": "claude-haiku-4-5-20251001",
   "opus-4.7": "claude-opus-4-7",
   "opus-4.7-1m": "claude-opus-4-7[1m]",
   "opus-4.8": "claude-opus-4-8",
   "opus-4.8-1m": "claude-opus-4-8[1m]",
-  sonnet: "claude-sonnet-4-6",
+  "fable-5": "claude-fable-5",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5-20251001",
   opus: "claude-opus-4-8",
 };
+
+/** Friendly model families a caller can request per-spawn on the spawn_* tools,
+ *  independent of the fleet/role defaults. Each maps to its base Claude Code model
+ *  id plus whether that family offers a 1M-token context window. The `[1m]` suffix
+ *  is only appended (see resolveSpawnModel) when the family supports it — Haiku 4.5
+ *  has no 1M variant, so a 1M request on Haiku silently resolves to the plain id
+ *  rather than a bogus `...[1m]` that the CLI would reject. */
+export const SPAWN_MODEL_FAMILIES = {
+  sonnet: { base: "claude-sonnet-5", supports1m: true },
+  haiku: { base: "claude-haiku-4-5-20251001", supports1m: false },
+  opus: { base: "claude-opus-4-8", supports1m: true },
+} as const;
+
+export type SpawnModelFamily = keyof typeof SPAWN_MODEL_FAMILIES;
+
+/** Resolve a caller-supplied spawn model family + 1M toggle to a concrete Claude
+ *  Code model id. `context1m` defaults to true (the preferred window) and is honored
+ *  only for families that actually offer a 1M window. */
+export function resolveSpawnModel(family: SpawnModelFamily, context1m: boolean = true): string {
+  const spec = SPAWN_MODEL_FAMILIES[family];
+  return context1m && spec.supports1m ? `${spec.base}[1m]` : spec.base;
+}
 
 /** The model each agent role runs on, keyed to the kind of work it does. Every
  *  role has a fixed default here — there is no fleet "mode" anymore, so this map
  *  IS the per-type model assignment:
  *    coding (worker)        -> Opus 4.8 [1M ctx]   (writing/shipping code; biggest model + window)
  *    investigation          -> Opus 4.8            (deep reasoning over the codebase)
- *    review (tester)        -> Sonnet 4.6          (validation; fast and cheap)
- *    research (researcher)  -> Sonnet 4.6 [1M ctx] (broad context-gathering over lots of material)
+ *    review (tester)        -> Sonnet 5            (validation; fast and cheap)
+ *    research (researcher)  -> Sonnet 5 [1M ctx]   (broad context-gathering over lots of material)
  *    main                   -> Opus 4.8 [1M ctx]   (the reasoning-heavy coordinator; long-lived session)
  *    suborchestrator        -> Opus 4.8            (the reasoning-heavy coordinator)
  *  Override per-role with CHARM_MODEL_<ROLE> (e.g. CHARM_MODEL_WORKER=opus-4.7),
@@ -80,8 +107,8 @@ export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   main: "opus-4.8-1m",
   investigator: "opus-4.8",
   worker: "opus-4.8-1m",
-  tester: "sonnet-4.6",
-  researcher: "sonnet-4.6-1m",
+  tester: "sonnet-5",
+  researcher: "sonnet-5-1m",
   suborchestrator: "opus-4.8",
 };
 

@@ -14,7 +14,7 @@ import { buildLayoutString, shouldHideSubagents } from "./layout.ts";
 import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, resolveSpawnModel, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import {
@@ -1182,6 +1182,8 @@ async function main() {
         // the canvas can draw the orchestrator -> investigator edge.
         const cwd = resolveSpawnCwd(input.worktree);
         const parentId = input.caller_id ?? null;
+        // Optional per-spawn model override; undefined falls back to the role default.
+        const model = input.model ? resolveSpawnModel(input.model, input.context_1m ?? true) : undefined;
         return withLayoutLock(async () => {
           // Clamp to the concurrent-agent cap, same as spawn_workers: spawn up to
           // the free slots and defer the rest for a later retry.
@@ -1195,6 +1197,7 @@ async function main() {
               ticket_id: tid,
               prompt: `Read ${ticketReadPath(tid, cwd)} and investigate it.`,
               cwd,
+              model,
               // Interactive (like workers), NOT headless. An investigator that needs
               // a decision it can't make must be able to report_status('blocked')
               // and WAIT for the orchestrator to message guidance into its pane via
@@ -1236,6 +1239,8 @@ async function main() {
         // claim, so only the agent cap is the shared resource to serialize).
         const researchCwd = resolveSpawnCwd(input.worktree);
         const researchParentId = input.caller_id ?? null;
+        // Optional per-spawn model override; undefined falls back to the role default.
+        const researchModel = input.model ? resolveSpawnModel(input.model, input.context_1m ?? true) : undefined;
         return withLayoutLock(async () => {
           const slots = remainingAgentSlots();
           const toSpawn = input.prompts.slice(0, slots);
@@ -1247,6 +1252,7 @@ async function main() {
               ticket_id: null,
               prompt,
               cwd: researchCwd,
+              model: researchModel,
               // Interactive, like every other sub-agent: a researcher that needs a
               // decision it can't make reports_status('blocked') and waits in its
               // pane for the orchestrator to continue_agent it. Its prompt (and
@@ -1271,6 +1277,8 @@ async function main() {
         // and capture the authorizing caller as the parent of every worker spawned.
         const workerCwd = resolveSpawnCwd(input.worktree);
         const workerParentId = input.caller_id ?? null;
+        // Optional per-spawn model override; undefined falls back to the role default.
+        const workerModel = input.model ? resolveSpawnModel(input.model, input.context_1m ?? true) : undefined;
         // The whole read-solve-spawn runs under ONE layout-lock critical section.
         // Solving (inFlight + nextRunnable) and the spawn loop must share a lock so
         // a concurrent spawn_workers / request_review can't slip between this
@@ -1312,6 +1320,7 @@ async function main() {
               ticket_id: tid,
               prompt: `Read ${ticketReadPath(tid, workerCwd)} and complete it.`,
               cwd: workerCwd,
+              model: workerModel,
               interactive: true,
             }, workerParentId));
             store.update(tid, { status: "running", stage: "in_progress" });
