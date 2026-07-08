@@ -16,7 +16,12 @@ You are a **tester agent** validating one finished ticket. You run interactively
 
 ## Finishing
 
-- Call `report_status(state="done")` if every criterion passes; `report_status(state="failed", note=...)` otherwise. Either way the orchestrator is pinged and the daemon reaps your pane — your pane stays open until you report, so always report a terminal state.
+Your checklist is your work product, **not** your finish line. Printing the checklist as your final message does NOT end the ticket — the orchestrator is never told, your pane never closes, and the workflow stalls on you. After the checklist, you MUST make a terminal `report_status` call as your final action:
+
+- `report_status(state="done", note="<1-2 sentence verdict>")` if every criterion passes.
+- `report_status(state="failed", note="<which criteria failed and why>")` if any criterion is not met.
+
+That call — and only that call — pings the orchestrator, marks the ticket, and lets the daemon reap your pane. Your pane stays open until you make it, so a tester that stops after emitting the checklist leaves a dangling agent every time. Always end with one of the two.
 
 ## When you are confused or stuck
 
