@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, platform, release } from "node:os";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { CharmPaths } from "../paths.ts";
@@ -38,7 +38,7 @@ export type SpawnSpec = {
    *  `charm resume`). When set, the command swaps `--session-id <new>` for a
    *  resume flag and drops the positional prompt (the conversation already has
    *  its history), while keeping every other flag — model, permission mode,
-   *  --mcp-config, --append-system-prompt — identical to the original spawn:
+   *  --mcp-config, --system-prompt — identical to the original spawn:
    *    - { uuid }     -> `claude --resume <uuid>`   (resume a specific session)
    *    - "continue"   -> `claude --continue`        (resume the most recent) */
   resume?: { uuid: string } | "continue";
@@ -227,6 +227,23 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
         ? "You are the orchestrator (main agent) running the charm investigate -> plan -> fan-out workflow."
         : `You are a ${spec.role}.`;
   }
+  // Baseline agentic-coding behavior. `--system-prompt` (below) REPLACES
+  // Claude Code's default system prompt rather than layering on top of it, so
+  // none of its "how to write/edit code well" guidance reaches the model
+  // unless charm restates it. Kept short and role-agnostic — the per-role
+  // file carries the actual job; this is just the floor every role needs
+  // regardless of what it's doing. Applied unconditionally, including `plain`.
+  const CHARM_BASELINE = [
+    "",
+    "## Baseline working agreement",
+    "You are Claude, working as an autonomous coding agent with direct access to a shell, a filesystem, and MCP tools. Act accordingly:",
+    "- Read a file before editing it. Prefer targeted edits over rewriting a whole file. Don't create new files when an existing one will do.",
+    "- Don't add comments, abstractions, error handling, or scope beyond what the task requires. No speculative future-proofing.",
+    "- Never introduce security vulnerabilities (command injection, XSS, SQL injection, secrets in code/logs). If you notice you just wrote one, fix it immediately.",
+    "- Before any git command that could discard uncommitted work (checkout/restore/reset/clean, rm -rf in a repo), run `git status` first and stash or commit anything at risk.",
+    "- Never force-push, skip hooks (--no-verify), or bypass signing unless explicitly instructed.",
+    "- If you're unsure whether something is true, say so rather than guessing — a confidently wrong action is worse than a paused one.",
+  ].join("\n");
   // The charm renders agent-produced markdown (COORDINATION.md, tickets/*.md)
   // inside an Ink TUI. Terminal emoji rendering inflates row
   // height inconsistently across fonts/terminals, which breaks the layout —
@@ -298,7 +315,33 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
-  const systemPrompt = rolePrompt + CHARM_RULES + CHARM_COORDINATION + CHARM_SKILLS + CHARM_WORKSPACE + modelLine;
+  // `--system-prompt` (below) REPLACES Claude Code's default system prompt
+  // outright, so none of the dynamic context it normally injects (cwd, git
+  // status, platform, today's date) reaches the model unless charm supplies an
+  // equivalent block itself. Without this, a spawned agent has no idea what
+  // day it is or whether its cwd is a git repo short of running `pwd`/`date`/
+  // `git status` first. Applied unconditionally, including `plain` windows --
+  // a goal-less `charm start` window loses Claude Code's default persona
+  // entirely under this flag, so it needs this block just as much as any
+  // orchestrated role does.
+  const workDir = spec.cwd ?? paths.root;
+  const isGitRepo = existsSync(join(workDir, ".git"));
+  const ENV_INFO =
+    "\n## Environment\n" +
+    `- Working directory: ${workDir}\n` +
+    `- Is a git repository: ${isGitRepo ? "yes" : "no"}\n` +
+    `- Platform: ${platform()}\n` +
+    `- OS version: ${release()}\n` +
+    `- Today's date: ${new Date().toISOString().slice(0, 10)}\n`;
+  const systemPrompt =
+    rolePrompt +
+    CHARM_BASELINE +
+    CHARM_RULES +
+    CHARM_COORDINATION +
+    CHARM_SKILLS +
+    CHARM_WORKSPACE +
+    modelLine +
+    ENV_INFO;
   const flags: string[] = [];
   if (!spec.interactive) flags.push("-p");
   // Conversation identity. A fresh spawn launches under a charm-owned
@@ -335,7 +378,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   //                   `--disallowed-tools Agent` alone does NOT remove. Verified
   //                   against Claude Code 2.1.161: blocked agents otherwise
   //                   offer to "run it as a Workflow instead", bypassing charm.
-  // `--disallowed-tools` is variadic, so the next flag (`--append-system-prompt`)
+  // `--disallowed-tools` is variadic, so the next flag (`--system-prompt`)
   // terminates the list. This is a hard, API-level removal (the tools leave the
   // schema), not a prompt request — the model cannot call them even if told to.
   // NOTE: this does not close the Bash escape hatch (an agent can still run
@@ -348,7 +391,13 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const disallowedTools = ["Agent", "Task"];
   if (!workflowEnabled()) disallowedTools.push("Workflow");
   flags.push("--disallowed-tools", ...disallowedTools.map((t) => shellQuote(t)));
-  flags.push("--append-system-prompt", shellQuote(systemPrompt));
+  // `--system-prompt` REPLACES Claude Code's default system prompt entirely
+  // (unlike `--append-system-prompt`, which layers on top of it). Charm's
+  // assembled prompt is deliberately self-contained — role prompt + charm rules
+  // + coordination ethos + skills + workspace guardrails + the ENV_INFO block
+  // above — so a spawned agent's entire instruction set is what charm wrote,
+  // with no competing default persona/tool-use text to dilute it.
+  flags.push("--system-prompt", shellQuote(systemPrompt));
   // An empty prompt means a blank interactive window (e.g. `charm start` with
   // no goal): omit the positional so Claude opens waiting for user input. A
   // resume relaunch also omits it — the conversation already carries its history,

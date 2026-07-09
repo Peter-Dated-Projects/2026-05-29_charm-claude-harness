@@ -787,6 +787,47 @@ async function main() {
   })();
   const autoReapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // After a done worker's claim is released at teardown, decide whether that
+  // release is actually actionable to the orchestrator — i.e. it unblocks a
+  // ticket that was deferred PURELY because its files overlapped this worker's
+  // claim. The claim outlives `done` (holdsTicketClaim isn't gated on the live
+  // slot) and only drops at registry.remove, so such a dependent stays deferred
+  // through the auto-reap grace; the release is what opens it, and it needs its
+  // own ping because the report_status `done` ping fired while the claim was
+  // still held. But that only matters when something overlaps — every OTHER
+  // done worker was already fully covered by the report_status ping, so firing
+  // a second near-identical "file claim released" line for it is pure noise
+  // (two wake lines per finish). Gate the second ping on a real overlap.
+  //
+  // Test: run the solver against current state (post-teardown, so this worker's
+  // claim is gone and its ticket is `complete`). Any runnable ticket that
+  // touches a path this worker just freed was, by definition, blocked by that
+  // claim a moment ago — the solver defers on touch overlap — so its presence
+  // in the runnable set now is exactly the frontier this release opened. A
+  // dependent unblocked only by depends_on (no file overlap) is already covered
+  // by the report_status ping, which named the completed ticket.
+  function releaseOpensFrontier(freedTicketId: string): boolean {
+    const t = store.read(freedTicketId);
+    const freed = new Set(t?.frontmatter.touches ?? []);
+    if (freed.size === 0) return false; // claimed no files -> released nothing
+    const all = store.list();
+    const completed = new Set(
+      all.filter((x) => x.frontmatter.status === "complete").map((x) => x.frontmatter.id),
+    );
+    let runnable: string[];
+    try {
+      runnable = new Solver(all).nextRunnable({ completed, inFlight: inFlight() });
+    } catch {
+      // A malformed graph (cycle / dangling dep) is surfaced loudly elsewhere;
+      // don't let it swallow the ping here — fall back to firing it.
+      return true;
+    }
+    const byId = new Map(all.map((x) => [x.frontmatter.id, x]));
+    return runnable.some((id) =>
+      (byId.get(id)?.frontmatter.touches ?? []).some((p) => freed.has(p)),
+    );
+  }
+
   function scheduleAutoReap(agentId: string): void {
     if (AUTO_REAP_MS === 0) return; // auto-reap disabled
     if (autoReapTimers.has(agentId)) return; // already armed — first report wins
@@ -813,7 +854,11 @@ async function main() {
       );
       void tearDownAgent(agentId)
         .then(() => {
-          if (openedFrontier) {
+          // Fire the release ping ONLY when the freed claim actually opens a
+          // deferred dependent. `openedFrontier` (worker+done) is the cheap
+          // pre-gate; releaseOpensFrontier is the precise one, evaluated
+          // post-teardown so it sees the claim already gone.
+          if (openedFrontier && ticketId && releaseOpensFrontier(ticketId)) {
             pingOrchestrator(
               `${agentId} -> done${ticketId ? ` on ${ticketId}` : ""}. Its file claim is now released`,
             );
