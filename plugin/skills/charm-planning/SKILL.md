@@ -93,12 +93,17 @@ the most common way these briefs go wrong.
 - The stacking model in one paragraph: each branch is cut from its parent's branch (not the default
   branch) so each PR reviews only its own diff; parallel stacks join in an integration branch that
   is the single PR to the default branch.
-- **A Mermaid DAG — this is the plan.** Express the topology as a single Mermaid `graph TD`: nodes
-  are tickets (real IDs) plus the integration node; edges run parent → child; forks are one parent
-  with multiple children, joins are the parallel children pointing into the integration node. This
-  one diagram is the plan of record — it doubles as the picture Peter approves and the structure the
-  orchestrator reads, so there's a single source of truth, not a prose description and a diagram that
-  can drift. **Render it through the mermaid MCP — never just paste the code block.** Call
+- **A Mermaid DAG — this is the intended shape.** Express the topology as a single Mermaid `graph TD`:
+  nodes are tickets (real IDs) plus the integration node; edges run parent → child; forks are one parent
+  with multiple children, joins are the parallel children pointing into the integration node. This one
+  diagram doubles as the picture Peter approves and the structure the orchestrator reads, so there's a
+  single source of truth, not a prose description and a diagram that can drift. It captures **intent**,
+  not a frozen contract: it's derived from the tickets' declared dependencies before any investigation
+  has run, so it's a hypothesis about the stack shape. The orchestrator's own investigation stage may
+  reshape it — dissolving a dependency the tickets implied (collapsing a branch), or surfacing a hidden
+  one (adding a branch) — and the real graph gets re-approved at the orchestrator's build gate. The less
+  certain you are about scope going in, the more this shape will move; that's the investigation doing its
+  job, not the plan failing. **Render it through the mermaid MCP — never just paste the code block.** Call
   `mcp__mermaid__mermaid_preview` with the DAG and a descriptive `preview_id` (e.g.
   `<project>-stack-topology`) so Peter sees the actual rendered diagram for approval, and on sign-off
   call `mcp__mermaid__mermaid_save` to write the SVG next to the brief in `.charm/scratchpad/`. The fenced
@@ -116,9 +121,13 @@ graph TD
   integration --> main
 ```
 
-The plan is sent and approved **once**: render this Mermaid DAG via `mcp__mermaid__mermaid_preview`,
-get Peter's sign-off on the rendered diagram, and only then finalize/hand off the brief. Don't
-re-issue or mutate the plan mid-run — the approved diagram is fixed for the run.
+You get Peter's sign-off on this shape **once, at planning time**: render the Mermaid DAG via
+`mcp__mermaid__mermaid_preview`, get his approval on the rendered diagram, and only then finalize/hand
+off the brief. This approval is on the *intended* topology — you don't re-issue or renegotiate it while
+writing the brief. It is not a promise the graph can never change downstream: the orchestrator
+investigates before it builds, and if its findings reshape the stack it re-approves the corrected graph
+at its own build gate. Your job here is to hand off the best-informed intent, not to lock a shape the
+investigation isn't allowed to touch.
 
 ### 4. PR / branch table  (required)
 One row per package plus the integration row. Columns: **Order | Issue | Branch | Branches from |

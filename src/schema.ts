@@ -175,9 +175,22 @@ export const FinishProposalInput = z.object({
 });
 export type FinishProposalInput = z.infer<typeof FinishProposalInput>;
 
+// Optional per-spawn model override shared by every spawn_* tool. `model` picks a
+// model family (sonnet = Sonnet 5, haiku = Haiku 4.5, opus = Opus 4.8); omit it to
+// keep the role's default. `context_1m` toggles the 1M-token context window (default
+// true, the preferred window) and is honored only for families that offer one — it's
+// a no-op on Haiku. Resolved daemon-side via resolveSpawnModel.
+export const SpawnModelFamily = z.enum(["sonnet", "haiku", "opus"]);
+export type SpawnModelFamily = z.infer<typeof SpawnModelFamily>;
+const spawnModelFields = {
+  model: SpawnModelFamily.optional(),
+  context_1m: z.boolean().optional(),
+};
+
 export const SpawnInvestigatorsInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
+  ...spawnModelFields,
   // Optional worktree to run the spawned agents in: the plain `name` of an
   // already-open worktree (~/.charm-worktrees/<repo>/<name>/). When set, the daemon
   // resolves it to that checkout's cwd so the agent runs on its own branch and
@@ -191,6 +204,7 @@ export type SpawnInvestigatorsInput = z.infer<typeof SpawnInvestigatorsInput>;
 export const SpawnWorkersInput = z.object({
   caller_id: z.string().optional(),
   ticket_ids: z.array(z.string()).min(1),
+  ...spawnModelFields,
   // Optional worktree (plain name of an open ~/.charm-worktrees/<repo>/<name>/) to
   // run the spawned workers in; see SpawnInvestigatorsInput.worktree. Applies to every
   // worker in the batch.
@@ -209,6 +223,7 @@ export const SpawnResearchersInput = z.object({
   caller_id: z.string().optional(),
   prompts: z.array(z.string().min(1)).min(1),
   worktree: z.string().optional(),
+  ...spawnModelFields,
 });
 export type SpawnResearchersInput = z.infer<typeof SpawnResearchersInput>;
 

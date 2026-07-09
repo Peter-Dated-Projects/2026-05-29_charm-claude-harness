@@ -57,6 +57,26 @@ STAGE 4 — Test: Call request_review on a completed ticket to spawn a tester, l
 validate against acceptance criteria, then await_approval(stage=4) for the diff-merge
 gate. STOP.
 
+STAGE 5 — Worktrees, researchers & proposals: After I approve Stage 4, exercise the
+parallel-work surface. Keep everything trivial. There is NO human gate at this stage.
+  - Proposals: create_proposal(name="preflight-demo") for a throwaway feature note, then
+    list_proposals to confirm it shows up, then finish_proposal on it (moves it to
+    proposals/finished/). Narrate each.
+  - Researcher: spawn_researchers with ONE trivial prompt ("In one sentence, what would a
+    string-utils smoke test cover?"). Let it write its scratchpad file, report the path
+    back, and report_status(done). Confirm in narration it ran ticket-less and was NOT gated
+    like the build tools. (Researchers default to Sonnet-1M, but the fleet `-m` flag overrides
+    that — so under the haiku sweep the researcher runs on haiku; the point here is the
+    ticket-less, ungated path, not the model.)
+  - Worktree isolation: create_worktree(name="preflight-wt") to cut a fresh charm/preflight-wt
+    branch. Create ONE trivial implementation ticket (append a single line to
+    src/wt-probe.txt) and spawn_workers(ticket_ids=[...], worktree="preflight-wt") so it runs
+    in that isolated checkout. Call list_worktrees and confirm it reports the worktree's path,
+    branch, and the occupying agent. After the worker reports done, confirm the edit landed on
+    the charm/preflight-wt branch and the MAIN working tree is untouched. Then
+    close_worktree(name="preflight-wt", delete_branch=true). You MUST leave NO worktree open
+    at session end.
+
 THROUGHOUT — Also call these so I can confirm they work, and report their output:
 list_tickets, list_agents, read_coordination, set_session_description ("preflight sweep"),
 and open_graph (open the graph viewer window).
@@ -79,6 +99,10 @@ paper over it. Do not advance past an await_approval until I approve.
 | Failure path | T-D `report_status failed` |
 | `kill_agent` / `continue_agent` / `cancel_ticket` / `set_ticket_state` | recovery section |
 | `request_review` (tester) | Stage 4 validation |
+| `create_proposal` / `list_proposals` / `finish_proposal` | Stage 5 proposal created, listed, moved to `proposals/finished/` |
+| `spawn_researchers` (ticket-less, **ungated**; Sonnet-1M default, fleet `-m` overrides) | Stage 5 researcher writes a scratchpad and reports its path |
+| `create_worktree` / `list_worktrees` / `close_worktree` | Stage 5 worktree opened, occupied, verified isolated, then closed |
+| `worktree` param on `spawn_workers` | Stage 5 worker's edit lands on `charm/preflight-wt`, main tree untouched |
 | `list_tickets` / `list_agents` | board + fleet inspection |
 | `set_session_description` | session relabel |
 | `open_graph` | standalone graph viewer window |
@@ -105,6 +129,15 @@ These cannot be triggered by the agent. Run them against the live session.
 - **CLI subcommands** — run each against the session: `charm status`, `charm attach`,
   `charm session-name`, `charm ctl <cmd>`, `charm restart`, `charm stop`. Test `init` and
   `reset-kb` only in a scratch dir — **`reset-kb` wipes the durable `.charm/kb/`**.
+- **`charm resume`** — recovery path for a dead orchestrator. Kill the orchestrator's Claude
+  pane (or its whole daemon) by hand, then run `charm resume` to relaunch it on its saved
+  conversation, and once with `charm resume --continue` for the most-recent conversation.
+  Confirm the orchestrator pane comes back and re-registers its panes with a fresh daemon.
+- **`charm worktree list`** — read-only worktree view. Run it once while the Stage-5 worktree
+  is open and a live daemon is up (each copy annotated with the agent occupying it), then again
+  after the session is down (dir-scan fallback: name/path/branch, no agent column), to prove
+  both paths. Open/close are MCP-only (`create_worktree`/`close_worktree`) — there is no CLI
+  mutation, by design.
 - **In-session `:` commands** — `:so` to spawn a suborchestrator, `:a` to detach, `:q` to
   tear down. After `:q`,
   confirm it killed **only** this UUID's panes and `run/<uuid>/` dir, leaving other

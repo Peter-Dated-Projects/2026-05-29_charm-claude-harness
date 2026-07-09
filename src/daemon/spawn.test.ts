@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { charmPaths } from "../paths.ts";
-import { buildClaudeCommand } from "./spawn.ts";
+import { buildClaudeCommand, resolveSpawnModel } from "./spawn.ts";
 
 /**
  * The headless/interactive contract for buildClaudeCommand: `interactive: false`
@@ -40,4 +40,26 @@ test("every spawn carries the agent id and mints a session id", () => {
   const c = cmd("investigator", false);
   expect(c).toContain("CHARM_AGENT_ID='investigator-001'");
   expect(c).toContain("--session-id");
+});
+
+/**
+ * resolveSpawnModel maps the caller-facing families (sonnet/haiku/opus) to concrete
+ * model ids, defaulting to the 1M-token window (the preferred window) and appending
+ * `[1m]` only for families that offer one.
+ */
+test("resolveSpawnModel defaults to the 1M window for families that support it", () => {
+  expect(resolveSpawnModel("sonnet")).toBe("claude-sonnet-5[1m]");
+  expect(resolveSpawnModel("opus")).toBe("claude-opus-4-8[1m]");
+});
+
+test("resolveSpawnModel drops the 1M window when context1m is false", () => {
+  expect(resolveSpawnModel("sonnet", false)).toBe("claude-sonnet-5");
+  expect(resolveSpawnModel("opus", false)).toBe("claude-opus-4-8");
+});
+
+test("resolveSpawnModel never appends [1m] to a family without a 1M window", () => {
+  // Haiku 4.5 has no 1M variant: a 1M request must NOT produce a bogus `...[1m]` id.
+  expect(resolveSpawnModel("haiku")).toBe("claude-haiku-4-5-20251001");
+  expect(resolveSpawnModel("haiku", true)).toBe("claude-haiku-4-5-20251001");
+  expect(resolveSpawnModel("haiku", false)).toBe("claude-haiku-4-5-20251001");
 });

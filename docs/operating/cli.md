@@ -42,7 +42,7 @@ charm start [goal...] [options]
 
 | Option | Effect |
 |---|---|
-| `-m, --model <model>` | override the model for the **whole** fleet (main agent + every sub-agent), replacing the per-type defaults. Accepts `sonnet-4.6`, `sonnet-4.6-1m`, `opus-4.6`, `opus-4.7`, `opus-4.7-1m`, `opus-4.8`, `opus-4.8-1m`, or a raw `claude-*` id |
+| `-m, --model <model>` | override the model for the **whole** fleet (main agent + every sub-agent), replacing the per-type defaults. Accepts `sonnet-5`, `sonnet-5-1m`, `haiku-4.5`, `opus-4.7`, `opus-4.7-1m`, `opus-4.8`, `opus-4.8-1m`, `fable-5`, or a raw `claude-*` id |
 | `--max-agents <n>` | max concurrent agent sessions **including** the orchestrator (so `n=10` allows the orchestrator plus 9 sub-agents). Default `10` |
 | `--no-attach` | do not auto-attach to the tmux session |
 | `-s, --session <name>` | name the tmux session (default: derived from the project dir) |
