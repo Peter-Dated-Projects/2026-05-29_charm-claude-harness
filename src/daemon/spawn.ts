@@ -427,10 +427,18 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     // skill list but must never run the destructive op. Unset for the human terminal.
     `export CHARM_AGENT_ROLE=${shellQuote(spec.role)}`,
     `export CHARM_SOCKET=${shellQuote(paths.socket)}`,
-    // Disable Claude Code's per-project prompt history — otherwise the previous
-    // charm-start prompt gets pre-populated into the input box and re-submitted
-    // after the current prompt begins processing.
-    `export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`,
+    // DO NOT set CLAUDE_CODE_SKIP_PROMPT_HISTORY=1 here. It was once exported to
+    // stop the previous charm-start prompt from repopulating the input box and
+    // re-submitting — but in current Claude Code that same flag ALSO disables
+    // writing the conversation transcript (~/.claude/projects/<slug>/<id>.jsonl).
+    // With it set, no agent's conversation is ever saved, so `charm resume` /
+    // `claude --resume` have nothing on disk to reattach to — the whole resume
+    // feature silently no-ops. The repopulation bug it guarded against no longer
+    // reproduces (verified against Claude Code 2.1.206: a relaunch runs only its
+    // own positional prompt and does not re-submit a prior one), so the flag is
+    // pure downside now. If input-box repopulation ever returns, fix it by
+    // injecting the goal AFTER launch (like continue_agent's paste) rather than as
+    // a launch positional — never by disabling transcripts.
     `export MAX_THINKING_TOKENS=${thinking}`,
     `exec claude ${flags.join(" ")}`,
   ].join(" && ");
