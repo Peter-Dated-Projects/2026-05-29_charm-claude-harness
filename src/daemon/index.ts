@@ -589,6 +589,12 @@ async function main() {
       // the pane in the session that owns the agent.
       const pane = await tmux.splitPane({ cmd, cwd: spec.cwd ?? paths.root, direction: "h", target: `${session}:${WINDOW}` });
       registry.attach(agent.id, { pane_id: pane });
+      // Stamp the new pane's status bar: charm id + running (blue) state. Cosmetic,
+      // best-effort — never let a border update fail a spawn.
+      try {
+        await tmux.setPaneLabel(pane, agent.id);
+        await tmux.setPaneState(pane, agent.state);
+      } catch { /* border is cosmetic */ }
       // Record which worktree this agent is isolated in (the subdir name under
       // ~/.charm-worktrees/<repo>/), so list_worktrees can annotate each worktree with its
       // occupying agent. A non-worktree spawn (cwd === root) leaves it null.
@@ -1214,6 +1220,17 @@ async function main() {
         // before any sub-agents. It's the pane the daemon wakes on sub-agent
         // state changes.
         orchestratorPaneId = agent_pane_ids[0] ?? null;
+        // Install the per-pane status bar (thin top border: state-colored dot +
+        // agent id + Claude's own activity title). Done here so it covers both
+        // `charm start` and the daemon-restart path in `charm resume`, which both
+        // call register_panes. The orchestrator gets a running (blue) bar; the
+        // console gets an uncolored labelled bar (no @charm_state).
+        tmux.configureAgentBorders(WINDOW);
+        if (orchestratorPaneId) {
+          await tmux.setPaneLabel(orchestratorPaneId, "orchestrator");
+          await tmux.setPaneState(orchestratorPaneId, "running");
+        }
+        if (consolePaneId) await tmux.setPaneLabel(consolePaneId, "charm console");
         refreshCoordination();
         await relayout();
         return { ok: true };
@@ -1523,6 +1540,11 @@ async function main() {
       case "report_status": {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
+        // Recolor the agent's status bar to its new state (blue/yellow/green/red).
+        // Cosmetic and best-effort; done/failed panes are auto-reaped shortly after,
+        // so their green/red bar is brief, while blocked (yellow) persists until
+        // continue_agent — exactly the state worth flagging at a glance.
+        if (a.pane_id) tmux.setPaneState(a.pane_id, input.state).catch(() => {});
         if (input.state === "done" && a.ticket_id) {
           // Every role's `done` completes its ticket. An investigation ticket
           // complete means the findings are written into its body (ready for the
