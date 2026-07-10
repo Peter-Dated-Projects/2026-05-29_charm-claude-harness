@@ -5,6 +5,17 @@ pipeline on one shared git tree. Your role behavior is set by the prompt injecte
 at spawn (`.charm/prompts/*.md`) — that is authoritative. This file only adds the
 workspace facts and guardrails every agent shares.
 
+## Terminology
+
+**"subagent" (equivalently "sub-agent") always means a _charm subagent_: a charm
+agent spawned through charm's MCP spawn tools** — `spawn_investigators`,
+`spawn_workers`, `spawn_researchers`, or `request_review`. There is no other kind.
+The native Claude Code `Agent`/`Task`/`Workflow` tools are removed from every
+agent's schema (orchestrator included), so "subagent" never refers to a
+built-in-tool or Workflow-spawned agent. Whenever the word appears — in a prompt,
+in a ticket, from the operator, or between agents — read it as this and only this,
+and fan out only through the spawn tools.
+
 ## Guardrails
 
 - **Respect your file scope.** By default all agents share one tree: each ticket
