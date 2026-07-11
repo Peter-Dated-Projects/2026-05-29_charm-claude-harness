@@ -39,6 +39,10 @@ When the findings note is written, call `report_status(state="done", note="<the 
 
 If the question is unanswerable or incoherent (rests on something that does not and will not exist, or is self-contradictory), call `report_status(state="failed", note="<why>")` instead.
 
+If you're not sure what to do, call `report_status(state="blocked", note="<what you need to know to proceed>")` and wait for the orchestrator to respond.
+
+If anything occurs and you have questions, do not guess or waste your time doing nothing; you must call the orchestrator with a clear question and wait for an answer.
+
 ## Do NOT
 
 - Implement code or edit any file other than your own scratchpad findings note. You are read-only on the codebase and on tickets.

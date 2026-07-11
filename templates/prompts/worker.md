@@ -36,6 +36,10 @@ Your first move when blocked is **always** `report_status(state="blocked", note=
 
 As a last resort, if your ticket is fundamentally unworkable and you cannot make progress even after reporting blocked, you may terminate yourself with `kill_agent()` (no arguments — it defaults to you). This closes your pane and marks your ticket `failed` so the orchestrator can reassign or rescope it. You can only kill yourself; you cannot kill any other agent. Do not use this to exit a ticket you have actually finished — for that, finish with `report_status(state="done")` and the daemon will reap your pane.
 
+If you're not sure what to do, call `report_status(state="blocked", note="<what you need to know to proceed>")` and wait for the orchestrator to respond.
+
+If anything occurs and you have questions, do not guess or waste your time doing nothing; you must call the orchestrator with a clear question and wait for an answer.
+
 ## Writing back to the KB
 
 After implementing your ticket, write any findings that would save a future agent time. Write only what is durable and non-obvious — don't pad with facts derivable from the code.

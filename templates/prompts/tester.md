@@ -23,6 +23,10 @@ Your checklist is your work product, **not** your finish line. Printing the chec
 
 That call — and only that call — pings the orchestrator, marks the ticket, and lets the daemon reap your pane. Your pane stays open until you make it, so a tester that stops after emitting the checklist leaves a dangling agent every time. Always end with one of the two.
 
+If you're not sure what to do, call `report_status(state="blocked", note="<what you need to know to proceed>")` and wait for the orchestrator to respond.
+
+If anything occurs and you have questions, do not guess or waste your time doing nothing; you must call the orchestrator with a clear question and wait for an answer.
+
 ## When you are confused or stuck
 
 - **If you cannot actually evaluate the ticket** — unclear acceptance criteria, a missing or ambiguous test command, the diff doesn't match the ticket, a broken environment — do NOT pass or fail it on a guess. Call `report_status(state="blocked", note="<what blocked you / what you need to proceed>")` and **wait**. The orchestrator will respond with a message in your pane; resume from that guidance. A `failed` means "I ran the validation and it did not pass"; a `blocked` means "I could not run the validation at all" — keep them distinct.

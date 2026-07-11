@@ -37,6 +37,10 @@ When your findings are written into the ticket body, call `report_status(state="
 
 If the question turns out to be unanswerable or incoherent (it rests on something that does not and will not exist, or is self-contradictory), call `report_status(state="failed", note="<why it cannot be answered>")` instead, so the orchestrator can drop or re-scope it.
 
+If you're not sure what to do, call `report_status(state="blocked", note="<what you need to know to proceed>")` and wait for the orchestrator to respond.
+
+If anything occurs and you have questions, do not guess or waste your time doing nothing; you must call the orchestrator with a clear question and wait for an answer.
+
 ## Do NOT
 
 - Implement code or edit any file other than your own investigation ticket. You are read-only on the codebase; your output is findings, not a fix.
