@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { homedir, platform, release } from "node:os";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import type { CharmPaths } from "../paths.ts";
 import type { AgentRole } from "../schema.ts";
 
@@ -391,13 +391,27 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const disallowedTools = ["Agent", "Task"];
   if (!workflowEnabled()) disallowedTools.push("Workflow");
   flags.push("--disallowed-tools", ...disallowedTools.map((t) => shellQuote(t)));
-  // `--system-prompt` REPLACES Claude Code's default system prompt entirely
+  // `--system-prompt-file` REPLACES Claude Code's default system prompt entirely
   // (unlike `--append-system-prompt`, which layers on top of it). Charm's
   // assembled prompt is deliberately self-contained — role prompt + charm rules
   // + coordination ethos + skills + workspace guardrails + the ENV_INFO block
   // above — so a spawned agent's entire instruction set is what charm wrote,
   // with no competing default persona/tool-use text to dilute it.
-  flags.push("--system-prompt", shellQuote(systemPrompt));
+  //
+  // We pass it as a FILE, not inline (`--system-prompt '<...>'`): the assembled
+  // prompt is ~26KB, and every agent launch is a tmux command (`split-window` /
+  // `respawn-pane` / `new-session`). tmux caps a single command at ~16KB and
+  // rejects anything larger with "command too long" — so an inline prompt this
+  // size fails EVERY spawn, and `charm resume` (which rebuilds the same command)
+  // with it. Writing the prompt to a per-agent file under the session's run dir
+  // and passing only its path keeps the launched command tiny (<1KB) and well
+  // under the limit. The file lives beside the session so it's cleaned up with
+  // the run and is trivially inspectable when debugging a spawn.
+  const promptDir = join(paths.runDir, "system-prompts");
+  mkdirSync(promptDir, { recursive: true });
+  const promptFile = join(promptDir, `${agent_id}.txt`);
+  writeFileSync(promptFile, systemPrompt);
+  flags.push("--system-prompt-file", shellQuote(promptFile));
   // An empty prompt means a blank interactive window (e.g. `charm start` with
   // no goal): omit the positional so Claude opens waiting for user input. A
   // resume relaunch also omits it — the conversation already carries its history,
@@ -413,10 +427,18 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     // skill list but must never run the destructive op. Unset for the human terminal.
     `export CHARM_AGENT_ROLE=${shellQuote(spec.role)}`,
     `export CHARM_SOCKET=${shellQuote(paths.socket)}`,
-    // Disable Claude Code's per-project prompt history — otherwise the previous
-    // charm-start prompt gets pre-populated into the input box and re-submitted
-    // after the current prompt begins processing.
-    `export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`,
+    // DO NOT set CLAUDE_CODE_SKIP_PROMPT_HISTORY=1 here. It was once exported to
+    // stop the previous charm-start prompt from repopulating the input box and
+    // re-submitting — but in current Claude Code that same flag ALSO disables
+    // writing the conversation transcript (~/.claude/projects/<slug>/<id>.jsonl).
+    // With it set, no agent's conversation is ever saved, so `charm resume` /
+    // `claude --resume` have nothing on disk to reattach to — the whole resume
+    // feature silently no-ops. The repopulation bug it guarded against no longer
+    // reproduces (verified against Claude Code 2.1.206: a relaunch runs only its
+    // own positional prompt and does not re-submit a prior one), so the flag is
+    // pure downside now. If input-box repopulation ever returns, fix it by
+    // injecting the goal AFTER launch (like continue_agent's paste) rather than as
+    // a launch positional — never by disabling transcripts.
     `export MAX_THINKING_TOKENS=${thinking}`,
     `exec claude ${flags.join(" ")}`,
   ].join(" && ");

@@ -1,5 +1,31 @@
 import { spawnSync } from "node:child_process";
 
+/** The `pane-border-format` charm installs on the agent window: a thin top bar
+ *  on every pane showing a state-colored dot, the charm agent id, and Claude
+ *  Code's own auto-generated pane title (what the agent is currently doing —
+ *  tmux captures that title from Claude's terminal-title escape sequence for
+ *  free). Color comes from the per-pane `@charm_state` user option, which the
+ *  daemon stamps on every state transition:
+ *    running / spawning -> blue  (working)
+ *    blocked            -> yellow (alive, waiting on continue_agent)
+ *    done               -> green
+ *    failed             -> red
+ *  A pane with no `@charm_state` (the console) renders uncolored — just its
+ *  `@charm_label` if set, else its title. Commas inside `#{...}` are protected
+ *  by brace nesting, so the outer `#{?cond,then,else}` splits only on its own
+ *  top-level commas. */
+const CHARM_STATE_COLOR =
+  "#{?#{==:#{@charm_state},done},green," +
+  "#{?#{==:#{@charm_state},failed},red," +
+  "#{?#{==:#{@charm_state},blocked},yellow,blue}}}";
+export const CHARM_BORDER_FORMAT =
+  " #{?#{==:#{@charm_state},}," +
+  // non-agent pane (console): label if present, else the raw pane title
+  "#{?#{@charm_label},#{@charm_label},#{pane_title}}," +
+  // agent pane: colored dot + dim agent id + Claude's live activity title
+  `#[fg=${CHARM_STATE_COLOR}]#[bold]●#[nobold]#[fg=default] ` +
+  "#[fg=colour244]#{@charm_label}#[fg=default] · #{pane_title}} ";
+
 /**
  * Async tmux invocation. Unlike spawnSync (which blocks the daemon's single
  * event-loop thread for the full duration of the child process — and `tmux
@@ -75,6 +101,31 @@ export class Tmux {
    */
   setOption(name: string, value: string): void {
     spawnSync("tmux", ["set-option", "-t", this.session, name, value]);
+  }
+
+  /** Turn on the top pane-border status bar for `window` and install charm's
+   *  agent-status format (see CHARM_BORDER_FORMAT). Idempotent and startup/CLI-
+   *  path only (called from register_panes, before anything awaits the socket),
+   *  so it stays synchronous. Best-effort: a tmux without pane-border-status
+   *  support just leaves borders unstyled. */
+  configureAgentBorders(window: string): void {
+    const target = `${this.session}:${window}`;
+    spawnSync("tmux", ["set-option", "-t", target, "pane-border-status", "top"]);
+    spawnSync("tmux", ["set-option", "-t", target, "pane-border-format", CHARM_BORDER_FORMAT]);
+  }
+
+  /** Stamp an agent's live state onto its pane, read by the border format's color
+   *  logic. Empty string clears it (back to the uncolored, non-agent style). Async
+   *  (tmuxRun) because report_status — a lightweight, non-layout-locked RPC — calls
+   *  it on the daemon's event-loop thread. */
+  async setPaneState(paneId: string, state: string): Promise<void> {
+    await tmuxRun(["set-option", "-p", "-t", paneId, "@charm_state", state]);
+  }
+
+  /** The label shown in the pane border ahead of Claude's title — the charm agent
+   *  id for an agent pane, or a friendly name for the console. */
+  async setPaneLabel(paneId: string, label: string): Promise<void> {
+    await tmuxRun(["set-option", "-p", "-t", paneId, "@charm_label", label]);
   }
 
   /**

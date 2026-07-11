@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, cpSync
 import { join, dirname, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { charmPaths, sessionNameForId, type CharmPaths } from "./paths.ts";
 import { SessionMeta } from "./schema.ts";
 import { rpcCall } from "./daemon/rpc.ts";
@@ -329,6 +330,27 @@ program
     tmux.attach();
   });
 
+/** True when Claude Code has actually persisted a conversation for `uuid`.
+ *  charm mints the orchestrator's session id at `charm start` and records it up
+ *  front, but Claude Code only writes `~/.claude/projects/<slug>/<uuid>.jsonl` on
+ *  the first COMPLETED turn — so a recorded id can point at a conversation that
+ *  never existed (orchestrator died before its first turn, or a plain/no-goal
+ *  window nobody typed into). `charm resume` must verify the file is on disk before
+ *  shelling `claude --resume <uuid>`, otherwise it spawns a pane that dies with
+ *  "No conversation found with session ID …" while the CLI reports success.
+ *
+ *  Globbing every project dir for `<uuid>.jsonl` (rather than reconstructing the
+ *  cwd->slug munging Claude applies) keeps this robust to that internal rule
+ *  changing: session ids are globally unique, so a hit in any project dir is THE
+ *  conversation. */
+function claudeConversationExists(uuid: string): boolean {
+  const base = join(homedir(), ".claude", "projects");
+  let dirs: string[];
+  try { dirs = readdirSync(base); }
+  catch { return false; } // projects dir absent -> nothing to resume
+  return dirs.some((d) => existsSync(join(base, d, `${uuid}.jsonl`)));
+}
+
 program
   .command("resume [session]")
   .description("relaunch the orchestrator pane on its saved conversation (claude --resume), or --continue for the most recent")
@@ -371,6 +393,22 @@ program
         `[charm] no saved orchestrator session id for '${target.meta.session_name}' ` +
           `(${paths.orchestratorSessionFile} missing or unreadable). ` +
           `Retry with --continue to resume its most-recent conversation, or start a fresh charm.`,
+      );
+      process.exit(2);
+    }
+    // A recorded id is not a resumable conversation: Claude Code writes the session
+    // file only on the first completed turn, so an orchestrator that died at startup
+    // (or a plain window nobody used) leaves the id pointing at nothing. Catch that
+    // HERE with a clear diagnosis, rather than shelling `claude --resume <uuid>` into
+    // the pane where it dies with "No conversation found" while we print success.
+    if (!useContinue && !claudeConversationExists(record.claude_session_id!)) {
+      console.error(
+        `[charm] the recorded conversation for '${target.meta.session_name}' ` +
+          `(session id ${record.claude_session_id}) was never saved by Claude Code — ` +
+          `the orchestrator likely exited before completing its first turn, or it was a ` +
+          `plain window with no activity. There is nothing to resume under that id.\n` +
+          `Retry with --continue to resume the most-recent conversation in this directory, ` +
+          `or start a fresh charm.`,
       );
       process.exit(2);
     }

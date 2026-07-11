@@ -589,6 +589,12 @@ async function main() {
       // the pane in the session that owns the agent.
       const pane = await tmux.splitPane({ cmd, cwd: spec.cwd ?? paths.root, direction: "h", target: `${session}:${WINDOW}` });
       registry.attach(agent.id, { pane_id: pane });
+      // Stamp the new pane's status bar: charm id + running (blue) state. Cosmetic,
+      // best-effort — never let a border update fail a spawn.
+      try {
+        await tmux.setPaneLabel(pane, agent.id);
+        await tmux.setPaneState(pane, agent.state);
+      } catch { /* border is cosmetic */ }
       // Record which worktree this agent is isolated in (the subdir name under
       // ~/.charm-worktrees/<repo>/), so list_worktrees can annotate each worktree with its
       // occupying agent. A non-worktree spawn (cwd === root) leaves it null.
@@ -787,47 +793,6 @@ async function main() {
   })();
   const autoReapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // After a done worker's claim is released at teardown, decide whether that
-  // release is actually actionable to the orchestrator — i.e. it unblocks a
-  // ticket that was deferred PURELY because its files overlapped this worker's
-  // claim. The claim outlives `done` (holdsTicketClaim isn't gated on the live
-  // slot) and only drops at registry.remove, so such a dependent stays deferred
-  // through the auto-reap grace; the release is what opens it, and it needs its
-  // own ping because the report_status `done` ping fired while the claim was
-  // still held. But that only matters when something overlaps — every OTHER
-  // done worker was already fully covered by the report_status ping, so firing
-  // a second near-identical "file claim released" line for it is pure noise
-  // (two wake lines per finish). Gate the second ping on a real overlap.
-  //
-  // Test: run the solver against current state (post-teardown, so this worker's
-  // claim is gone and its ticket is `complete`). Any runnable ticket that
-  // touches a path this worker just freed was, by definition, blocked by that
-  // claim a moment ago — the solver defers on touch overlap — so its presence
-  // in the runnable set now is exactly the frontier this release opened. A
-  // dependent unblocked only by depends_on (no file overlap) is already covered
-  // by the report_status ping, which named the completed ticket.
-  function releaseOpensFrontier(freedTicketId: string): boolean {
-    const t = store.read(freedTicketId);
-    const freed = new Set(t?.frontmatter.touches ?? []);
-    if (freed.size === 0) return false; // claimed no files -> released nothing
-    const all = store.list();
-    const completed = new Set(
-      all.filter((x) => x.frontmatter.status === "complete").map((x) => x.frontmatter.id),
-    );
-    let runnable: string[];
-    try {
-      runnable = new Solver(all).nextRunnable({ completed, inFlight: inFlight() });
-    } catch {
-      // A malformed graph (cycle / dangling dep) is surfaced loudly elsewhere;
-      // don't let it swallow the ping here — fall back to firing it.
-      return true;
-    }
-    const byId = new Map(all.map((x) => [x.frontmatter.id, x]));
-    return runnable.some((id) =>
-      (byId.get(id)?.frontmatter.touches ?? []).some((p) => freed.has(p)),
-    );
-  }
-
   function scheduleAutoReap(agentId: string): void {
     if (AUTO_REAP_MS === 0) return; // auto-reap disabled
     if (autoReapTimers.has(agentId)) return; // already armed — first report wins
@@ -838,31 +803,23 @@ async function main() {
       // terminal so a flip back shouldn't happen, but guard anyway so we never
       // tear down an agent that somehow re-entered a live state.
       if (!a || (a.state !== "done" && a.state !== "failed")) return;
-      // A done worker holds its `touches`-claim until teardown (holdsTicketClaim
-      // is released only at registry.remove, NOT at report_status). So its
-      // teardown here is what opens the dependency frontier for any ticket whose
-      // files overlap it — and a dependent wave the orchestrator tried to spawn
-      // during the grace would have been deferred. Re-ping AFTER teardown so it
-      // retries that frontier. Only a `done` worker can open a frontier this way:
-      // a `failed` worker's ticket isn't `complete`, so its dependents stay
-      // blocked regardless; investigators/testers hold no claim.
-      const openedFrontier = a.role === "worker" && a.state === "done";
+      // Capture what the post-teardown ping needs before the registry entry is
+      // gone. This is the SINGLE orchestrator event for a finished agent: it
+      // fires once, AFTER the pane is actually torn down. A worker holds its
+      // `touches`-claim until teardown (holdsTicketClaim releases only at
+      // registry.remove, NOT at report_status), so firing the event here — not
+      // at report_status — guarantees a dependent the orchestrator spawns in
+      // response sees the files already unclaimed. The report_status handler
+      // therefore stays silent on done/failed (see there); this is the wake.
+      const state = a.state;
       const ticketId = a.ticket_id;
       console.error(
-        `[charmd] auto-reap: tearing down finished agent ${agentId} (${a.role}, ${a.state}) ` +
+        `[charmd] auto-reap: tearing down finished agent ${agentId} (${a.role}, ${state}) ` +
           `after ${AUTO_REAP_MS}ms grace.`,
       );
       void tearDownAgent(agentId)
         .then(() => {
-          // Fire the release ping ONLY when the freed claim actually opens a
-          // deferred dependent. `openedFrontier` (worker+done) is the cheap
-          // pre-gate; releaseOpensFrontier is the precise one, evaluated
-          // post-teardown so it sees the claim already gone.
-          if (openedFrontier && ticketId && releaseOpensFrontier(ticketId)) {
-            pingOrchestrator(
-              `${agentId} -> done${ticketId ? ` on ${ticketId}` : ""}. Its file claim is now released`,
-            );
-          }
+          pingOrchestrator(`${agentId} -> ${state}${ticketId ? ` on ${ticketId}` : ""}`);
         })
         .catch((e) => console.error(`[charmd] auto-reap teardown of ${agentId} failed:`, e));
     }, AUTO_REAP_MS);
@@ -1146,8 +1103,8 @@ async function main() {
         investigatorIdleState.delete(a.id);
         investigatorBaseline.delete(a.id);
         refreshCoordination();
-        pingOrchestrator(`${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
         await tearDownAgent(a.id);
+        pingOrchestrator(`${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
       }
     } finally {
       investigatorSweepBusy = false;
@@ -1214,6 +1171,17 @@ async function main() {
         // before any sub-agents. It's the pane the daemon wakes on sub-agent
         // state changes.
         orchestratorPaneId = agent_pane_ids[0] ?? null;
+        // Install the per-pane status bar (thin top border: state-colored dot +
+        // agent id + Claude's own activity title). Done here so it covers both
+        // `charm start` and the daemon-restart path in `charm resume`, which both
+        // call register_panes. The orchestrator gets a running (blue) bar; the
+        // console gets an uncolored labelled bar (no @charm_state).
+        tmux.configureAgentBorders(WINDOW);
+        if (orchestratorPaneId) {
+          await tmux.setPaneLabel(orchestratorPaneId, "orchestrator");
+          await tmux.setPaneState(orchestratorPaneId, "running");
+        }
+        if (consolePaneId) await tmux.setPaneLabel(consolePaneId, "charm console");
         refreshCoordination();
         await relayout();
         return { ok: true };
@@ -1523,6 +1491,11 @@ async function main() {
       case "report_status": {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
+        // Recolor the agent's status bar to its new state (blue/yellow/green/red).
+        // Cosmetic and best-effort; done/failed panes are auto-reaped shortly after,
+        // so their green/red bar is brief, while blocked (yellow) persists until
+        // continue_agent — exactly the state worth flagging at a glance.
+        if (a.pane_id) tmux.setPaneState(a.pane_id, input.state).catch(() => {});
         if (input.state === "done" && a.ticket_id) {
           // Every role's `done` completes its ticket. An investigation ticket
           // complete means the findings are written into its body (ready for the
@@ -1537,10 +1510,19 @@ async function main() {
         // the new status. COORDINATION.md only shows the live state, not the note.
         if (a.ticket_id) store.appendLog(a.ticket_id, { agent: a.id, kind: input.state, text: input.note });
         refreshCoordination();
-        // Wake the orchestrator on a sub-agent's done/failed/blocked so it can
-        // advance the workflow (spawn the next wave, synthesize, resolve a
-        // block). Never ping for the main agent itself.
-        if (a.role !== "main" && (input.state === "done" || input.state === "failed" || input.state === "blocked")) {
+        // Wake the orchestrator here ONLY for a state that leaves the pane
+        // standing. `blocked` is never auto-reaped — the agent is alive waiting on
+        // continue_agent — so its wake must fire now. `done`/`failed` panes are
+        // torn down after a grace, and their orchestrator event is emitted from
+        // the teardown path instead (one event per finish, fired at the moment the
+        // window actually goes away, with the file-claim already released). The
+        // exception is auto-reap being disabled: then no teardown is coming, so the
+        // finish wake has to happen here or the orchestrator never learns to
+        // kill_agent the finished pane. Never ping for the main agent itself.
+        const paneLingers = input.state === "blocked";
+        const noTeardownComing =
+          AUTO_REAP_MS === 0 && (input.state === "done" || input.state === "failed");
+        if (a.role !== "main" && (paneLingers || noTeardownComing)) {
           pingOrchestrator(`${a.id} -> ${input.state}${a.ticket_id ? ` on ${a.ticket_id}` : ""}`);
         }
         // Auto-reap a finished pane after a short grace, so the orchestrator
