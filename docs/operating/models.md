@@ -42,14 +42,14 @@ Two operator-level overrides, highest precedence first:
 1. **Per-role**, via the `CHARM_MODEL_<ROLE>` env var — overrides one role's model:
 
    ```sh
-   CHARM_MODEL_WORKER=opus-4.7 charm start "your goal"   # workers on Opus 4.7, everything else default
+   CHARM_MODEL_WORKER=opus-4.7 charm start --project   # workers on Opus 4.7, everything else default
    ```
 
 2. **Whole fleet**, via `-m, --model <model>` on `charm start` — replaces the per-type defaults
    for the orchestrator *and* every sub-agent:
 
    ```sh
-   charm start -m opus-4.8 "your goal"   # every agent on Opus 4.8
+   charm start -m opus-4.8 --project   # every agent on Opus 4.8
    ```
 
 Accepted `<model>` values:

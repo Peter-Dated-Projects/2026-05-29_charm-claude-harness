@@ -17,11 +17,31 @@ const program = new Command();
 program
   .name("charm-claude")
   .description("Terminal-based multi-agent charm for Claude Code")
-  .version("0.0.1");
+  .version("0.0.1")
+  .showHelpAfterError()
+  .configureOutput({
+    outputError: (str, write) => {
+      // After goals were removed, `charm start "fix"` is the common footgun:
+      // without allowExcessArguments(false) Commander would silently ignore the
+      // string and open a plain window. Surface a directed fix instead of the
+      // generic "too many arguments" line.
+      if (/too many arguments for 'start'/.test(str)) {
+        write(
+          "error: charm start no longer accepts a positional goal.\n" +
+            "  Use:  charm start --project           # pick/create a brief and run the pipeline\n" +
+            "        charm start --project <slug>    # anchor to an existing brief\n" +
+            "        charm start                     # plain Claude window\n",
+        );
+        return;
+      }
+      write(str);
+    },
+  });
 
 program
   .command("init")
   .description("scaffold or refresh .charm/ in the current dir: re-copies template tooling (prompts, CHARM.md, charm.json), ensures the root CLAUDE.md imports it -- additive or update only, never deletes; kb/, COORDINATION.md, and settings.json are preserved")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .action((opts) => {
     const paths = charmPaths(resolve(opts.root));
@@ -37,8 +57,9 @@ program
   });
 
 program
-  .command("start [goal...]")
-  .description("start the daemon, open the tmux layout, and spawn the main agent; with no goal, opens a plain Claude window")
+  .command("start")
+  .description("start the daemon, open the tmux layout, and spawn the main agent; without --project, opens a plain Claude window")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .option(
@@ -61,7 +82,7 @@ program
     "-p, --project [slug]",
     "anchor this session to a project brief (.charm/project-briefs/<slug>.md), injected into the orchestrator as standing context: bare --project opens an interactive picker (filter existing, or create new); --project <slug> selects one directly",
   )
-  .action(async (goalParts: string[], opts) => {
+  .action(async (opts) => {
     const root = resolve(opts.root);
     // --workflow-enable opts the whole environment back into the built-in Workflow
     // tool (charm strips it by default; see buildClaudeCommand). Set it on this CLI's
@@ -84,8 +105,7 @@ program
     // Resolve the project brief (if --project was passed) BEFORE spawning the
     // daemon or touching tmux: the interactive picker and any $EDITOR open need a
     // clean TTY, exactly like confirm(). Returns null when --project was not given
-    // (normal goal/plain session), a resolved Brief otherwise, or exits on
-    // cancel/unknown-slug.
+    // (plain window), a resolved Brief otherwise, or exits on cancel/unknown-slug.
     const brief = await resolveProjectBrief(paths, opts.project);
     // Garbage-collect run dirs whose daemon is gone, so a crashed prior session
     // doesn't linger as a phantom in `stop`/`attach`'s session picker.
@@ -105,11 +125,10 @@ program
     // pointer that `charm.sh` reads to attach right after launch.
     const session = opts.session ?? process.env.CHARM_SESSION ?? sessionNameForId(root, sessionId);
 
-    const goal = (goalParts ?? []).join(" ").trim();
-    // A session is "plain" (goal-less blank window, no orchestrator prompt) only
-    // when there's neither a goal NOR a project brief. A brief-anchored session
-    // always runs the orchestrator — the brief is its standing context.
-    const plain = goal.length === 0 && !brief;
+    // A session is "plain" (blank window, no orchestrator prompt) only when no
+    // project brief was selected. A brief-anchored session always runs the
+    // orchestrator — the brief is its standing context and current objective.
+    const plain = !brief;
 
     // Resolve the orchestrator's model. Each agent role runs on a per-type model
     // (see DEFAULT_MODEL_BY_ROLE); the orchestrator (main) defaults to Opus.
@@ -191,7 +210,7 @@ program
       : `orchestrator on ${fleetModel}, sub-agents on per-type defaults`;
     const workflowNote = opts.workflowEnable ? " | Workflow tool enabled fleet-wide" : "";
     const briefNote = brief ? ` | project: ${brief.name}` : "";
-    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${workflowNote}${briefNote}${plain ? " | plain window, no goal" : ""}`);
+    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${workflowNote}${briefNote}${plain ? " | plain window (pass --project to run the pipeline)" : ""}`);
     // Mint and persist the orchestrator's Claude-side conversation id plus the
     // launch settings it was spawned with. charm launches the main agent under
     // `claude --session-id <uuid>` (so it owns the id rather than discovering it),
@@ -223,7 +242,7 @@ program
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
-      prompt: kickoffPrompt(goal, brief),
+      prompt: kickoffPrompt(brief),
       interactive: true,
       model: fleetModel,
       plain,
@@ -310,6 +329,7 @@ program
 program
   .command("stop")
   .description("stop a charm: close its graph viewers, kill its daemon, and tear down its tmux session")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -334,6 +354,7 @@ program
 program
   .command("attach")
   .description("attach to a charm's tmux session")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -354,7 +375,7 @@ program
  *  charm mints the orchestrator's session id at `charm start` and records it up
  *  front, but Claude Code only writes `~/.claude/projects/<slug>/<uuid>.jsonl` on
  *  the first COMPLETED turn — so a recorded id can point at a conversation that
- *  never existed (orchestrator died before its first turn, or a plain/no-goal
+ *  never existed (orchestrator died before its first turn, or a plain
  *  window nobody typed into). `charm resume` must verify the file is on disk before
  *  shelling `claude --resume <uuid>`, otherwise it spawns a pane that dies with
  *  "No conversation found with session ID …" while the CLI reports success.
@@ -374,6 +395,7 @@ function claudeConversationExists(uuid: string): boolean {
 program
   .command("resume [session]")
   .description("relaunch the orchestrator pane on its saved conversation (claude --resume), or --continue for the most recent")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -577,6 +599,7 @@ program
 program
   .command("status")
   .description("print agents, tickets, pending approvals")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -601,6 +624,7 @@ program
 program
   .command("tree")
   .description("print the ticket dependency tree — an ASCII DAG view of .charm/tickets/ (reads the board directly; no daemon required)")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .action(async (opts) => {
     const root = resolve(opts.root);
@@ -682,6 +706,7 @@ worktreeCmd
 program
   .command("approve <gate_id>")
   .description("resolve a pending approval gate")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -721,6 +746,7 @@ function assertOperatorContext(action: string): void {
 program
   .command("restart")
   .description("reset the ticket backlog: kill ticketed agents, wipe ticket files + the db index, reset COORDINATION.md (daemon, KB, and session stay up)")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -775,6 +801,7 @@ program
 program
   .command("reset-kb")
   .description("DESTRUCTIVE: wipe .charm/kb/ and restore the pristine template scaffold (the durable knowledge base)")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .action((opts) => {
     assertOperatorContext("reset the knowledge base");
@@ -797,6 +824,7 @@ program
 program
   .command("ctl <cmd>")
   .description("internal: handle a vim-style command (`:q`, `:a`, `:so`) from the tmux key binding")
+  .allowExcessArguments(false)
   .option("--socket <path>", "daemon socket of the session the key was pressed in")
   .option("-s, --session <name>", "tmux session the key was pressed in")
   .action(async (cmd: string, opts) => {
@@ -864,6 +892,7 @@ program
 program
   .command("session-name")
   .description("internal: print a session's tmux name for this root (used by charm.sh)")
+  .allowExcessArguments(false)
   .option("-r, --root <path>", "project root", process.cwd())
   .option("-s, --session <name>", "tmux session name (when multiple run in this dir)")
   .option("-u, --uuid <id>", "session UUID (when multiple run in this dir)")
@@ -985,7 +1014,7 @@ function pruneDeadSessions(root: string): void {
 /**
  * Resolve the project brief for a `charm start` invocation from the --project
  * option value:
- *   - undefined  -> --project not passed: a normal goal/plain session (null).
+ *   - undefined  -> --project not passed: a plain session (null).
  *   - "<slug>"   -> select that brief directly; hard error if it doesn't exist.
  *   - true       -> bare --project: open the interactive picker (filter existing,
  *                   or create a new one, editing it in $EDITOR).
@@ -1080,22 +1109,17 @@ function openInEditor(path: string): boolean {
 }
 
 /** Build the orchestrator's kickoff message. A project-anchored session points
- *  the agent at its brief (which is already in the system prompt) plus today's
- *  goal or the brief's own objective; a plain goal keeps the original phrasing;
- *  a goal-less, brief-less session returns "" (a blank interactive window). */
-function kickoffPrompt(goal: string, brief: Brief | null): string {
-  const begin = "Begin Stage 1 (Investigation) per your system prompt.";
-  if (brief) {
-    const ptr =
-      `Project: ${brief.name}. Your operational brief is standing context in your system prompt ` +
-      `(full file: .charm/project-briefs/${brief.slug}.md).`;
-    const objective = goal
-      ? `Today's goal: ${goal}.`
-      : `Work toward the "Current objective" section of the brief.`;
-    return `${ptr} ${objective} ${begin}`;
-  }
-  if (goal) return `Goal: ${goal}. ${begin}`;
-  return "";
+ *  the agent at its brief (already in the system prompt) and tells it to work
+ *  the brief's current objective; a plain (no --project) session returns "" so
+ *  Claude opens waiting for user input. */
+function kickoffPrompt(brief: Brief | null): string {
+  if (!brief) return "";
+  return (
+    `Project: ${brief.name}. Your operational brief is standing context in your system prompt ` +
+    `(full file: .charm/project-briefs/${brief.slug}.md). ` +
+    `Work toward the "Current objective" section of the brief. ` +
+    `Begin Stage 1 (Investigation) per your system prompt.`
+  );
 }
 
 /** Write (or overwrite) a session's meta.json with its identity. created_at is

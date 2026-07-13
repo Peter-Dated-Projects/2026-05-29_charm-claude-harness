@@ -1,6 +1,6 @@
 # Getting started
 
-This walks you from a clean checkout to a charm session fanning workers out on a real goal.
+This walks you from a clean checkout to a charm session fanning workers out on a project.
 
 ## Requirements
 
@@ -15,7 +15,8 @@ This is the fastest way to try charm without putting binaries on your PATH.
 
 ```sh
 ./frieren.sh setup                                 # checks deps, runs bun install
-./charm.sh start "build a markdown to-do CLI"
+./charm.sh init
+./charm.sh start --project                         # pick (or create) a project brief
 ```
 
 `charm.sh` is a thin wrapper that forwards to `src/cli.ts` through Bun, so every CLI command
@@ -28,7 +29,8 @@ Build the standalone binaries and place them (plus the templates) on your PATH a
 
 ```sh
 ./frieren.sh install
-charm start "your goal"
+charm init
+charm start --project
 ```
 
 After this, `charm` is a native binary with the Bun runtime embedded — no Bun, Node, or
@@ -37,8 +39,8 @@ for the full build matrix.
 
 ## Your first session
 
-`charm start "<goal>"` opens a tmux session with the console on the left and the main agent on
-the right. From there:
+`charm start --project` opens a tmux session with the console on the left and the main agent on
+the right, anchored to a project brief under `.charm/project-briefs/`. From there:
 
 1. **Investigation (Stage 1)** — the main agent opens investigation tickets and fans out
    investigator agents that gather context and propose a fix, writing their findings into

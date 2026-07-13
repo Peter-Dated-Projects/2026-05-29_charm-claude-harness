@@ -98,7 +98,7 @@ cmd_setup() {
     command -v tmux >/dev/null 2>&1 || echo "    note: tmux not found — required at runtime by 'start'/'attach'"
     echo "==> Installing dependencies (bun install)..."
     bun install
-    echo "==> Done. Try: ./$SELF dev   or   ./$SELF start \"your goal\""
+    echo "==> Done. Try: ./$SELF dev   or   ./$SELF start --project"
 }
 
 cmd_dev() {
@@ -261,7 +261,7 @@ cmd_install() {
     echo "    Claude skills: charm:charm-planning, charm:charm-write-project-brief, charm:charm-update-project-brief, charm:charm-restart, charm:charm-reset-kb (next Claude session)"
     case ":$PATH:" in
         *":$bindir:"*)
-            echo "    $bindir is on PATH. Run 'charm --help' to verify, then 'charm start \"your goal\"'."
+            echo "    $bindir is on PATH. Run 'charm --help' to verify, then 'charm start --project'."
             ;;
         *)
             echo "    NOTE: $bindir is not on your PATH. Add this to your shell profile:"
@@ -489,7 +489,8 @@ Project lifecycle:
 
 Runtime (delegates to ./charm.sh):
   init [--root PATH]        Initialize a charm workspace
-  start "<goal>"            Launch daemon + console for a goal
+  start --project           Launch daemon + console anchored to a project brief
+  start                     Plain Claude window (no pipeline)
   status                    Show charm status
   attach                    Attach to the running tmux session
   stop                      Kill daemon + tmux session (one session, by name)

@@ -7,18 +7,20 @@ works as designed. The actual code the fleet writes is trivial on purpose — th
 A single prompt can't trigger everything: roughly half the surface is agent-triggerable
 (MCP tools, pipeline stages, coordination, failure/recovery) and half is *operator*-driven
 from outside the agent (CLI subcommands, in-session `:` commands, approval gates, hard-
-killing a pane to test the liveness sweep). So the preflight is two halves — a goal you
-paste in (Part A) and a checklist you drive by hand against the live session (Part B).
+killing a pane to test the liveness sweep). So the preflight is two halves — a script you
+paste into the orchestrator (Part A) and a checklist you drive by hand against the live
+session (Part B).
 
 Run it with a cheap, fast model — you're testing the harness, not output quality:
 
 ```sh
-./charm.sh start -m haiku-4.5 "<Part A goal below>"
+./charm.sh start -m haiku-4.5 --project   # pick any brief (or create a throwaway)
+# then paste the Part A script into the orchestrator pane as the session ask
 ```
 
 ---
 
-## Part A — the goal you paste in
+## Part A — the script you paste in
 
 ```
 This is a HARNESS SELF-TEST, not a real product. Your job is to exercise every charm

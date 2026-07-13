@@ -1,6 +1,6 @@
 # Charm documentation
 
-Charm turns one goal into a visible fleet of `claude` processes working a shared git
+Charm turns a project brief into a visible fleet of `claude` processes working a shared git
 tree in parallel, with a human approval gate between each stage. For the high-level pitch,
 architecture diagram, and tech stack, start with the [top-level README](../README.md).
 

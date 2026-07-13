@@ -83,7 +83,7 @@ mkdir -p /usr/local/share/charm
 tar -xzf charm-templates.tar.gz -C /usr/local/share/charm   # → /usr/local/share/charm/templates/
 # or anywhere on PATH; keep the same bin ↔ share/charm relationship
 xattr -d com.apple.quarantine /usr/local/bin/charm* 2>/dev/null || true
-charm init && charm start "your goal"
+charm init && charm start --project
 ```
 
 For a local install from the repo, `./frieren.sh install` does all of the above

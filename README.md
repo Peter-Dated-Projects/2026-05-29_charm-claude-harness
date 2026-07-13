@@ -1,6 +1,6 @@
 # charm — a multi-agent orchestration harness for Claude Code
 
-Charm turns one goal into a visible fleet of `claude` processes working a shared git
+Charm turns a project brief into a visible fleet of `claude` processes working a shared git
 tree in parallel, with a human approval gate between each stage of the work.
 
 ## Why this exists
@@ -12,7 +12,7 @@ Claude in parallel** where every agent is a real, first-class `claude` process I
 streaming in its own terminal pane, intervene in by hand, and reason about as an
 independent worker.
 
-Charm is that harness. The main agent decomposes a goal into tickets, then fans the
+Charm is that harness. The main agent decomposes the project's current objective into tickets, then fans the
 tickets out to worker agents — each a separate `claude` running in its own tmux pane on
 the same repository. The human stays in the loop at staged approval gates, and the agents
 stay out of each other's way through two coordination layers (hard file-scope locking +
@@ -187,10 +187,11 @@ From source, no install:
 
 ```sh
 ./frieren.sh setup                      # checks deps, runs bun install
-./charm.sh start "build a markdown to-do CLI"
+./charm.sh init
+./charm.sh start --project              # pick or create a project brief
 ```
 
-`start` opens a tmux session: the console on the left, the main agent on the right. Watch
+`start --project` opens a tmux session: the console on the left, the main agent on the right. Watch
 investigators gather context, let the orchestrator synthesize their findings into a
 worker-ticket plan, approve that plan, and watch workers fan out. Inside the session, the
 `:` key opens a command prompt — `:q` quits the charm, `:a` detaches, `:so` spawns a
@@ -200,7 +201,7 @@ Each agent runs on a model chosen by its type (coding/investigation on Opus, rev
 on Sonnet); override the whole fleet with `-m`:
 
 ```sh
-./charm.sh start -m opus-4.8 "..."  # run every agent on one model, overriding the per-type defaults
+./charm.sh start -m opus-4.8 --project  # every agent on one model, overriding the per-type defaults
 ```
 
 Install globally (build + place binaries and templates on PATH at `~/.local/bin`, and
@@ -208,7 +209,7 @@ install the `charm:*` Claude Code skills plugin into `~/.claude/skills/charm/`):
 
 ```sh
 ./frieren.sh install
-charm start "your goal"
+charm init && charm start --project
 ```
 
 The plugin ships the charm skills — `charm:charm-planning` (generate a stacked-PR handoff

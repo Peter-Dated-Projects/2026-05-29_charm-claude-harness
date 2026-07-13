@@ -23,7 +23,7 @@ export type SpawnSpec = {
   model?: string;
   /** When true, omit the role-specific system prompt: a "plain" Claude window
    *  that's still wired to the charm MCP config and output rules, but carries
-   *  no orchestration instructions. Used by `charm start` with no goal. */
+   *  no orchestration instructions. Used by `charm start` without --project. */
   plain?: boolean;
   /** Working directory for this agent. Defaults to repo root (shared tree). Set to a worktree path to isolate the agent in its own `git worktree` (own working tree + branch, sharing the main repo's object store). */
   cwd?: string;
@@ -329,7 +329,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // equivalent block itself. Without this, a spawned agent has no idea what
   // day it is or whether its cwd is a git repo short of running `pwd`/`date`/
   // `git status` first. Applied unconditionally, including `plain` windows --
-  // a goal-less `charm start` window loses Claude Code's default persona
+  // a plain `charm start` (no --project) window loses Claude Code's default persona
   // entirely under this flag, so it needs this block just as much as any
   // orchestrated role does.
   const workDir = spec.cwd ?? paths.root;
@@ -420,10 +420,10 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   const promptFile = join(promptDir, `${agent_id}.txt`);
   writeFileSync(promptFile, systemPrompt);
   flags.push("--system-prompt-file", shellQuote(promptFile));
-  // An empty prompt means a blank interactive window (e.g. `charm start` with
-  // no goal): omit the positional so Claude opens waiting for user input. A
+  // An empty prompt means a blank interactive window (e.g. `charm start` without
+  // --project): omit the positional so Claude opens waiting for user input. A
   // resume relaunch also omits it — the conversation already carries its history,
-  // so re-injecting the original goal would re-run it.
+  // so re-injecting the original kickoff would re-run it.
   if (spec.prompt && !spec.resume) flags.push(shellQuote(spec.prompt));
   // export agent id, then exec claude
   const thinking = defaultThinkingForRole(spec.role);
