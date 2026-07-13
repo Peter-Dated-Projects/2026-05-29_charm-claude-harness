@@ -43,6 +43,31 @@ test("every spawn carries the agent id and mints a session id", () => {
 });
 
 /**
+ * Transcript persistence is role-gated: sub-agents (worker/investigator/tester/
+ * researcher) run one bounded task and are never resumed, so charm suppresses
+ * their Claude Code transcript via CLAUDE_CODE_SKIP_PROMPT_HISTORY=1. The
+ * orchestrator (main/suborchestrator) and plain human windows must KEEP their
+ * transcript — `charm resume` reattaches to the orchestrator's on disk.
+ */
+test("sub-agent spawns skip Claude Code transcript persistence", () => {
+  for (const role of ["worker", "investigator", "tester"] as const) {
+    expect(cmd(role, true)).toContain("export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1");
+  }
+});
+
+test("the orchestrator keeps its transcript (needed for resume)", () => {
+  const main = buildClaudeCommand(paths, "main-001", { role: "main", interactive: true });
+  const sub = buildClaudeCommand(paths, "suborchestrator-001", { role: "suborchestrator", interactive: true });
+  expect(main).not.toContain("CLAUDE_CODE_SKIP_PROMPT_HISTORY");
+  expect(sub).not.toContain("CLAUDE_CODE_SKIP_PROMPT_HISTORY");
+});
+
+test("a plain human window keeps its transcript", () => {
+  const plain = buildClaudeCommand(paths, "worker-001", { role: "worker", plain: true, interactive: true });
+  expect(plain).not.toContain("CLAUDE_CODE_SKIP_PROMPT_HISTORY");
+});
+
+/**
  * resolveSpawnModel maps the caller-facing families (sonnet/haiku/opus) to concrete
  * model ids, defaulting to the 1M-token window (the preferred window) and appending
  * `[1m]` only for families that offer one.

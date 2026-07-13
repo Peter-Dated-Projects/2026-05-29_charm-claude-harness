@@ -401,6 +401,22 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   if (spec.prompt && !spec.resume) flags.push(shellQuote(spec.prompt));
   // export agent id, then exec claude
   const thinking = defaultThinkingForRole(spec.role);
+  // Sub-agent transcripts are noise: a worker/investigator/tester/researcher runs
+  // one bounded task and is never resumed (only the orchestrator's session id is
+  // persisted — see orchestrator-session.json), so its
+  // ~/.claude/projects/<slug>/<id>.jsonl is written, never read, and clutters the
+  // Claude Code history picker. Set CLAUDE_CODE_SKIP_PROMPT_HISTORY=1 for those
+  // roles to stop Claude Code writing the transcript at all.
+  //
+  // NEVER set it for the orchestrator (main/suborchestrator) or a plain human
+  // window: the same flag disables transcript writing entirely, and `charm resume`
+  // / `claude --resume` need the orchestrator's transcript on disk to reattach to.
+  // Disabling it fleet-wide is what once silently no-op'd resume (fixed in the
+  // commit that stopped disabling transcripts). Escape hatch: set
+  // CHARM_SAVE_SUBAGENT_HISTORY=1 in the daemon env to keep sub-agent transcripts
+  // when debugging a misbehaving agent.
+  const skipSubagentHistory =
+    !isOrchestratorRole && !spec.plain && process.env.CHARM_SAVE_SUBAGENT_HISTORY !== "1";
   return [
     `export CHARM_AGENT_ID=${shellQuote(agent_id)}`,
     // The agent's role, exported so operator-only CLI commands (charm restart /
@@ -409,18 +425,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     // skill list but must never run the destructive op. Unset for the human terminal.
     `export CHARM_AGENT_ROLE=${shellQuote(spec.role)}`,
     `export CHARM_SOCKET=${shellQuote(paths.socket)}`,
-    // DO NOT set CLAUDE_CODE_SKIP_PROMPT_HISTORY=1 here. It was once exported to
-    // stop the previous charm-start prompt from repopulating the input box and
-    // re-submitting — but in current Claude Code that same flag ALSO disables
-    // writing the conversation transcript (~/.claude/projects/<slug>/<id>.jsonl).
-    // With it set, no agent's conversation is ever saved, so `charm resume` /
-    // `claude --resume` have nothing on disk to reattach to — the whole resume
-    // feature silently no-ops. The repopulation bug it guarded against no longer
-    // reproduces (verified against Claude Code 2.1.206: a relaunch runs only its
-    // own positional prompt and does not re-submit a prior one), so the flag is
-    // pure downside now. If input-box repopulation ever returns, fix it by
-    // injecting the goal AFTER launch (like continue_agent's paste) rather than as
-    // a launch positional — never by disabling transcripts.
+    ...(skipSubagentHistory ? ["export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1"] : []),
     `export MAX_THINKING_TOKENS=${thinking}`,
     `exec claude ${flags.join(" ")}`,
   ].join(" && ");
