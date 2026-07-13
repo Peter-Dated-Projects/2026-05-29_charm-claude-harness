@@ -14,7 +14,7 @@ import { buildLayoutString, shouldHideSubagents } from "./layout.ts";
 import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, resolveSpawnModel, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, prettyModel, resolveSpawnModel, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import {
@@ -580,19 +580,28 @@ async function main() {
       // you trust this directory?" dialog — `--permission-mode auto` does NOT skip
       // it. paths.root is already trusted at boot, so only a worktree cwd needs it.
       if (spec.cwd && spec.cwd !== paths.root) ensureDirectoryTrusted(spec.cwd);
-      // Target THIS session's window explicitly. charm runs every session on the
-      // default tmux server, and the daemon is a detached process: a `split-window`
-      // with no `-t` lands in tmux's global "current session", which the daemon does
-      // not control. With two charm sessions live, that can place this session's
-      // sub-agent pane inside the OTHER session's window (breaking this session's
-      // relayout and polluting the other's). Pinning to `${session}:${WINDOW}` keeps
-      // the pane in the session that owns the agent.
-      const pane = await tmux.splitPane({ cmd, cwd: spec.cwd ?? paths.root, direction: "h", target: `${session}:${WINDOW}` });
+      // Split the ORCHESTRATOR pane specifically, NOT the window. Two reasons:
+      //   1. Pinning to a pane in this session's window keeps the new pane out of
+      //      another live charm session's window (a bare `split-window` with no `-t`
+      //      lands in tmux's global "current session", which the detached daemon
+      //      doesn't control).
+      //   2. tmux `select-layout` assigns panes to layout cells STRICTLY in pane-list
+      //      (ascending pane_index) order — the pane-id tags in the layout string are
+      //      ignored. So the orchestrator only keeps its reserved column if it stays
+      //      the lowest-indexed AGENT pane. Splitting the *window* splits whatever
+      //      pane is ACTIVE: if the operator has the console (index 0) focused, the
+      //      new pane is inserted at index 1, BELOW the orchestrator, and steals its
+      //      reserved column. Splitting the orchestrator pane inserts the new pane
+      //      immediately after it (index 2+), so the order stays [console, orch,
+      //      subs…] regardless of which pane has focus.
+      const splitTarget = orchestratorPaneId ?? `${session}:${WINDOW}`;
+      const pane = await tmux.splitPane({ cmd, cwd: spec.cwd ?? paths.root, direction: "h", target: splitTarget });
       registry.attach(agent.id, { pane_id: pane });
-      // Stamp the new pane's status bar: charm id + running (blue) state. Cosmetic,
-      // best-effort — never let a border update fail a spawn.
+      // Stamp the new pane's status bar: charm id + model + running (blue) state.
+      // Cosmetic, best-effort — never let a border update fail a spawn.
       try {
         await tmux.setPaneLabel(pane, agent.id);
+        await tmux.setPaneModel(pane, prettyModel(resolved.model!));
         await tmux.setPaneState(pane, agent.state);
       } catch { /* border is cosmetic */ }
       // Record which worktree this agent is isolated in (the subdir name under
@@ -1179,6 +1188,7 @@ async function main() {
         tmux.configureAgentBorders(WINDOW);
         if (orchestratorPaneId) {
           await tmux.setPaneLabel(orchestratorPaneId, "orchestrator");
+          await tmux.setPaneModel(orchestratorPaneId, prettyModel(defaultModelForRole("main")));
           await tmux.setPaneState(orchestratorPaneId, "running");
         }
         if (consolePaneId) await tmux.setPaneLabel(consolePaneId, "charm console");
@@ -1853,12 +1863,23 @@ async function main() {
             claudeSessionId,
           });
           try {
-            // Split into THIS session's main window, exactly like every sub-agent
-            // pane (see spawnAgentLocked), so the suborchestrator lands in the grid;
-            // pin the target to `${session}:${WINDOW}` for the same reason — the
-            // detached daemon must not let the split land in another session.
-            const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: `${session}:${WINDOW}` });
+            // Split the ORCHESTRATOR pane, exactly like every sub-agent spawn (see
+            // spawnAgentLocked): it lands the suborchestrator in the grid AND keeps
+            // the orchestrator the lowest-indexed agent pane, so select-layout's
+            // positional cell assignment leaves the orchestrator in its reserved
+            // column. Splitting the window instead would split whatever pane is
+            // focused and could shove the orchestrator out of its column.
+            const soSplitTarget = orchestratorPaneId ?? `${session}:${WINDOW}`;
+            const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: soSplitTarget });
             registry.attach(agent.id, { pane_id: pane });
+            // Stamp the pane's status bar — the suborchestrator joins the grid like
+            // any sub-agent, so it needs the same border (charm id + model + state)
+            // every other spawn gets. Cosmetic, best-effort.
+            try {
+              await tmux.setPaneLabel(pane, agent.id);
+              await tmux.setPaneModel(pane, prettyModel(model));
+              await tmux.setPaneState(pane, agent.state);
+            } catch { /* border is cosmetic */ }
             agentPaneIds.push(pane);
             refreshCoordination();
             await relayoutLocked();

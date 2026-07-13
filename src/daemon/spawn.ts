@@ -201,6 +201,24 @@ export function workflowEnabled(): boolean {
   return process.env.CHARM_WORKFLOW_ENABLE === "1";
 }
 
+/** Compact, human-readable model name for the pane-border status bar. The
+ *  resolved ids (`claude-opus-4-8[1m]`) are too long and noisy to render in a
+ *  thin border, so map the known ids to their friendly alias form; anything
+ *  unrecognized just drops the `claude-` prefix. */
+const MODEL_DISPLAY: Record<string, string> = {
+  "claude-opus-4-8": "opus-4.8",
+  "claude-opus-4-8[1m]": "opus-4.8 1m",
+  "claude-opus-4-7": "opus-4.7",
+  "claude-opus-4-7[1m]": "opus-4.7 1m",
+  "claude-sonnet-5": "sonnet-5",
+  "claude-sonnet-5[1m]": "sonnet-5 1m",
+  "claude-haiku-4-5-20251001": "haiku-4.5",
+  "claude-fable-5": "fable-5",
+};
+export function prettyModel(id: string): string {
+  return MODEL_DISPLAY[id] ?? id.replace(/^claude-/, "");
+}
+
 /** Resolve a user-supplied --model value to a real Claude model id.
  *  Accepts either an alias from MODEL_ALIASES or a literal `claude-*` id. */
 export function resolveModel(input: string): string {

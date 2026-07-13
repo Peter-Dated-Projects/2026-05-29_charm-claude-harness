@@ -2,8 +2,10 @@
 import React, { useEffect, useState } from "react";
 import { render, Box, Text, useInput, useStdout } from "ink";
 import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { Command } from "commander";
 import { charmPaths } from "../paths.ts";
+import { readBrief } from "../store/briefs.ts";
 import { rpcCall } from "../daemon/rpc.ts";
 import type { ApprovalGate, Agent, TicketFrontmatter } from "../schema.ts";
 
@@ -19,6 +21,22 @@ program
 const CLI_OPTS = program.opts<{ root: string; uuid?: string }>();
 const ROOT = resolve(CLI_OPTS.root);
 const PATHS = charmPaths(ROOT, CLI_OPTS.uuid);
+
+// The project this session is anchored to (`charm start --project <slug>`), or
+// null for a plain goal/blank session. Fixed for the session's lifetime — set
+// once at start in meta.json — so we resolve it here rather than polling. Falls
+// back to the raw slug if the brief file has since been deleted, and to null on
+// any read/parse error (a missing project header is the right degradation).
+const PROJECT: string | null = (() => {
+  try {
+    if (!existsSync(PATHS.metaJson)) return null;
+    const meta = JSON.parse(readFileSync(PATHS.metaJson, "utf8")) as { project_brief?: string };
+    if (!meta.project_brief) return null;
+    return readBrief(PATHS, meta.project_brief)?.name ?? meta.project_brief;
+  } catch {
+    return null;
+  }
+})();
 
 type Status = {
   tickets: TicketFrontmatter[];
@@ -245,6 +263,11 @@ function App() {
 
   return (
     <Box flexDirection="column" height={termRows} overflow="hidden">
+      {PROJECT && (
+        <Box flexShrink={0}>
+          <Text wrap="truncate-end"><Text dimColor>project </Text><Text bold color="cyan">{PROJECT}</Text></Text>
+        </Box>
+      )}
       <Box flexShrink={0}>
         <Text inverse={tab === "approvals"} wrap="truncate-end"> 1·Approvals{pendingCount ? ` (${pendingCount})` : ""} </Text>
         <Text> </Text>

@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 
 /** The `pane-border-format` charm installs on the agent window: a thin top bar
- *  on every pane showing a state-colored dot, the charm agent id, and Claude
- *  Code's own auto-generated pane title (what the agent is currently doing —
- *  tmux captures that title from Claude's terminal-title escape sequence for
- *  free). Color comes from the per-pane `@charm_state` user option, which the
- *  daemon stamps on every state transition:
+ *  on every pane showing a state-colored dot, the charm agent id, the model the
+ *  agent runs on (`@charm_model`, omitted when unset), and Claude Code's own
+ *  auto-generated pane title (what the agent is currently doing — tmux captures
+ *  that title from Claude's terminal-title escape sequence for free). Color comes
+ *  from the per-pane `@charm_state` user option, which the daemon stamps on every
+ *  state transition:
  *    running / spawning -> blue  (working)
  *    blocked            -> yellow (alive, waiting on continue_agent)
  *    done               -> green
@@ -22,9 +23,13 @@ export const CHARM_BORDER_FORMAT =
   " #{?#{==:#{@charm_state},}," +
   // non-agent pane (console): label if present, else the raw pane title
   "#{?#{@charm_label},#{@charm_label},#{pane_title}}," +
-  // agent pane: colored dot + dim agent id + Claude's live activity title
+  // agent pane: colored dot + dim agent id + (model, if set) + Claude's live
+  // activity title. The model segment is a nested conditional so a pane with no
+  // `@charm_model` renders "label · title" instead of an empty "· ·".
   `#[fg=${CHARM_STATE_COLOR}]#[bold]●#[nobold]#[fg=default] ` +
-  "#[fg=colour244]#{@charm_label}#[fg=default] · #{pane_title}} ";
+  "#[fg=colour244]#{@charm_label}#[fg=default]" +
+  "#{?#{@charm_model}, #[fg=colour244]· #{@charm_model}#[fg=default],}" +
+  " · #{pane_title}} ";
 
 /**
  * Async tmux invocation. Unlike spawnSync (which blocks the daemon's single
@@ -126,6 +131,14 @@ export class Tmux {
    *  id for an agent pane, or a friendly name for the console. */
   async setPaneLabel(paneId: string, label: string): Promise<void> {
     await tmuxRun(["set-option", "-p", "-t", paneId, "@charm_label", label]);
+  }
+
+  /** The model name shown in the pane border between the label and Claude's title.
+   *  Empty string clears it (the border then renders "label · title" with no model
+   *  segment — see CHARM_BORDER_FORMAT). Only agent panes set this; the console never
+   *  does. Best-effort/async, same as setPaneLabel. */
+  async setPaneModel(paneId: string, model: string): Promise<void> {
+    await tmuxRun(["set-option", "-p", "-t", paneId, "@charm_model", model]);
   }
 
   /**
