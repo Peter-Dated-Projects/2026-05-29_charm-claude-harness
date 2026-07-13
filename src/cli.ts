@@ -1117,8 +1117,8 @@ function kickoffPrompt(brief: Brief | null): string {
   return (
     `Project: ${brief.name}. Your operational brief is standing context in your system prompt ` +
     `(full file: .charm/project-briefs/${brief.slug}.md). ` +
-    `Work toward the "Current objective" section of the brief. ` +
-    `Begin Stage 1 (Investigation) per your system prompt.`
+    `Read the brief so you know the project's standing context and where its information lives. ` +
+    `This is orientation only — do not start any work yet.`
   );
 }
 
