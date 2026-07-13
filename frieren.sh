@@ -213,6 +213,12 @@ cmd_install() {
         prefix="${3:?--prefix requires a directory}"
     fi
 
+    # Preflight before killing live sessions or writing installation files.
+    # cmd_build checks these again, but install must fail before causing any
+    # disruption when Claude Code or the plugin source is unavailable.
+    need bun
+    need_claude_plugin_install
+
     # Kill every running charm process FIRST. Overwriting the binaries while old
     # daemons/agents are live leaves them running stale code against the new
     # on-disk binary — the version-skew that produces crash/restart churn and
@@ -245,7 +251,6 @@ cmd_install() {
     # Install the Claude Code plugin (charm:* skills) into the user's Claude home.
     # Overwriting the dir each time makes this idempotent — always the latest
     # plugin/ from the repo. Picked up next Claude session (or via /reload-plugins).
-    need_claude_plugin_install
     echo "==> Installing Claude plugin to $CLAUDE_PLUGIN_DIR ..."
     mkdir -p "$(dirname "$CLAUDE_PLUGIN_DIR")"
     rm -rf "$CLAUDE_PLUGIN_DIR"
