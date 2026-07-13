@@ -33,7 +33,7 @@ function resolveSocketPath(runDir: string, root: string, sessionId?: string): st
  *
  *  - Shared, per-directory (the workspace). One copy per project root, shared by
  *    every session in that directory: the ticket board (db.sqlite, tickets/,
- *    COORDINATION.md), PROJECT.md, the durable knowledge base, prompt templates,
+ *    COORDINATION.md), project briefs, the durable knowledge base, prompt templates,
  *    operator skills, the MCP config, and .claude/settings.json. These live
  *    directly under .charm/.
  *
@@ -94,6 +94,12 @@ export function charmPaths(root: string, sessionId?: string) {
     // finish_proposal moves an accepted/superseded file into proposals/finished/.
     proposalsDir: join(charmDir, "proposals"),
     proposalsFinishedDir: join(charmDir, "proposals", "finished"),
+    // Per-project operational briefs (`<slug>.md`), one file per project. The
+    // operator authors these once and reuses them across sessions: `charm start
+    // --project` picks one and its body is injected into the orchestrator's
+    // system prompt as standing context. Durable and git-tracked (like kb/ and
+    // proposals/) — re-included in .charm/.gitignore against the `/*` rule.
+    projectBriefsDir: join(charmDir, "project-briefs"),
     // The durable, git-tracked knowledge base (the one .charm child that survives
     // across runs). kbIndex is the tiny always-read entry point.
     kbDir: join(charmDir, "kb"),
@@ -103,7 +109,6 @@ export function charmPaths(root: string, sessionId?: string) {
     // keys) so spawned agents trust the charm tools and any project MCP servers.
     claudeDir: join(root, ".claude"),
     claudeSettings: join(root, ".claude", "settings.json"),
-    projectMd: join(charmDir, "PROJECT.md"),
     // Workspace facts + guardrails shared by every agent, seeded from
     // templates/charm/CHARM.md and appended to each charm-spawned agent's
     // system prompt by buildClaudeCommand (daemon/spawn.ts). It is named CHARM.md
@@ -116,9 +121,11 @@ export function charmPaths(root: string, sessionId?: string) {
     rootClaudeMd: join(root, "CLAUDE.md"),
     coordinationMd: join(charmDir, "COORDINATION.md"),
     mcpConfig: join(charmDir, "charm.json"),
+    // projectMd (.charm/PROJECT.md) was a single-file precursor to project-briefs/
+    // and was never read; superseded by projectBriefsDir above.
     // The single source of truth for what under .charm/ is tracked vs ignored. A
     // committed, self-contained gitignore that ignores every child of .charm/
-    // EXCEPT the durable surfaces (kb, proposals, scratchpad) and itself.
+    // EXCEPT the durable surfaces (kb, proposals, project-briefs, scratchpad) and itself.
     // Lives inside .charm/ so the rules travel with the directory and never touch
     // the project's root .gitignore. Nested-gitignore precedence makes this
     // authoritative over any root rule for paths under .charm/.
@@ -189,6 +196,32 @@ export function assertPlainName(name: string): void {
 export function worktreePathFor(p: CharmPaths, name: string): string {
   assertPlainName(name);
   return join(p.worktreesDir, name);
+}
+
+/**
+ * Resolve the on-disk path for a project brief under projectBriefsDir. The slug
+ * arrives from the CLI (`--project <slug>`) or a persisted session record, so it
+ * is run through assertPlainName before being joined — the same path-injection
+ * guard used for draft/worktree names.
+ */
+export function briefPathFor(p: CharmPaths, slug: string): string {
+  assertPlainName(slug);
+  return join(p.projectBriefsDir, `${slug}.md`);
+}
+
+/**
+ * Derive a filesystem-safe brief slug from a human-typed project name. Shares the
+ * `[a-z0-9_-]` restriction with the session-name builders (avoids path separators
+ * and tmux's target-separator characters), so a name like "Auth Token Rotation!"
+ * becomes "auth-token-rotation". Empty/degenerate input falls back to "project".
+ */
+export function slugifyBriefName(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "project"
+  );
 }
 
 /**

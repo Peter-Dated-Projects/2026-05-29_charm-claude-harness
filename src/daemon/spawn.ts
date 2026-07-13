@@ -27,6 +27,13 @@ export type SpawnSpec = {
   plain?: boolean;
   /** Working directory for this agent. Defaults to repo root (shared tree). Set to a worktree path to isolate the agent in its own `git worktree` (own working tree + branch, sharing the main repo's object store). */
   cwd?: string;
+  /** Project brief for a session anchored to a project (`charm start --project`).
+   *  When set, its body is injected into the orchestrator's system prompt as
+   *  authoritative standing context. Injected for the `main` agent ONLY — sub-agents
+   *  get scoped tickets, and the orchestrator threads relevant brief context into
+   *  them. Ignored for `plain` windows. { slug } is surfaced so the prompt can point
+   *  the agent at the on-disk file for the full, always-fresh copy. */
+  projectBrief?: { name: string; slug: string; body: string };
   /** Claude-side session UUID, passed to `claude --session-id <uuid>` so charm
    *  owns (rather than discovers) the conversation id. Recorded on the registry
    *  entry and — for the orchestrator — persisted to its own run-dir file so the
@@ -295,6 +302,24 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
         ].join("\n") +
         "\n"
       : "";
+  // Project brief — the orchestrator's standing operational context when a session
+  // is anchored to a project (`charm start --project`). Injected into the system
+  // prompt (not the kickoff message) on purpose: the system prompt survives context
+  // compaction AND is faithfully rebuilt by `charm resume`, whereas the positional
+  // kickoff is dropped on resume (see below). Main-only — sub-agents get scoped
+  // tickets, and the orchestrator threads the relevant brief context into each. The
+  // full file path is named so the agent can re-read the always-fresh copy on disk.
+  const CHARM_PROJECT_BRIEF =
+    spec.role === "main" && !spec.plain && spec.projectBrief
+      ? `\n\n## Project brief (standing context)\n` +
+        `This session is anchored to project "${spec.projectBrief.name}". The following is ` +
+        `authoritative operational context for this project; treat it as background you always ` +
+        `have, and re-read the full file at .charm/project-briefs/${spec.projectBrief.slug}.md if you ` +
+        `need it verbatim. The staged pipeline (investigate -> plan -> execute -> test) still ` +
+        `applies unchanged.\n\n` +
+        spec.projectBrief.body.trim() +
+        "\n"
+      : "";
   const modelLine = spec.model
     ? `\n## Runtime model\nYou are running as \`${spec.model}\`. If a task exceeds your capabilities or context window, surface it rather than silently truncating.\n`
     : "";
@@ -322,6 +347,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     CHARM_RULES +
     CHARM_COORDINATION +
     CHARM_WORKSPACE +
+    CHARM_PROJECT_BRIEF +
     modelLine +
     ENV_INFO;
   const flags: string[] = [];

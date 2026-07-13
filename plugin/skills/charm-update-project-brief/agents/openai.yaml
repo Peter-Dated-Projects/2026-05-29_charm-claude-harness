@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Project Brief"
+  short_description: "Refresh concise Charm project context"
+  default_prompt: "Use $charm-update-project-brief to refresh this project brief after the completed work."

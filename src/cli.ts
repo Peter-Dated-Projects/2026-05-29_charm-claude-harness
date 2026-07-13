@@ -5,7 +5,8 @@ import { join, dirname, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { charmPaths, sessionNameForId, type CharmPaths } from "./paths.ts";
+import { charmPaths, sessionNameForId, briefPathFor, type CharmPaths } from "./paths.ts";
+import { listBriefs, readBrief, scaffoldBrief, deleteBrief, isUneditedBrief, type Brief } from "./store/briefs.ts";
 import { SessionMeta } from "./schema.ts";
 import { rpcCall } from "./daemon/rpc.ts";
 import { Tmux } from "./daemon/tmux.ts";
@@ -56,6 +57,10 @@ program
     false,
   )
   .option("-u, --uuid <id>", "internal: pin this session's UUID (default: a fresh random one)")
+  .option(
+    "-p, --project [slug]",
+    "anchor this session to a project brief (.charm/project-briefs/<slug>.md), injected into the orchestrator as standing context: bare --project opens an interactive picker (filter existing, or create new); --project <slug> selects one directly",
+  )
   .action(async (goalParts: string[], opts) => {
     const root = resolve(opts.root);
     // --workflow-enable opts the whole environment back into the built-in Workflow
@@ -76,6 +81,12 @@ program
     // created just below.) Scaffolding also writes the self-contained
     // .charm/.gitignore that governs what under .charm/ is tracked.
     scaffoldCharmDir(paths, { refresh: false });
+    // Resolve the project brief (if --project was passed) BEFORE spawning the
+    // daemon or touching tmux: the interactive picker and any $EDITOR open need a
+    // clean TTY, exactly like confirm(). Returns null when --project was not given
+    // (normal goal/plain session), a resolved Brief otherwise, or exits on
+    // cancel/unknown-slug.
+    const brief = await resolveProjectBrief(paths, opts.project);
     // Garbage-collect run dirs whose daemon is gone, so a crashed prior session
     // doesn't linger as a phantom in `stop`/`attach`'s session picker.
     pruneDeadSessions(root);
@@ -95,7 +106,10 @@ program
     const session = opts.session ?? process.env.CHARM_SESSION ?? sessionNameForId(root, sessionId);
 
     const goal = (goalParts ?? []).join(" ").trim();
-    const plain = goal.length === 0;
+    // A session is "plain" (goal-less blank window, no orchestrator prompt) only
+    // when there's neither a goal NOR a project brief. A brief-anchored session
+    // always runs the orchestrator — the brief is its standing context.
+    const plain = goal.length === 0 && !brief;
 
     // Resolve the orchestrator's model. Each agent role runs on a per-type model
     // (see DEFAULT_MODEL_BY_ROLE); the orchestrator (main) defaults to Opus.
@@ -176,7 +190,8 @@ program
       ? `all agents on ${fleetModel} (-m override)`
       : `orchestrator on ${fleetModel}, sub-agents on per-type defaults`;
     const workflowNote = opts.workflowEnable ? " | Workflow tool enabled fleet-wide" : "";
-    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${workflowNote}${plain ? " | plain window, no goal" : ""}`);
+    const briefNote = brief ? ` | project: ${brief.name}` : "";
+    console.log(`[charm] ${modelNote} | max agents: ${maxAgents}${workflowNote}${briefNote}${plain ? " | plain window, no goal" : ""}`);
     // Mint and persist the orchestrator's Claude-side conversation id plus the
     // launch settings it was spawned with. charm launches the main agent under
     // `claude --session-id <uuid>` (so it owns the id rather than discovering it),
@@ -198,16 +213,22 @@ program
       // Persist so `charm resume` re-supplies CHARM_WORKFLOW_ENABLE to the relaunched
       // daemon + orchestrator, keeping the fleet's Workflow posture across a resume.
       workflow_enable: !!opts.workflowEnable,
+      // Persist the brief slug so `charm resume` re-reads and re-injects the brief:
+      // resume rebuilds the system prompt but the brief lives in a file, not the
+      // conversation, so without this the resumed orchestrator would lose its
+      // standing context. Only set when the session is project-anchored.
+      ...(brief ? { project_brief: brief.slug } : {}),
     };
     writeFileSync(paths.orchestratorSessionFile, JSON.stringify(sessionRecord, null, 2) + "\n");
     const mainCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
       ticket_id: null,
-      prompt: plain ? "" : `Goal: ${goal}. Begin Stage 1 (Investigation) per your system prompt.`,
+      prompt: kickoffPrompt(goal, brief),
       interactive: true,
       model: fleetModel,
       plain,
       claudeSessionId: orchestratorSessionId,
+      projectBrief: brief ? { name: brief.name, slug: brief.slug, body: brief.body } : undefined,
     });
     const consoleArgv = resolveChild("console");
     const consoleCmd = `${consoleArgv.map(shellQuote).join(" ")} --root ${shellQuote(paths.root)} --uuid ${shellQuote(sessionId)}`;
@@ -379,6 +400,7 @@ program
       permission_mode?: string;
       max_agents?: number;
       workflow_enable?: boolean;
+      project_brief?: string;
       console_pane_id?: string;
       orchestrator_pane_id?: string;
     } = {};
@@ -498,6 +520,20 @@ program
     // (the restarted daemon already got it via its env above; this covers the pane
     // buildClaudeCommand builds here in the CLI process).
     if (record.workflow_enable) process.env.CHARM_WORKFLOW_ENABLE = "1";
+    // Re-inject the project brief. Resume rebuilds the system prompt from scratch,
+    // and the brief lives in a file (not the conversation) — so without re-reading
+    // it here the resumed orchestrator would come back stripped of its standing
+    // context. A brief that was deleted since the original start is skipped (a
+    // warning, not a failure — the conversation history still carries the work).
+    let resumeBrief: Brief | null = null;
+    if (record.project_brief) {
+      resumeBrief = readBrief(paths, record.project_brief);
+      if (!resumeBrief) {
+        console.error(
+          `[charm] project brief '${record.project_brief}' is gone; resuming without it.`,
+        );
+      }
+    }
 
     const resumeCmd = buildClaudeCommand(paths, MAIN_AGENT_ID, {
       role: "main",
@@ -506,6 +542,9 @@ program
       interactive: true,
       model,
       resume: useContinue ? "continue" : { uuid: record.claude_session_id! },
+      projectBrief: resumeBrief
+        ? { name: resumeBrief.name, slug: resumeBrief.slug, body: resumeBrief.body }
+        : undefined,
     });
 
     // Relaunch into the orchestrator's existing pane, reusing the same pane id.
@@ -943,6 +982,122 @@ function pruneDeadSessions(root: string): void {
   }
 }
 
+/**
+ * Resolve the project brief for a `charm start` invocation from the --project
+ * option value:
+ *   - undefined  -> --project not passed: a normal goal/plain session (null).
+ *   - "<slug>"   -> select that brief directly; hard error if it doesn't exist.
+ *   - true       -> bare --project: open the interactive picker (filter existing,
+ *                   or create a new one, editing it in $EDITOR).
+ *
+ * Runs before the daemon/tmux come up so the picker and any editor own a clean
+ * TTY. Cancelling the picker exits cleanly (0); creating a brief ALWAYS proceeds
+ * to launch (on the template if no editor is available), never bailing.
+ */
+async function resolveProjectBrief(
+  paths: CharmPaths,
+  project: string | boolean | undefined,
+): Promise<Brief | null> {
+  if (project === undefined) return null;
+  if (typeof project === "string") {
+    const b = readBrief(paths, project);
+    if (!b) {
+      const available = listBriefs(paths).map((x) => x.slug);
+      console.error(
+        `[charm] no project brief '${project}' (looked for ${briefPathFor(paths, project)}).` +
+          (available.length ? ` Available: ${available.join(", ")}.` : "") +
+          ` Run \`charm start --project\` to pick or create one.`,
+      );
+      process.exit(2);
+    }
+    return b;
+  }
+  // Bare --project: interactive. Import the Ink picker lazily so a plain CLI
+  // invocation never pays to load React/Ink.
+  const { pickProject } = await import("./cli/project-picker.tsx");
+  const result = await pickProject(listBriefs(paths), (slug) => {
+    try {
+      deleteBrief(paths, slug);
+    } catch (e: any) {
+      // A failed delete must not crash the picker; the row is already gone from
+      // its view, and a leftover file just reappears next launch.
+      console.error(`[charm] could not delete brief '${slug}': ${e?.message ?? e}`);
+    }
+  });
+  if (result.action === "abort") {
+    console.log("[charm] project selection cancelled.");
+    process.exit(0);
+  }
+  if (result.action === "select") {
+    const b = readBrief(paths, result.slug);
+    if (!b) {
+      console.error(`[charm] project brief '${result.slug}' disappeared before it could be read.`);
+      process.exit(2);
+    }
+    return b;
+  }
+  // Create: scaffold from template, open $EDITOR to fill it in (best effort), and
+  // ALWAYS proceed to launch with the resulting brief. Bailing here was a trap —
+  // with no $EDITOR (or a GUI editor that returns before you've typed) the session
+  // never started, so a freshly-created project appeared to "fail to load" on the
+  // first run and only worked on a re-run once the file already existed. Starting
+  // on a template brief is fine: it's re-read on `charm resume`, and the
+  // orchestrator can help flesh it out.
+  const { slug, path } = scaffoldBrief(paths, result.name);
+  const opened = openInEditor(path);
+  const b = readBrief(paths, slug);
+  if (!b) {
+    console.error(`[charm] could not read the brief just created at ${path}.`);
+    process.exit(2);
+  }
+  if (!opened) {
+    console.log(
+      `[charm] created ${path} but no editor to open it ($VISUAL/$EDITOR unset). ` +
+        `Starting with the template brief — edit that file (re-read on \`charm resume\`) ` +
+        `or ask the orchestrator to help fill it in.`,
+    );
+  } else if (isUneditedBrief(b)) {
+    console.log(
+      `[charm] ${path} still looks like the unedited template. Starting anyway; ` +
+        `flesh it out in the file (re-read on \`charm resume\`) or with the orchestrator.`,
+    );
+  }
+  return b;
+}
+
+/** Open `path` in the operator's editor ($VISUAL/$EDITOR), blocking until it
+ *  exits. Returns false when no editor is configured or the binary can't be
+ *  launched, so the caller can fall back to a "fill it in and re-run" message.
+ *  A non-zero editor exit still counts as opened — the file may well have been
+ *  edited. The editor string is split on whitespace so `EDITOR="code --wait"`
+ *  works. */
+function openInEditor(path: string): boolean {
+  const editor = (process.env.VISUAL || process.env.EDITOR || "").trim();
+  if (!editor) return false;
+  const [bin, ...args] = editor.split(/\s+/);
+  const r = spawnSync(bin!, [...args, path], { stdio: "inherit" });
+  return !r.error;
+}
+
+/** Build the orchestrator's kickoff message. A project-anchored session points
+ *  the agent at its brief (which is already in the system prompt) plus today's
+ *  goal or the brief's own objective; a plain goal keeps the original phrasing;
+ *  a goal-less, brief-less session returns "" (a blank interactive window). */
+function kickoffPrompt(goal: string, brief: Brief | null): string {
+  const begin = "Begin Stage 1 (Investigation) per your system prompt.";
+  if (brief) {
+    const ptr =
+      `Project: ${brief.name}. Your operational brief is standing context in your system prompt ` +
+      `(full file: .charm/project-briefs/${brief.slug}.md).`;
+    const objective = goal
+      ? `Today's goal: ${goal}.`
+      : `Work toward the "Current objective" section of the brief.`;
+    return `${ptr} ${objective} ${begin}`;
+  }
+  if (goal) return `Goal: ${goal}. ${begin}`;
+  return "";
+}
+
 /** Write (or overwrite) a session's meta.json with its identity. created_at is
  *  preserved across rewrites; updated_at is stamped now. The daemon later merges
  *  in the agent-set description via the same file, preserving these fields. */
@@ -999,6 +1154,10 @@ function scaffoldCharmDir(
   // landing zone). Created empty; never clobbered on re-init.
   mkdirSync(paths.scratchpadDir, { recursive: true });
   mkdirSync(paths.proposalsDir, { recursive: true });
+  // Per-project operational briefs (`charm start --project`). A durable, git-tracked
+  // surface (re-included in .charm/.gitignore below); created empty and never
+  // clobbered, so operator-authored briefs accumulate across sessions.
+  mkdirSync(paths.projectBriefsDir, { recursive: true });
   mkdirSync(paths.promptsDir, { recursive: true });
   // NOTE: logsDir is deliberately NOT created here. It's per-session run state
   // (.charm/run/<uuid>/logs/), created by whoever owns a session — `start`,
@@ -1106,7 +1265,7 @@ function untrackTickets(paths: ReturnType<typeof charmPaths>) {
 /**
  * Write the self-contained .charm/.gitignore — the single source of truth for
  * what under .charm/ is committed. It ignores every child of .charm/ EXCEPT the
- * durable surfaces (kb, proposals, scratchpad) and the file itself; the
+ * durable surfaces (kb, proposals, project-briefs, scratchpad) and the file itself; the
  * ephemeral run state (run/, db.sqlite, charm.json, CHARM.md, prompts/,
  * tickets/, …) is left untracked. Tickets are intentionally NOT a
  * durable surface — the daemon's session-close commit treats them as run state.
@@ -1136,6 +1295,7 @@ function ensureCharmGitignore(
     "!/.gitignore\n" +
     "!/kb\n" +
     "!/proposals\n" +
+    "!/project-briefs\n" +
     "!/scratchpad\n";
   writeFileSync(paths.charmGitignore, body);
 }

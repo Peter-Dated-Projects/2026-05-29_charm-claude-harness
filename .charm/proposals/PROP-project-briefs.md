@@ -1,6 +1,6 @@
 # project-briefs
 
-**Status:** draft
+**Status:** accepted — implemented
 
 ---
 

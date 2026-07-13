@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { charmPaths } from "../paths.ts";
 import { buildClaudeCommand, resolveSpawnModel } from "./spawn.ts";
 
@@ -87,4 +89,46 @@ test("resolveSpawnModel never appends [1m] to a family without a 1M window", () 
   expect(resolveSpawnModel("haiku")).toBe("claude-haiku-4-5-20251001");
   expect(resolveSpawnModel("haiku", true)).toBe("claude-haiku-4-5-20251001");
   expect(resolveSpawnModel("haiku", false)).toBe("claude-haiku-4-5-20251001");
+});
+
+/**
+ * Project-brief injection: buildClaudeCommand writes the assembled system prompt
+ * to <runDir>/system-prompts/<agent_id>.txt and references it via
+ * --system-prompt-file. These read that file back to pin that the brief reaches
+ * the orchestrator's system prompt (not the kickoff message), is scoped to the
+ * main agent only, and is skipped for a plain window.
+ */
+const BRIEF = { name: "Owner App", slug: "owner-app", body: "The standing operational context." };
+
+function promptFor(role: "main" | "worker", opts: { plain?: boolean; brief?: typeof BRIEF }): string {
+  const p = charmPaths(mkdtempSync(join(tmpdir(), "charm-brief-inject-")));
+  const id = `${role}-001`;
+  buildClaudeCommand(p, id, {
+    role,
+    ticket_id: role === "main" ? null : "T-001",
+    prompt: "",
+    interactive: true,
+    plain: opts.plain,
+    projectBrief: opts.brief,
+  });
+  return readFileSync(join(p.runDir, "system-prompts", `${id}.txt`), "utf8");
+}
+
+test("the project brief is injected into the orchestrator's system prompt", () => {
+  const sp = promptFor("main", { brief: BRIEF });
+  expect(sp).toContain("## Project brief (standing context)");
+  expect(sp).toContain('project "Owner App"');
+  expect(sp).toContain(".charm/project-briefs/owner-app.md");
+  expect(sp).toContain("The standing operational context.");
+});
+
+test("the project brief is NOT injected for a sub-agent", () => {
+  // Briefs are orchestrator-scoped; a worker gets scoped tickets instead.
+  const sp = promptFor("worker", { brief: BRIEF });
+  expect(sp).not.toContain("## Project brief (standing context)");
+});
+
+test("a plain window drops the project brief", () => {
+  const sp = promptFor("main", { plain: true, brief: BRIEF });
+  expect(sp).not.toContain("## Project brief (standing context)");
 });

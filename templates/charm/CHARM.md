@@ -35,6 +35,21 @@ and fan out only through the spawn tools.
 - **Never clobber `.charm/kb/`.** It's the durable knowledge base the fleet
   accumulates — real work product. Only the `charm-reset-kb` skill replaces it,
   and only after explicit confirmation.
+- **`.charm/project-briefs/` is durable, operator-owned context.** Each
+  `<slug>.md` is a per-project operational brief the operator authors and reuses
+  across sessions (`charm start --project`); a project-anchored session gets its
+  brief as standing context. Git-tracked like the KB — treat briefs as real work
+  product, not scratch. Update a brief when the project's standing facts change;
+  don't delete one to "clean up".
+- **A brief's `## Links` is a curated index into durable surfaces, and only
+  durable ones.** It points at material with a stable home — `kb/`, `proposals/`,
+  `project-briefs/`, and committed source/docs — so an agent starts from the
+  project's own map instead of rediscovering context cold. `.charm/scratchpad/` is
+  the opposite: transient, un-indexed working space (drafts move out on promote;
+  artifacts accrete against no stable-target contract), so never link it — nor
+  `tickets/` or `run/` — from a durable doc or brief. If something in scratchpad is
+  worth pointing at, promote a durable version into `kb/` or `proposals/` first,
+  then link that.
 
 ## Agent lifecycle (auto-reap)
 
@@ -66,3 +81,5 @@ improvise the operation.
 | --- | --- |
 | restart charm / reset the tickets / clear the ticket log / wipe the backlog | `charm:charm-restart` — kills ticketed agents, wipes tickets + db index, resets `COORDINATION.md`; daemon, KB, and session stay up |
 | reset / wipe the knowledge base / start the kb fresh | `charm:charm-reset-kb` — **destructive**; wipes `.charm/kb/` and restores the template scaffold; double-confirm first |
+| write / author a project brief for a project | `charm:charm-write-project-brief` — interview + repo scan, then write a new `.charm/project-briefs/<slug>.md` (the standing context `charm start --project` injects) |
+| update / refresh the project brief after this session's work | `charm:charm-update-project-brief` — revise the current project's brief file in place (standing facts only; operator-owned, so surface what changed) |

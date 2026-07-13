@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Project Brief"
+  short_description: "Create concise Charm project context"
+  default_prompt: "Use $charm-write-project-brief to create a durable brief for this project."
