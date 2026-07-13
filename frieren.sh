@@ -40,6 +40,36 @@ MSG
     }
 }
 
+# Gate the charm:* skills plugin install. Requires the Claude Code CLI and a
+# plugin/ checkout with a manifest; verifies the destination after copy.
+need_claude_plugin_install() {
+    need_claude
+    local src_manifest="$ROOT/plugin/.claude-plugin/plugin.json"
+    if [[ ! -f "$src_manifest" ]]; then
+        cat >&2 <<MSG
+missing plugin source: $src_manifest
+    Run './frieren.sh install' from the charm repo checkout (plugin/ is the canonical source).
+MSG
+        exit 2
+    fi
+    local claude_home="${HOME}/.claude"
+    if [[ ! -d "$claude_home" ]]; then
+        echo "    note: $claude_home does not exist yet — charm will create ~/.claude/skills/charm/."
+        echo "    If charm:* skills do not appear, run 'claude' once, then /reload-plugins."
+    fi
+}
+
+verify_claude_plugin_installed() {
+    local dest_manifest="$CLAUDE_PLUGIN_DIR/.claude-plugin/plugin.json"
+    if [[ ! -f "$dest_manifest" ]]; then
+        cat >&2 <<MSG
+plugin install failed: $dest_manifest not found after copy
+    Expected the charm plugin at $CLAUDE_PLUGIN_DIR (from $ROOT/plugin/).
+MSG
+        exit 1
+    fi
+}
+
 # bun's `--compile` writes a ~60MB temp file (.<hash>.bun-build) into the
 # current directory and orphans it even on a successful build. The package.json
 # build scripts run from dist/ so these never touch the repo root; this sweep
@@ -54,10 +84,8 @@ sweep_bun_temp() {
 # The Claude Code plugin we ship. Canonical (and only) source is plugin/; it
 # installs to ~/.claude/skills/charm/ as a skills-directory plugin (auto-discovered
 # by Claude Code via its .claude-plugin/plugin.json, namespaced as `charm:<skill>`).
-# The operator skills (charm-restart, charm-reset-kb) live ONLY here now — they are
-# no longer copied into a project's .charm/skills/; the orchestrator invokes them as
-# `charm:<skill>` from the installed plugin. The per-project scaffold keeps only the
-# tiny router (templates/skills/INDEX.md), not the skill bodies.
+# The operator skills (charm-restart, charm-reset-kb) live ONLY in plugin/; the orchestrator invokes them as
+# `charm:<skill>` from the installed plugin. Operator-skill routing lives in templates/charm/CHARM.md.
 CLAUDE_PLUGIN_DIR="${HOME}/.claude/skills/charm"
 
 # ---------------------------------------------------------------------------
@@ -217,10 +245,12 @@ cmd_install() {
     # Install the Claude Code plugin (charm:* skills) into the user's Claude home.
     # Overwriting the dir each time makes this idempotent — always the latest
     # plugin/ from the repo. Picked up next Claude session (or via /reload-plugins).
+    need_claude_plugin_install
     echo "==> Installing Claude plugin to $CLAUDE_PLUGIN_DIR ..."
     mkdir -p "$(dirname "$CLAUDE_PLUGIN_DIR")"
     rm -rf "$CLAUDE_PLUGIN_DIR"
     cp -R "$ROOT/plugin" "$CLAUDE_PLUGIN_DIR"
+    verify_claude_plugin_installed
 
     echo "==> Installed: charm, ${INSTALL_BINS[*]} -> $bindir"
     echo "    Claude skills: charm:charm-planning, charm:charm-restart, charm:charm-reset-kb (next Claude session)"

@@ -255,39 +255,22 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     "- Do NOT use box-drawing or other wide Unicode decoration in markdown output. ASCII only for status indicators, bullets, and dividers.",
     "- You have NO built-in subagent tool (no Agent/Task tool). The ONLY way to create agents is the charm MCP tools (create_tickets, spawn_investigators, spawn_workers, spawn_researchers, request_review). Never attempt to spawn a subagent any other way.",
   ].join("\n");
-  // Operator skills router — injected only for the main agent (orchestrator).
-  // Restart/reset-kb are operator actions; the router scopes the *guidance* to the
-  // orchestrator so a worker or investigator is never told to run them. The skills
-  // themselves ship in the `charm` Claude Code plugin (charm:charm-restart,
-  // charm:charm-reset-kb); the router lists trigger -> skill name and the agent
-  // invokes it on demand. Sub-agents (and plain windows) never see this section.
-  const skillsIndex = join(paths.skillsDir, "INDEX.md");
-  const CHARM_SKILLS =
-    (spec.role === "main" || spec.role === "suborchestrator") && !spec.plain && existsSync(skillsIndex)
-      ? "\n## Charm operator skills (invoke on demand)\n" +
-        "When the user asks you to perform one of the operator actions below, FIRST invoke the listed skill " +
-        "(via the Skill tool) and follow it exactly — including any confirmation gates — before acting.\n\n" +
-        readFileSync(skillsIndex, "utf8").trim() +
-        "\n"
-      : "";
-  // The shared workspace guardrails (.charm/CHARM.md) normally are NOT appended
-  // here. They reach every agent file-based instead: `charm init` makes the
-  // project's root CLAUDE.md import `@.charm/CHARM.md`, and Claude Code natively
-  // loads that root CLAUDE.md for any session whose cwd is the repo root.
-  // Appending here too would double-inject the same content, so for a shared-tree
-  // spawn (cwd === repo root) we rely solely on the import.
-  //
-  // A WORKTREE spawn breaks that assumption: its cwd is the worktree checkout, not
-  // the repo root, and .charm/CHARM.md is gitignored (see .charm/.gitignore — only
-  // kb/proposals/scratchpad/skills are re-included) so `git worktree add` never
-  // checks it out. The worktree's root CLAUDE.md is tracked and loads, but its
-  // `@.charm/CHARM.md` import resolves to a missing file — the guardrails go dark.
-  // So when (and only when) the agent runs in a worktree, append the main repo's
-  // CHARM.md directly, by absolute path, restoring the same guardrails without
-  // double-injecting in the shared-tree case.
+  // The shared workspace guardrails (.charm/CHARM.md) are appended when:
+  //   - the agent runs in a worktree (cwd differs from repo root): .charm/CHARM.md is
+  //     gitignored so `git worktree add` never checks it out and the root CLAUDE.md
+  //     `@.charm/CHARM.md` import resolves to a missing file;
+  //   - the role is main or suborchestrator on the shared tree: charm spawns with
+  //     --system-prompt-file (replacing Claude Code's default), so the CLAUDE.md
+  //     import never reaches the model — append CHARM.md directly, including its
+  //     operator-skills routing (charm:charm-restart, charm:charm-reset-kb via the
+  //     installed plugin).
+  // Workers/investigators on the shared tree still rely on the root CLAUDE.md import
+  // for guardrails; appending here for every role would duplicate that content.
   const charmMdPath = join(paths.charmDir, "CHARM.md");
+  const inWorktree = !!(spec.cwd && spec.cwd !== paths.root);
+  const isOrchestratorRole = spec.role === "main" || spec.role === "suborchestrator";
   const CHARM_WORKSPACE =
-    spec.cwd && !spec.plain && existsSync(charmMdPath)
+    !spec.plain && existsSync(charmMdPath) && (inWorktree || isOrchestratorRole)
       ? "\n\n" + readFileSync(charmMdPath, "utf8").trim() + "\n"
       : "";
   // Shared coordination ethos for every sub-agent (worker / investigator / tester) —
@@ -338,7 +321,6 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     CHARM_BASELINE +
     CHARM_RULES +
     CHARM_COORDINATION +
-    CHARM_SKILLS +
     CHARM_WORKSPACE +
     modelLine +
     ENV_INFO;
@@ -394,7 +376,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // `--system-prompt-file` REPLACES Claude Code's default system prompt entirely
   // (unlike `--append-system-prompt`, which layers on top of it). Charm's
   // assembled prompt is deliberately self-contained — role prompt + charm rules
-  // + coordination ethos + skills + workspace guardrails + the ENV_INFO block
+  // + coordination ethos + workspace guardrails + the ENV_INFO block
   // above — so a spawned agent's entire instruction set is what charm wrote,
   // with no competing default persona/tool-use text to dilute it.
   //

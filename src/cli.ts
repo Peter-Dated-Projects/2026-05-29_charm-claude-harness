@@ -20,7 +20,7 @@ program
 
 program
   .command("init")
-  .description("scaffold or refresh .charm/ in the current dir: re-copies template tooling (prompts, skills, CHARM.md, charm.json), ensures the root CLAUDE.md imports it -- additive or update only, never deletes; kb/, COORDINATION.md, and settings.json are preserved")
+  .description("scaffold or refresh .charm/ in the current dir: re-copies template tooling (prompts, CHARM.md, charm.json), ensures the root CLAUDE.md imports it -- additive or update only, never deletes; kb/, COORDINATION.md, and settings.json are preserved")
   .option("-r, --root <path>", "project root", process.cwd())
   .action((opts) => {
     const paths = charmPaths(resolve(opts.root));
@@ -31,7 +31,6 @@ program
     console.log(`  prompts:  ${paths.promptsDir}/`);
     console.log(`  tickets:  ${paths.ticketsDir}/  (run state, gitignored)`);
     console.log(`  kb:       ${paths.kbDir}/  (durable, git-tracked)`);
-    console.log(`  skills:   ${paths.skillsDir}/  (operator skills + index)`);
     console.log(`  charm:    ${paths.charmMd}  (workspace guardrails, loaded via the root CLAUDE.md import)`);
     console.log(`  config:   ${paths.mcpConfig}`);
   });
@@ -975,8 +974,8 @@ function writeSessionMeta(
 /**
  * Scaffold (or refresh) the shared .charm/ workspace.
  *
- * `refresh` controls how template-managed *tooling* (prompts, operator skills,
- * the workspace CLAUDE.md, and charm.json) is treated when it already exists:
+ * `refresh` controls how template-managed *tooling* (prompts, the workspace
+ * CHARM.md, and charm.json) is treated when it already exists:
  *   - refresh=true  (charm init): re-copy every template file, overwriting the
  *     local copy. New template files are added, changed ones are updated. This
  *     is additive-or-modify only -- cpSync never removes a destination file that
@@ -1031,23 +1030,10 @@ function scaffoldCharmDir(
     }
   }
 
-  // Seed the operator-skills router index (templates/skills/INDEX.md) so the main
-  // agent knows which operator skills exist and when to invoke them. The skills
-  // themselves are NOT copied here — they ship in the `charm` Claude Code plugin
-  // (installed globally to ~/.claude/skills/charm/) and are invoked as
-  // charm:charm-restart / charm:charm-reset-kb. Like prompts, the router is tooling
-  // (not user data): copy missing files, overwrite existing on refresh.
-  const skillTemplates = locateTemplateDir("skills");
-  if (skillTemplates) {
-    cpSync(skillTemplates, paths.skillsDir, { recursive: true, force: refresh, errorOnExist: false });
-  } else {
-    console.warn("[charm] skill templates not found; skipping skills scaffold");
-  }
-
-  // Seed the shared workspace CHARM.md (guardrails + operator-skills router).
+  // Seed the shared workspace CHARM.md (guardrails + operator-skills routing).
   // It lands at .charm/CHARM.md, and buildClaudeCommand (daemon/spawn.ts)
-  // appends this local copy to every charm-spawned agent's system prompt.
-  // Like prompts/skills it's tooling, not user data: copy if missing, and
+  // appends this local copy to orchestrator-role spawns and worktree spawns.
+  // Like prompts it's tooling, not user data: copy if missing, and
   // refresh (overwrite) it on `charm init` so the workspace tracks the template.
   const charmTemplates = locateTemplateDir("charm");
   if (charmTemplates) {
@@ -1120,7 +1106,7 @@ function untrackTickets(paths: ReturnType<typeof charmPaths>) {
 /**
  * Write the self-contained .charm/.gitignore — the single source of truth for
  * what under .charm/ is committed. It ignores every child of .charm/ EXCEPT the
- * durable surfaces (kb, proposals, scratchpad, skills) and the file itself; the
+ * durable surfaces (kb, proposals, scratchpad) and the file itself; the
  * ephemeral run state (run/, db.sqlite, charm.json, CHARM.md, prompts/,
  * tickets/, …) is left untracked. Tickets are intentionally NOT a
  * durable surface — the daemon's session-close commit treats them as run state.
@@ -1150,8 +1136,7 @@ function ensureCharmGitignore(
     "!/.gitignore\n" +
     "!/kb\n" +
     "!/proposals\n" +
-    "!/scratchpad\n" +
-    "!/skills\n";
+    "!/scratchpad\n";
   writeFileSync(paths.charmGitignore, body);
 }
 

@@ -239,9 +239,8 @@ src/
   store/tickets.ts    gray-matter + bun:sqlite ticket store
   console/            Ink TUI: app, markdown, graph, mouse
   cli/                interactive confirm prompts
-templates/            prompts, kb skeleton, CLAUDE.md, settings — copied into a
-                      project's .charm/ on init. skills/ holds only INDEX.md, the
-                      operator-skills router; the skills themselves live in plugin/.
+templates/            prompts, kb skeleton, CHARM.md, settings — copied into a
+                      project's .charm/ on init. Operator skills live in plugin/.
 plugin/               canonical Claude Code plugin (charm:* skills) — installed to
                       ~/.claude/skills/charm/ by `frieren install`. Sole home of the
                       charm-planning, charm-restart, and charm-reset-kb skills.

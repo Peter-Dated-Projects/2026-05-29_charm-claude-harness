@@ -70,7 +70,7 @@ charm processes.
   resolves `charm-mcp` by name, so a partial install fails in confusing ways. `frieren.sh
   install` places them together; if you moved one by hand, that is the likely cause.
 - **A stale `.charm/`** — if the template tooling drifted, `charm init` re-copies prompts,
-  skills, `CLAUDE.md`, and `charm.json` additively. It never deletes your `kb/`,
+  `CHARM.md`, and `charm.json` additively. It never deletes your `kb/`,
   `COORDINATION.md`, or `settings.json`, so it is safe to re-run.
 
 ## Verifying the harness itself

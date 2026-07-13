@@ -24,7 +24,7 @@ If only one charm session is running in the directory, you can omit all three.
 ### `init`
 
 Scaffold or refresh `.charm/` in the current directory. Re-copies the template tooling
-(prompts, skills, `CLAUDE.md`, `charm.json`). It is **additive / update-only and never
+(prompts, `CHARM.md`, `charm.json`). It is **additive / update-only and never
 deletes**: your `kb/`, `COORDINATION.md`, and `settings.json` are preserved across an `init`.
 
 ```

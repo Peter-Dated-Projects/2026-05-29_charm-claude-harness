@@ -98,11 +98,6 @@ export function charmPaths(root: string, sessionId?: string) {
     // across runs). kbIndex is the tiny always-read entry point.
     kbDir: join(charmDir, "kb"),
     kbIndex: join(charmDir, "kb", "INDEX.md"),
-    // Operator skills (restart, reset-kb, …) + their router index, scaffolded
-    // from templates/skills/. The main agent reads skillsIndex on demand so it
-    // knows which SKILL.md to follow when asked to perform an operator action.
-    skillsDir: join(charmDir, "skills"),
-    skillsIndex: join(charmDir, "skills", "INDEX.md"),
     // The project's Claude Code settings. charm start merges its required MCP
     // permissions into <root>/.claude/settings.json (never clobbering existing
     // keys) so spawned agents trust the charm tools and any project MCP servers.
@@ -123,7 +118,7 @@ export function charmPaths(root: string, sessionId?: string) {
     mcpConfig: join(charmDir, "charm.json"),
     // The single source of truth for what under .charm/ is tracked vs ignored. A
     // committed, self-contained gitignore that ignores every child of .charm/
-    // EXCEPT the durable surfaces (kb, proposals, scratchpad, skills) and itself.
+    // EXCEPT the durable surfaces (kb, proposals, scratchpad) and itself.
     // Lives inside .charm/ so the rules travel with the directory and never touch
     // the project's root .gitignore. Nested-gitignore precedence makes this
     // authoritative over any root rule for paths under .charm/.
