@@ -52,9 +52,10 @@ function ProjectPicker({
       onResolve({ action: "abort" });
       return;
     }
-    // Delete: `x` is a command key here (it does NOT type into the filter). First
-    // press on a brief arms it; second press on the same brief deletes it.
-    if (input === "x" && !key.ctrl && !key.meta) {
+    // Delete: ctrl+x is a command chord (a Ctrl modifier keeps plain `x` free to
+    // type into the filter). First press on a brief arms it; second press on the
+    // same brief deletes it.
+    if (input === "x" && key.ctrl) {
       if (!current) return; // create row / empty list — nothing to delete
       if (armed === current.slug) {
         onDelete(current.slug);
@@ -82,6 +83,14 @@ function ProjectPicker({
         return; // create row with empty query is inert
       }
       if (current) onResolve({ action: "select", slug: current.slug });
+      return;
+    }
+    // Word delete: ctrl+w or option/alt+backspace drops the trailing word
+    // (any trailing whitespace, then the run of non-whitespace before it).
+    if ((input === "w" && key.ctrl) || (key.meta && (key.backspace || key.delete))) {
+      setArmed(null);
+      setQuery((s) => s.replace(/\s*\S+\s*$/, ""));
+      setIndex(0);
       return;
     }
     if (key.backspace || key.delete) {
@@ -117,7 +126,7 @@ function ProjectPicker({
               {sel ? "> " : "  "}
               {b.name}
               {isArmed ? (
-                <Text color="red">{"  (press x again to delete)"}</Text>
+                <Text color="red">{"  (press ctrl+x again to delete)"}</Text>
               ) : b.description ? (
                 <Text dimColor>{`  — ${b.description}`}</Text>
               ) : null}
@@ -130,7 +139,7 @@ function ProjectPicker({
         </Text>
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>Type to filter. Up/Down move, Enter select, x-x delete. Esc cancel.</Text>
+        <Text dimColor>Type to filter. Up/Down move, Enter select, ctrl+x ×2 delete. Esc cancel.</Text>
       </Box>
     </Box>
   );
