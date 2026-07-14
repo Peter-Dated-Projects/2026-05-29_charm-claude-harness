@@ -1,10 +1,11 @@
-//! charm-watch — the idle-detector half of charm's investigator done-enforcement.
+//! charm-watch — the idle-detector half of charm's investigator/researcher
+//! done-enforcement.
 //!
-//! The TS daemon owns sqlite + the ticket files and is the only thing that acts
-//! (marks tickets done, reaps panes). This binary is a stateless DETECTOR: the
-//! daemon invokes it once per liveness-sweep tick, pipes a JSON watch-list on
-//! stdin, and reads JSON verdicts on stdout. For each watched interactive agent
-//! we answer two questions purely by READING:
+//! The TS daemon owns sqlite + the ticket/scratchpad files and is the only thing
+//! that acts (marks tickets done, reaps panes). This binary is a stateless
+//! DETECTOR: the daemon invokes it once per liveness-sweep tick, pipes a JSON
+//! watch-list on stdin, and reads JSON verdicts on stdout. For each watched
+//! interactive agent we answer two questions purely by READING:
 //!
 //!   1. Is the pane output-idle?  We hash the pane's visible text (tmux
 //!      capture-pane). An agent actively working repaints its pane (streaming
@@ -16,13 +17,18 @@
 //!      and the epoch the content last changed; we keep that epoch while the hash
 //!      is stable, so the daemon stores only opaque blobs and all the logic lives
 //!      here.
-//!   2. Were findings actually written?  (current authored body length > the
-//!      baseline the daemon captured at spawn). This separates "finished but
-//!      forgot to report" (auto-complete it) from "went silent having written
-//!      nothing" (a stuck/empty agent the daemon must NOT mark done).
+//!   2. Was anything actually written to the watched file?  (current authored
+//!      length > the baseline the daemon captured at spawn). `watch_path` is an
+//!      investigator's ticket file or a researcher's fixed-path scratchpad note —
+//!      either way it's just a markdown file read the same way; frontmatter- and
+//!      log-region-stripping are no-ops when those markers aren't present, which a
+//!      researcher's note never has. This separates "finished but forgot to
+//!      report" (auto-complete it) from "went silent having written nothing" (a
+//!      stuck/empty agent the daemon must NOT mark done).
 //!
 //! `finished = idle >= threshold && findings_written`. The daemon decides what to
-//! do with that; this binary never mutates tmux or the tickets beyond reading.
+//! do with that; this binary never mutates tmux, tickets, or scratchpad files
+//! beyond reading.
 
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -44,9 +50,12 @@ struct Request {
 struct Entry {
     agent_id: String,
     pane_id: String,
-    ticket_path: String,
-    /// Authored-body byte length at spawn (frontmatter + log region excluded),
-    /// computed by the daemon with the same stripping this binary applies.
+    /// The file to watch for authored growth — an investigator's ticket path or
+    /// a researcher's fixed-path scratchpad note.
+    watch_path: String,
+    /// Authored-body byte length at spawn (frontmatter + log region excluded,
+    /// both no-ops for a scratchpad note), computed by the daemon with the same
+    /// stripping this binary applies.
     baseline_authored_len: i64,
     /// The hash and last-changed epoch this binary returned for this pane on the
     /// previous tick (empty / 0 on the first observation). Opaque to the daemon.
@@ -135,9 +144,10 @@ fn strip_log_region(body: &str, begin: &str, end: &str) -> String {
     body.to_string()
 }
 
-/// Authored-body byte length for a ticket file, or None if it can't be read.
-fn authored_len(ticket_path: &str, begin: &str, end: &str) -> Option<usize> {
-    let content = std::fs::read_to_string(ticket_path).ok()?;
+/// Authored-body byte length for a watched file (ticket or scratchpad note), or
+/// None if it can't be read.
+fn authored_len(watch_path: &str, begin: &str, end: &str) -> Option<usize> {
+    let content = std::fs::read_to_string(watch_path).ok()?;
     let body = strip_frontmatter(&content);
     Some(strip_log_region(body, begin, end).trim().len())
 }
@@ -172,7 +182,7 @@ fn main() {
                 Some(h) => (h.clone(), now, 0),
                 None => (String::new(), 0, -1),
             };
-            let cur = authored_len(&e.ticket_path, &req.log_begin, &req.log_end);
+            let cur = authored_len(&e.watch_path, &req.log_begin, &req.log_end);
             let findings_written = cur.map(|l| l as i64 > e.baseline_authored_len).unwrap_or(false);
             let finished = idle_secs >= 0 && idle_secs >= req.idle_threshold_secs && findings_written;
             Verdict {

@@ -315,13 +315,22 @@ async function main() {
   // wakes this pane when a sub-agent finishes so the orchestrator can reap it.
   let orchestratorPaneId: string | null = null;
 
-  // Idle-detection state for interactive investigators (see sweepIdleInvestigators).
-  // baseline: authored-body byte length captured at spawn — the bar an agent must
-  // grow past for "wrote findings" to be true. idleState: the opaque {hash,
-  // unchanged_since} blob charm-watch returns each tick, stored verbatim and fed
-  // back so the Rust detector can measure how long a pane's screen has been stable.
+  // Idle-detection state for interactive investigators AND researchers (see
+  // sweepIdleWatchedAgents). baseline: authored-body byte length captured at
+  // spawn (investigator: the ticket body; researcher: its scratchpad file,
+  // which does not exist yet, so 0) — the bar an agent must grow past for
+  // "wrote findings" to be true. idleState: the opaque {hash, unchanged_since}
+  // blob charm-watch returns each tick, stored verbatim and fed back so the
+  // Rust detector can measure how long a pane's screen has been stable. Keyed
+  // by agent id, shared across both roles since the blob is role-agnostic.
   const investigatorBaseline = new Map<string, number>();
-  const investigatorIdleState = new Map<string, { hash: string; unchanged_since: number }>();
+  const researcherBaseline = new Map<string, number>();
+  // The fixed scratchpad path assigned to each researcher at spawn (see the
+  // spawn_researchers handler and CHARM_RESEARCHER_SCRATCHPAD in spawn.ts) — the
+  // daemon computes this once and hands the exact path to the researcher via its
+  // prompt, so there is one shared source of truth for where it must write.
+  const researcherScratchpadPath = new Map<string, string>();
+  const idleWatchState = new Map<string, { hash: string; unchanged_since: number }>();
   const WINDOW = "charm";
   // Background holding window for sub-agent panes when the agent region is too
   // narrow to render the grid (see shouldHideSubagents). Panes are moved here with
@@ -864,7 +873,7 @@ async function main() {
   // sweeps.
   const deadStreak = new Map<string, number>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
-  let investigatorSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let idleWatchSweepTimer: ReturnType<typeof setInterval> | null = null;
 
   function sweepDeadPanes() {
     if (!tmuxAvailable) return;
@@ -980,17 +989,23 @@ async function main() {
     }
   }
 
-  // --- Idle-investigator done-enforcement -----------------------------------
-  // An interactive investigator that writes its findings but forgets the
-  // terminal report_status('done') lingers alive in its pane forever — the
-  // dead-pane sweep only reaps DEAD panes, and a finished-but-idle Claude REPL is
-  // very much alive. So a second sweep catches it: the charm-watch Rust binary
-  // reads each investigator's pane (is the screen output-idle?) and ticket (did
-  // the authored body grow past its spawn baseline?), and when both hold the
-  // daemon auto-completes the ticket and reaps the pane — exactly what the agent's
-  // own report_status('done') would have done. Detection (reading + checking)
-  // lives in Rust; acting (sqlite, tickets, teardown) stays here, the single owner
-  // of that state. CHARM_INVESTIGATOR_IDLE_MS tunes the output-idle grace; 0
+  // --- Idle done-enforcement (investigators + researchers) ------------------
+  // An interactive investigator or researcher that writes its findings but
+  // forgets the terminal report_status('done') lingers alive in its pane
+  // forever — the dead-pane sweep only reaps DEAD panes, and a finished-but-idle
+  // Claude REPL is very much alive. Researchers are the sharper case: they have
+  // no ticket, so nothing else in the system ever learns they exist beyond the
+  // registry — a forgotten report_status silently burns a concurrent-agent slot
+  // until someone notices the fleet is clogged. So a second sweep catches both:
+  // the charm-watch Rust binary reads the agent's pane (is the screen
+  // output-idle?) and its watched file — a ticket body for an investigator, a
+  // fixed-path scratchpad note for a researcher (see researcherScratchpadPath)
+  // — asking whether authored content grew past its spawn baseline. When both
+  // hold, the daemon auto-completes (marks the ticket done, or just reaps the
+  // pane for a researcher) — exactly what the agent's own report_status('done')
+  // would have done. Detection (reading + checking) lives in Rust; acting
+  // (sqlite, tickets, teardown) stays here, the single owner of that state.
+  // CHARM_INVESTIGATOR_IDLE_MS tunes the output-idle grace for both roles; 0
   // disables the feature.
   const INVESTIGATOR_IDLE_MS = (() => {
     const raw = Number(process.env.CHARM_INVESTIGATOR_IDLE_MS);
@@ -1011,44 +1026,54 @@ async function main() {
       resolve(here, "..", "..", "rust", "target", "debug", "charm-watch"),
     ].filter((c): c is string => !!c);
     for (const c of candidates) if (existsSync(c)) return (watchBin = c);
-    console.error("[charmd] charm-watch binary not found; investigator idle-detection disabled (build with `bun run build:watch`).");
+    console.error("[charmd] charm-watch binary not found; idle-detection disabled for investigators/researchers (build with `bun run build:watch`).");
     return (watchBin = null);
   }
 
-  let investigatorSweepBusy = false;
-  async function sweepIdleInvestigators() {
-    if (INVESTIGATOR_IDLE_MS === 0 || !tmuxAvailable || investigatorSweepBusy) return;
+  let idleWatchSweepBusy = false;
+  async function sweepIdleWatchedAgents() {
+    if (INVESTIGATOR_IDLE_MS === 0 || !tmuxAvailable || idleWatchSweepBusy) return;
     const bin = resolveWatchBin();
     if (!bin) return;
 
-    // Watch only live, non-blocked investigators that hold a pane, a ticket, and a
-    // baseline. A `blocked` agent is legitimately idle awaiting continue_agent, so
-    // it's excluded here (the watch-list, not the Rust binary, enforces that).
+    // Watch only live, non-blocked investigators/researchers that hold a pane and
+    // a baseline. A `blocked` agent is legitimately idle awaiting continue_agent,
+    // so it's excluded here (the watch-list, not the Rust binary, enforces that).
     const entries: {
-      agent_id: string; pane_id: string; ticket_path: string;
+      agent_id: string; pane_id: string; watch_path: string;
       baseline_authored_len: number; prev_hash: string; prev_unchanged_since: number;
     }[] = [];
     for (const a of registry.list()) {
-      if (a.role !== "investigator") continue;
+      if (a.role !== "investigator" && a.role !== "researcher") continue;
       if (a.state !== "running" && a.state !== "spawning") continue;
-      if (!a.pane_id || !a.ticket_id) continue;
-      const baseline = investigatorBaseline.get(a.id);
-      if (baseline === undefined) continue;
-      const t = store.read(a.ticket_id);
-      if (!t) continue;
-      const prev = investigatorIdleState.get(a.id);
+      if (!a.pane_id) continue;
+      let watchPath: string | undefined;
+      let baseline: number | undefined;
+      if (a.role === "investigator") {
+        if (!a.ticket_id) continue;
+        const t = store.read(a.ticket_id);
+        if (!t) continue;
+        watchPath = t.path;
+        baseline = investigatorBaseline.get(a.id);
+      } else {
+        watchPath = researcherScratchpadPath.get(a.id);
+        baseline = researcherBaseline.get(a.id);
+      }
+      if (watchPath === undefined || baseline === undefined) continue;
+      const prev = idleWatchState.get(a.id);
       entries.push({
-        agent_id: a.id, pane_id: a.pane_id, ticket_path: t.path,
+        agent_id: a.id, pane_id: a.pane_id, watch_path: watchPath,
         baseline_authored_len: baseline,
         prev_hash: prev?.hash ?? "", prev_unchanged_since: prev?.unchanged_since ?? 0,
       });
     }
     // Drop idle/baseline state for agents that are gone, regardless of this tick.
-    for (const id of [...investigatorIdleState.keys()]) if (!registry.get(id)) investigatorIdleState.delete(id);
+    for (const id of [...idleWatchState.keys()]) if (!registry.get(id)) idleWatchState.delete(id);
     for (const id of [...investigatorBaseline.keys()]) if (!registry.get(id)) investigatorBaseline.delete(id);
+    for (const id of [...researcherBaseline.keys()]) if (!registry.get(id)) { researcherBaseline.delete(id); researcherScratchpadPath.delete(id); }
     if (entries.length === 0) return;
 
-    investigatorSweepBusy = true;
+    idleWatchSweepBusy = true;
     try {
       const payload = JSON.stringify({
         log_begin: LOG_BEGIN, log_end: LOG_END,
@@ -1085,38 +1110,53 @@ async function main() {
       for (const v of verdicts) {
         // Persist the opaque idle blob for next tick (skip captures that failed,
         // marked by an empty hash, so a transient tmux hiccup doesn't reset state).
-        if (v.hash) investigatorIdleState.set(v.agent_id, { hash: v.hash, unchanged_since: v.unchanged_since });
+        if (v.hash) idleWatchState.set(v.agent_id, { hash: v.hash, unchanged_since: v.unchanged_since });
         if (!v.finished) continue;
 
         // Re-validate against current state — the agent may have reported done,
         // blocked, or been reaped between building the list and now.
         const a = registry.get(v.agent_id);
-        if (!a || a.role !== "investigator" || !a.ticket_id) continue;
+        if (!a || (a.role !== "investigator" && a.role !== "researcher")) continue;
         if (a.state !== "running" && a.state !== "spawning") continue;
 
-        try {
-          const cur = store.read(a.ticket_id);
-          const status = cur?.frontmatter.status;
-          if (status !== "complete" && status !== "cancelled") {
-            store.update(a.ticket_id, { status: "complete", stage: "done" });
-            store.appendLog(a.ticket_id, {
-              agent: a.id,
-              kind: "done",
-              text: `system: findings written and pane idle ${v.idle_secs}s without report_status; auto-completed by idle-detection.`,
-            });
+        if (a.role === "investigator") {
+          if (!a.ticket_id) continue;
+          try {
+            const cur = store.read(a.ticket_id);
+            const status = cur?.frontmatter.status;
+            if (status !== "complete" && status !== "cancelled") {
+              store.update(a.ticket_id, { status: "complete", stage: "done" });
+              store.appendLog(a.ticket_id, {
+                agent: a.id,
+                kind: "done",
+                text: `system: findings written and pane idle ${v.idle_secs}s without report_status; auto-completed by idle-detection.`,
+              });
+            }
+          } catch (e) {
+            console.error(`[charmd] idle-detection: completing ${a.ticket_id} failed:`, e);
+            continue;
           }
-        } catch (e) {
-          console.error(`[charmd] idle-detection: completing ${a.ticket_id} failed:`, e);
-          continue;
+          idleWatchState.delete(a.id);
+          investigatorBaseline.delete(a.id);
+          refreshCoordination();
+          await tearDownAgent(a.id);
+          pingOrchestrator(`${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
+        } else {
+          // Researcher: no ticket to complete — reap the pane and hand the
+          // orchestrator the scratchpad path directly, exactly what a
+          // report_status('done', note=<path>) would have surfaced.
+          const notePath = researcherScratchpadPath.get(a.id);
+          idleWatchState.delete(a.id);
+          researcherBaseline.delete(a.id);
+          researcherScratchpadPath.delete(a.id);
+          await tearDownAgent(a.id);
+          pingOrchestrator(
+            `${a.id} -> done (idle-detected: scratchpad note written, ${v.idle_secs}s silent, auto-completed) — read ${notePath ?? "its scratchpad note"}`,
+          );
         }
-        investigatorIdleState.delete(a.id);
-        investigatorBaseline.delete(a.id);
-        refreshCoordination();
-        await tearDownAgent(a.id);
-        pingOrchestrator(`${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
       }
     } finally {
-      investigatorSweepBusy = false;
+      idleWatchSweepBusy = false;
     }
   }
 
@@ -1326,7 +1366,7 @@ async function main() {
           const deferred = input.prompts.slice(slots);
           const ids: string[] = [];
           for (const prompt of toSpawn) {
-            ids.push(await spawnAgentLocked({
+            const aid = await spawnAgentLocked({
               role: "researcher",
               ticket_id: null,
               prompt,
@@ -1337,8 +1377,26 @@ async function main() {
               // pane for the orchestrator to continue_agent it. Its prompt (and
               // researcher.md) requires a terminal report_status('done'/'failed')
               // so the orchestrator is pinged and reaps the otherwise-idle pane.
+              // That's belt; the idle-watch sweep below is suspenders — see
+              // researcherScratchpadPath.
               interactive: true,
-            }, researchParentId));
+            }, researchParentId);
+            ids.push(aid);
+            // Assign this researcher's scratchpad file NOW (path includes its own
+            // agent id, only known post-spawn) and record it as the idle-sweep's
+            // watch target, mirroring investigatorBaseline. buildClaudeCommand
+            // (spawn.ts) injects this exact path into the agent's system prompt via
+            // CHARM_RESEARCHER_SCRATCHPAD, computed with the same formula — the two
+            // must stay in lockstep or the sweep watches a file the agent never
+            // writes to. Baseline is 0 (the file cannot pre-exist: the id is fresh),
+            // read defensively in case a prior run somehow left one behind.
+            const scratchPath = join(researchCwd ?? paths.root, ".charm", "scratchpad", `${aid}.md`);
+            researcherScratchpadPath.set(aid, scratchPath);
+            let baselineLen = 0;
+            try {
+              if (existsSync(scratchPath)) baselineLen = Buffer.byteLength(readFileSync(scratchPath, "utf8").trim(), "utf8");
+            } catch { /* treat as empty baseline */ }
+            researcherBaseline.set(aid, baselineLen);
           }
           if (deferred.length > 0) {
             console.error(
@@ -1974,7 +2032,7 @@ async function main() {
 
   const cleanup = (code = 0) => {
     if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
-    if (investigatorSweepTimer) { clearInterval(investigatorSweepTimer); investigatorSweepTimer = null; }
+    if (idleWatchSweepTimer) { clearInterval(idleWatchSweepTimer); idleWatchSweepTimer = null; }
     // Drop any pending auto-reap timers so they can't fire into a torn-down
     // daemon (they're unref'd, but clear them anyway for a clean shutdown).
     for (const t of autoReapTimers.values()) clearTimeout(t);
@@ -2045,11 +2103,12 @@ async function main() {
   // Start the dead-pane liveness sweep once we're listening (no agents exist
   // before this, so there's nothing to reap earlier). Cleared in cleanup().
   sweepTimer = setInterval(sweepDeadPanes, SWEEP_MS);
-  // Same cadence, separate timer: catch interactive investigators that finished
-  // writing findings but never reported done. Skipped entirely when disabled
-  // (CHARM_INVESTIGATOR_IDLE_MS=0) or when the charm-watch binary is absent.
+  // Same cadence, separate timer: catch interactive investigators/researchers
+  // that finished writing findings but never reported done. Skipped entirely
+  // when disabled (CHARM_INVESTIGATOR_IDLE_MS=0) or when the charm-watch binary
+  // is absent.
   if (INVESTIGATOR_IDLE_MS > 0) {
-    investigatorSweepTimer = setInterval(() => { void sweepIdleInvestigators(); }, SWEEP_MS);
+    idleWatchSweepTimer = setInterval(() => { void sweepIdleWatchedAgents(); }, SWEEP_MS);
   }
 }
 

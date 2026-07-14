@@ -320,6 +320,19 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
         ].join("\n") +
         "\n"
       : "";
+  // A researcher's scratchpad filename is NOT the model's to choose: the daemon
+  // pre-assigns `.charm/scratchpad/<agent-id>.md` (agent_id is only known here,
+  // post-registry-create) and watches that exact path for an idle-but-unreported
+  // researcher (see researcherScratchpadPath / sweepIdleWatchedAgents in
+  // daemon/index.ts — the two MUST use the same path formula). This overrides any
+  // slug-naming guidance in researcher.md itself.
+  const CHARM_RESEARCHER_SCRATCHPAD =
+    spec.role === "researcher" && !spec.plain
+      ? `\n\n## Your scratchpad file (fixed — do not choose your own name)\n` +
+        `Write your findings note to exactly this path: \`.charm/scratchpad/${agent_id}.md\`. The daemon watches ` +
+        `that exact file to auto-detect a finished researcher who forgot to call \`report_status\` — a different ` +
+        `filename or location will NOT be caught, and you will be left dangling.\n`
+      : "";
   // Project brief — the orchestrator's standing operational context when a session
   // is anchored to a project (`charm start --project`). Injected into the system
   // prompt (not the kickoff message) on purpose: the system prompt survives context
@@ -364,6 +377,7 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
     CHARM_BASELINE +
     CHARM_RULES +
     CHARM_COORDINATION +
+    CHARM_RESEARCHER_SCRATCHPAD +
     CHARM_WORKSPACE +
     CHARM_PROJECT_BRIEF +
     modelLine +

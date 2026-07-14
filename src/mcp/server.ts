@@ -170,11 +170,15 @@ server.registerTool(
     description:
       "Spawn one interactive researcher agent per free-text prompt. A researcher is a lightweight, ticket-less " +
       "context-gathering agent (pinned to Sonnet with a 1M-token window): it reads broadly — code, in-repo docs, " +
-      "the KB, the web — to answer the question you give it, writes its findings to a scratchpad file, and reports " +
-      "back the path. Use it any time you need breadth (surveying prior art, scanning a large surface, pulling " +
-      "external docs) — it is NOT gated like build tools. This differs from spawn_investigators, which works a " +
-      "canonical investigation ticket and writes findings into the ticket body for the gated pipeline. Researchers " +
-      "are resumable: a blocked researcher waits in its pane for continue_agent.",
+      "the KB, the web — to answer the question you give it, writes its findings to a scratchpad file at a " +
+      "daemon-assigned fixed path (`.charm/scratchpad/<agent_id>.md`, using the id returned below), and reports " +
+      "back done/blocked/failed via report_status. Use it any time you need breadth (surveying prior art, " +
+      "scanning a large surface, pulling external docs) — it is NOT gated like build tools. This differs from " +
+      "spawn_investigators, which works a canonical investigation ticket and writes findings into the ticket body " +
+      "for the gated pipeline. Researchers are resumable: a blocked researcher waits in its pane for " +
+      "continue_agent. If one goes idle after writing its note without ever calling report_status, the daemon's " +
+      "idle-watch sweep auto-completes it and pings you at the same fixed path — but that is a backstop for a " +
+      "forgotten report, not a normal completion path; still expect report_status from a well-behaved researcher.",
     inputSchema: {
       prompts: z.array(z.string().min(1)).min(1),
       worktree: z

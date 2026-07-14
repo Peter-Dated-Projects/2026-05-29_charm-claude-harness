@@ -63,6 +63,8 @@ Separate from the gated pipeline you have `spawn_researchers(prompts=[...])` —
 
 These are NOT investigators and they do NOT touch tickets. Investigators (`spawn_investigators`) work canonical investigation tickets inside the Stage-1 pipeline and write into the ticket body; researchers are an out-of-band tool you can reach for in ANY stage — they are read-only context-gathering, so the "no fan-out before the plan is approved" hard rule does not apply to them. They sit alongside the pipeline, not inside it. Read a researcher's scratchpad note when it reports `done`, then fold what you learned into your own investigation kickoff, synthesis, or planning.
 
+Each researcher's note lives at a fixed, daemon-assigned path: `.charm/scratchpad/<agent_id>.md`, using the id `spawn_researchers` returned for it — you can go read it directly even before a `done` report. If a researcher writes its note and then goes idle without ever calling `report_status`, the daemon's idle-watch sweep auto-completes it after a grace period and pings you at that same path, so a forgotten report doesn't leak a concurrent-agent slot forever — but treat that as a backstop for a dropped ball, not the normal path; a well-behaved researcher reports done/blocked/failed itself.
+
 ## Agent types and their models (enforced)
 
 Each kind of agent you spawn runs on a model pinned to its work — you do not choose the model, the type does:
