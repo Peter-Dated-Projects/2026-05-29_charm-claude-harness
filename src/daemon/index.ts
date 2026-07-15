@@ -41,6 +41,7 @@ import {
   SessionMeta,
   COORDINATION_STATUSES,
   type AgentRole,
+  type Agent,
 } from "../schema.ts";
 
 type DaemonOpts = { root: string; session: string; uuid?: string };
@@ -746,33 +747,76 @@ async function main() {
     }
   }
 
-  // Wake the orchestrator when sub-agents change state, so it can reap finished
-  // panes and advance the workflow. Bursts are coalesced into a single wake: if
-  // five workers finish at once the orchestrator (on Opus) takes one turn, not
-  // five. Events accumulate for a short window, then flush as one injected line.
-  let pingPending: string[] = [];
-  let pingTimer: ReturnType<typeof setTimeout> | null = null;
-  function pingOrchestrator(event: string) {
-    if (!tmuxAvailable || !orchestratorPaneId) return;
-    pingPending.push(event);
-    if (pingTimer) return; // already armed — coalesce into the pending flush
-    pingTimer = setTimeout(async () => {
-      const events = pingPending;
-      pingPending = [];
-      pingTimer = null;
+  // Wake an orchestrator pane when sub-agents change state, so it can reap
+  // finished panes and advance the workflow. Bursts are coalesced into a single
+  // wake: if five workers finish at once the orchestrator (on Opus) takes one
+  // turn, not five. Events accumulate for a short window per TARGET pane, then
+  // flush as one injected line. Each target pane keeps its own buffer + timer so
+  // a burst aimed at a suborchestrator never merges into the main orchestrator's
+  // line (or vice versa) and gets delivered to the wrong pane.
+  const pingBuffers = new Map<string, { events: string[]; timer: ReturnType<typeof setTimeout> | null }>();
+  function wakePane(paneId: string, event: string) {
+    if (!tmuxAvailable || !paneId) return;
+    let buf = pingBuffers.get(paneId);
+    if (!buf) { buf = { events: [], timer: null }; pingBuffers.set(paneId, buf); }
+    buf.events.push(event);
+    if (buf.timer) return; // already armed — coalesce into the pending flush
+    const armed = buf;
+    armed.timer = setTimeout(async () => {
+      // Drop the buffer now (events captured); a push after this point starts a
+      // fresh buffer + timer, so nothing is lost and nothing double-flushes.
+      pingBuffers.delete(paneId);
+      const events = armed.events;
       try {
-        // The pane may have vanished OR died (orchestrator exited) during the
+        // The pane may have vanished OR died (the orchestrator exited) during the
         // window. paneAlive — not paneIndex — because remain-on-exit keeps a dead
         // pane indexable; sending into a corpse would be a silent no-op.
-        if (!orchestratorPaneId || !(await tmux.paneAlive(orchestratorPaneId))) return;
+        if (!(await tmux.paneAlive(paneId))) return;
         // One line only: literal newlines typed into the pane would submit early.
         // Keep it short — the full reap/resume/abandon protocol lives in the
         // orchestrator prompt; this is just the wake + what changed.
         const line =
           `[charm] ${events.join("; ")}. Resolve any blocks and advance per your orchestrator instructions.`;
-        await tmux.sendText(orchestratorPaneId, line);
-      } catch (e) { console.error("[charmd] pingOrchestrator failed:", e); }
+        await tmux.sendText(paneId, line);
+      } catch (e) { console.error("[charmd] wakePane failed:", e); }
     }, 1200);
+  }
+
+  // Wake the MAIN orchestrator. Used for fleet-level events with no owning
+  // sub-agent (operator cancels, dependency deadlocks) that are always the main
+  // orchestrator's concern.
+  function pingOrchestrator(event: string) {
+    if (!orchestratorPaneId) return;
+    wakePane(orchestratorPaneId, event);
+  }
+
+  // Resolve which orchestrator pane OWNS a sub-agent: the pane of the
+  // suborchestrator that spawned it (so a suborchestrator's children report back
+  // to IT, not the main orchestrator), falling back to the main orchestrator when
+  // the agent was spawned by main/operator or its suborchestrator parent is no
+  // longer live. Returns null only if there is no orchestrator pane at all.
+  function ownerPaneFor(agent: Agent | undefined): string | null {
+    const parentId = agent?.parent_id;
+    if (parentId) {
+      const parent = registry.get(parentId);
+      if (
+        parent &&
+        parent.role === "suborchestrator" &&
+        parent.pane_id &&
+        occupiesLiveSlot(parent.state)
+      ) {
+        return parent.pane_id;
+      }
+    }
+    return orchestratorPaneId;
+  }
+
+  // Wake the orchestrator that owns `agent` (its spawning suborchestrator if
+  // live, else main). Capture the agent BEFORE any teardown that removes it from
+  // the registry — once reaped its parent edge is gone and this falls back to main.
+  function pingOwner(agent: Agent | undefined, event: string) {
+    const pane = ownerPaneFor(agent);
+    if (pane) wakePane(pane, event);
   }
 
   // --- Auto-reap of finished agents ----------------------------------------
@@ -822,13 +866,16 @@ async function main() {
       // therefore stays silent on done/failed (see there); this is the wake.
       const state = a.state;
       const ticketId = a.ticket_id;
+      // Resolve the owning orchestrator pane NOW, before teardown removes the
+      // agent (and its parent edge) from the registry.
+      const ownerPane = ownerPaneFor(a);
       console.error(
         `[charmd] auto-reap: tearing down finished agent ${agentId} (${a.role}, ${state}) ` +
           `after ${AUTO_REAP_MS}ms grace.`,
       );
       void tearDownAgent(agentId)
         .then(() => {
-          pingOrchestrator(`${agentId} -> ${state}${ticketId ? ` on ${ticketId}` : ""}`);
+          if (ownerPane) wakePane(ownerPane, `${agentId} -> ${state}${ticketId ? ` on ${ticketId}` : ""}`);
         })
         .catch((e) => console.error(`[charmd] auto-reap teardown of ${agentId} failed:`, e));
     }, AUTO_REAP_MS);
@@ -935,15 +982,21 @@ async function main() {
           /* ignore — a missing/locked ticket must not abort the sweep */
         }
       }
+      // Resolve the owning orchestrator pane before teardown drops the agent (and
+      // its parent edge) from the registry, so a dead suborchestrator-child's
+      // reaping still routes back to that suborchestrator.
+      const ownerPane = ownerPaneFor(a);
       tearDownAgent(a.id);
       // Only ping a retry when we actually reset the ticket to failed; reaping a
       // dead helper off an already-finished ticket isn't retry-worthy news.
-      if (failedTicket) {
-        pingOrchestrator(
+      if (ownerPane && failedTicket) {
+        wakePane(
+          ownerPane,
           `${a.id} died on ${a.ticket_id ?? "?"} (pane gone, no report_status) — reaped, ticket reset to failed for retry`,
         );
-      } else {
-        pingOrchestrator(
+      } else if (ownerPane) {
+        wakePane(
+          ownerPane,
           `${a.id} (${a.role}) died on ${a.ticket_id ?? "?"} (pane gone, no report_status) — reaped; ticket status left unchanged`,
         );
       }
@@ -1112,8 +1165,10 @@ async function main() {
         investigatorIdleState.delete(a.id);
         investigatorBaseline.delete(a.id);
         refreshCoordination();
+        // Resolve the owner pane before teardown removes the agent's parent edge.
+        const ownerPane = ownerPaneFor(a);
         await tearDownAgent(a.id);
-        pingOrchestrator(`${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
+        if (ownerPane) wakePane(ownerPane, `${a.id} -> done on ${a.ticket_id} (idle-detected: findings written, ${v.idle_secs}s silent, auto-completed)`);
       }
     } finally {
       investigatorSweepBusy = false;
@@ -1533,7 +1588,8 @@ async function main() {
         const noTeardownComing =
           AUTO_REAP_MS === 0 && (input.state === "done" || input.state === "failed");
         if (a.role !== "main" && (paneLingers || noTeardownComing)) {
-          pingOrchestrator(`${a.id} -> ${input.state}${a.ticket_id ? ` on ${a.ticket_id}` : ""}`);
+          // Route to the spawning suborchestrator if it owns this agent, else main.
+          pingOwner(a, `${a.id} -> ${input.state}${a.ticket_id ? ` on ${a.ticket_id}` : ""}`);
         }
         // Auto-reap a finished pane after a short grace, so the orchestrator
         // never has to spend a turn on kill_agent for routine cleanup — the
@@ -1638,11 +1694,17 @@ async function main() {
         if (!target) throw new Error(`unknown agent: ${targetId}`);
 
         const isSelf = targetId === input.caller_id;
-        // Authorization: the human operator and the orchestrator may kill any
-        // sub-agent; a sub-agent may only kill itself.
-        if (callerRole !== "operator" && callerRole !== "main" && !isSelf) {
+        // A suborchestrator owns the agents it spawned, so it may kill its own
+        // children (deliberate intervention on work it directs), same as the main
+        // orchestrator can over the whole fleet.
+        const ownsTarget =
+          callerRole === "suborchestrator" && target.parent_id === input.caller_id;
+        // Authorization: the human operator and the main orchestrator may kill any
+        // sub-agent; a suborchestrator may kill its own children; any sub-agent may
+        // kill itself.
+        if (callerRole !== "operator" && callerRole !== "main" && !isSelf && !ownsTarget) {
           throw new Error(
-            `agent ${input.caller_id} (${callerRole}) may only kill itself; ` +
+            `agent ${input.caller_id} (${callerRole}) may only kill itself or agents it spawned; ` +
             `killing ${targetId} requires the orchestrator`,
           );
         }
@@ -1729,19 +1791,24 @@ async function main() {
       case "continue_agent": {
         const input = ContinueAgentInput.parse(params);
         const callerRole = resolveCaller(input.caller_id);
-        // Only the human operator and the orchestrator may resume an agent. A
-        // sub-agent cannot drive another sub-agent.
-        if (callerRole !== "operator" && callerRole !== "main") {
-          throw new Error(
-            `agent ${input.caller_id} (${callerRole}) may not continue other agents; that requires the orchestrator`,
-          );
-        }
         // The orchestrator drives the workflow itself — it is never a target.
         if (input.agent_id === MAIN_AGENT_ID) {
           throw new Error("refusing to continue the orchestrator (main agent)");
         }
         const target = registry.get(input.agent_id);
         if (!target) throw new Error(`unknown agent: ${input.agent_id}`);
+        // Authorization: the human operator and the main orchestrator may resume any
+        // agent; a suborchestrator may resume only the agents IT spawned (its own
+        // children report their blocks back to it). No other sub-agent can drive
+        // another sub-agent.
+        const ownsTarget =
+          callerRole === "suborchestrator" && target.parent_id === input.caller_id;
+        if (callerRole !== "operator" && callerRole !== "main" && !ownsTarget) {
+          throw new Error(
+            `agent ${input.caller_id} (${callerRole}) may not continue ${target.id}; ` +
+              `that requires the orchestrator or the suborchestrator that spawned it`,
+          );
+        }
         // Only a blocked agent can be continued. `running` is the normal
         // actively-working state (set on attach), so typing into that pane would
         // inject mid-turn and corrupt the agent's work. done/failed are terminal
