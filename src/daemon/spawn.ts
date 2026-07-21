@@ -402,6 +402,13 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // Spawned agents run unattended in tmux panes, so they must not stall on permission
   // prompts. Default to `auto` (skips prompts); overridable via CHARM_PERMISSION_MODE.
   flags.push("--permission-mode", shellQuote(defaultPermissionMode()));
+  // Belt-and-suspenders: every charm pane (orchestrator and every sub-agent) also
+  // gets --dangerously-skip-permissions so nothing can stall on a permission prompt
+  // that --permission-mode alone would still gate. This flag takes precedence over
+  // --permission-mode (verified: passing both exits 0, the skip wins), so the two
+  // coexist without conflict. Charm agents are fully unattended, so the "dangerous"
+  // interactive safety net is exactly what we want gone.
+  flags.push("--dangerously-skip-permissions");
   // `--mcp-config` is variadic (`<configs...>`) — commander slurps every
   // following positional until the next flag. Put it FIRST so the next flag
   // (`--disallowed-tools`) terminates the list, otherwise the user prompt
