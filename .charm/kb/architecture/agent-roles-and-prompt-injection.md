@@ -53,10 +53,10 @@ All other roles load a single `<role>.md`.
 
 ## Hard tool removal
 
-Three built-in Claude Code tools are removed at the API level for every agent:
-`Agent`, `Task`, `Workflow`
+Two built-in Claude Code tools are removed at the API level for every agent:
+`Agent`, `Task`
 
-This is a flag-level removal (`--disallowed-tools`) -- the tools leave the schema entirely. Agents cannot call them even if instructed to. All fan-out must go through the charm MCP tools, which the daemon mediates with dep/scope enforcement.
+This is a flag-level removal (`--disallowed-tools`) -- the tools leave the schema entirely. Agents cannot call them even if instructed to. All charm fan-out must go through the charm MCP tools, which the daemon mediates with dep/scope enforcement. `Workflow` is the one exception: it's left enabled fleet-wide by default (`CHARM_WORKFLOW_ENABLE=0` opts back out), but a Workflow-spawned agent is never a "subagent" in the charm sense.
 
 Note: the Bash escape hatch (running `claude` directly via Bash) is not closed by this flag; it would require sandboxing Bash, which workers need for their actual work.
 

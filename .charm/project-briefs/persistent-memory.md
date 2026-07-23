@@ -34,7 +34,8 @@ and **replace** Claude Code's default prompt outright.
 - **The four-stage pipeline is mandatory:** investigate → synthesize/plan (human gate) →
   develop → test (human gate). No worker fan-out before the worker-ticket plan is approved.
 - **"subagent" always means a charm subagent** spawned via the MCP spawn tools; the native
-  `Agent`/`Task`/`Workflow` tools are stripped from every agent.
+  `Agent`/`Task` tools are stripped from every agent (`Workflow` is left enabled fleet-wide
+  by default; a Workflow-spawned agent is never a "subagent" in the charm sense).
 - **No emoji or wide Unicode** in any agent output — it breaks the Ink layout.
 - **Tickets are run state**, never hand-edited; `.charm/db.sqlite` is a rebuilt index over
   them. `kb/`, `proposals/`, `project-briefs/` are durable, git-tracked surfaces (see

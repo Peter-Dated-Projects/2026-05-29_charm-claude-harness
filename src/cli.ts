@@ -74,7 +74,7 @@ program
   .option("--no-attach", "do not auto-attach to the tmux session")
   .option(
     "--workflow-enable",
-    "keep Claude Code's built-in Workflow tool enabled for the WHOLE fleet (main agent + every sub-agent); off by default so all fan-out goes through charm's MCP tools",
+    "keep Claude Code's built-in Workflow tool enabled for the WHOLE fleet (main agent + every sub-agent); on by default now, so this flag is a no-op — set CHARM_WORKFLOW_ENABLE=0 to opt back out and force all fan-out through charm's MCP tools",
     false,
   )
   .option("-u, --uuid <id>", "internal: pin this session's UUID (default: a fresh random one)")
@@ -84,11 +84,8 @@ program
   )
   .action(async (opts) => {
     const root = resolve(opts.root);
-    // --workflow-enable opts the whole environment back into the built-in Workflow
-    // tool (charm strips it by default; see buildClaudeCommand). Set it on this CLI's
-    // env now so it (a) reaches the in-process main-agent spawn below via
-    // workflowEnabled() and (b) is inherited by the daemon through its {...process.env}
-    // spread, so every sub-agent the daemon spawns keeps Workflow too.
+    // Workflow is kept enabled fleet-wide by default (see workflowEnabled() in
+    // daemon/spawn.ts); --workflow-enable is now redundant but harmless to pass.
     if (opts.workflowEnable) process.env.CHARM_WORKFLOW_ENABLE = "1";
     // Each `charm start` mints a fresh session UUID. It is this session's primary
     // key: its socket, pidfile, daemon log, meta, and graph-viewer pids all live

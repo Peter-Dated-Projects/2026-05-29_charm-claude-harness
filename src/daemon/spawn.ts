@@ -193,12 +193,12 @@ export function defaultPermissionMode(): string {
 }
 
 /** Whether the built-in Workflow tool is left enabled for spawned agents.
- *  Off by default: charm normally strips Workflow (see buildClaudeCommand) so all
- *  fan-out goes through charm's MCP tools. `charm start --workflow-enable` sets
- *  CHARM_WORKFLOW_ENABLE=1 on the daemon (and the CLI's own env), which this reads
- *  so the whole fleet — orchestrator and every sub-agent — keeps the Workflow tool. */
+ *  On by default: every session — orchestrator and every sub-agent — keeps the
+ *  Workflow tool. Set CHARM_WORKFLOW_ENABLE=0 to fall back to charm's normal
+ *  behavior of stripping it (see buildClaudeCommand) so fan-out is forced through
+ *  charm's own MCP tools instead. */
 export function workflowEnabled(): boolean {
-  return process.env.CHARM_WORKFLOW_ENABLE === "1";
+  return process.env.CHARM_WORKFLOW_ENABLE !== "0";
 }
 
 /** Compact, human-readable model name for the pane-border status bar. The
@@ -432,9 +432,9 @@ export function buildClaudeCommand(paths: CharmPaths, agent_id: string, spec: Sp
   // `claude` itself via Bash); that is only closable by sandboxing Bash, which
   // workers need. The flag covers the built-in tools, which is the real exposure.
   //
-  // Workflow is the one exception: `charm start --workflow-enable` (CHARM_WORKFLOW_ENABLE=1)
-  // deliberately keeps it for the whole fleet, opting into that second fan-out path.
-  // Agent/Task are always stripped regardless.
+  // Workflow is the one exception: it's kept for the whole fleet by default (see
+  // workflowEnabled() above); CHARM_WORKFLOW_ENABLE=0 opts back out. Agent/Task are
+  // always stripped regardless.
   const disallowedTools = ["Agent", "Task"];
   if (!workflowEnabled()) disallowedTools.push("Workflow");
   flags.push("--disallowed-tools", ...disallowedTools.map((t) => shellQuote(t)));
