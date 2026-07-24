@@ -48,6 +48,13 @@ export class CodexRuntime implements AgentRuntime {
       `-c ${shellQuote(`projects.${tomlString(workDir)}.trust_level="trusted"`)}`,
       `-c ${shellQuote(`model_instructions_file=${instructionsFile}`)}`,
       `-c ${shellQuote(`model_reasoning_effort=${reasoningEffort}`)}`,
+      // Force Standard mode for every Charm-managed Codex process. Codex models
+      // may advertise Fast/priority as their catalog default, especially in the
+      // isolated CODEX_HOME used by sub-agents, so pin the tier and remove the
+      // TUI command that could turn Fast mode back on.
+      `-c ${shellQuote('service_tier="default"')}`,
+      "--disable",
+      "fast_mode",
       // Charm MCP — same socket/agent identity Claude gets via --mcp-config + env.
       `-c ${shellQuote(`mcp_servers.charm.command=${mcpCommand}`)}`,
       `-c ${shellQuote(`mcp_servers.charm.args=${JSON.stringify(mcpArgs)}`)}`,

@@ -56,6 +56,8 @@ test("a Codex worker launch uses codex with Charm MCP and no native multi-agent"
   expect(cmd).toContain("--dangerously-bypass-approvals-and-sandbox");
   expect(cmd).toContain(`projects."${paths.root}".trust_level="trusted"`);
   expect(cmd).toContain("model_instructions_file=");
+  expect(cmd).toContain('service_tier="default"');
+  expect(cmd).toContain("--disable fast_mode");
   expect(cmd).toContain("mcp_servers.charm.command=");
   expect(cmd).toContain("--disable multi_agent");
   expect(cmd).not.toContain("agents.enabled=");
