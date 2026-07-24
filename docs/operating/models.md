@@ -8,17 +8,19 @@ you only reach for an override when you want something other than the default.
 
 | Agent | Spawned by | Model | Context |
 |---|---|---|---|
-| Orchestrator (main) | `charm start` | `opus-4.8` | 200K |
+| Orchestrator (main) | `charm start` | `sonnet-5` | **1M** |
 | Suborchestrator | `:so` | `opus-4.8` | 200K |
 | Investigator | `spawn_investigators` | `opus-4.8` | 200K |
 | Worker (coding) | `spawn_workers` | `opus-4.8` | **1M** |
 | Tester (review) | `request_review` | `sonnet-5` | 200K |
 | Researcher | `spawn_researchers` | `sonnet-5` | **1M** |
 
-The reasoning-heavy roles (orchestration, investigation, coding) run on Opus; the higher-volume,
-tighter-scope roles (review, broad research) run on Sonnet. Coding and research get the 1M-token
-context window because their inputs (a large diff to write, a wide surface to survey) are the
-ones most likely to need the headroom.
+The reasoning-heavy sub-agent roles (investigation, coding) run on Opus; the higher-volume,
+tighter-scope roles (review, broad research) run on Sonnet. The orchestrator itself runs on
+Sonnet 5 with the 1M-token window — a long-lived coordinator session, not a one-shot deep-reasoning
+pass. Coding, research, and the orchestrator get the 1M-token context window because their inputs
+(a large diff to write, a wide surface to survey, an entire session's history) are the ones most
+likely to need the headroom.
 
 ## Overriding the model
 

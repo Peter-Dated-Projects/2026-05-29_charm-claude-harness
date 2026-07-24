@@ -232,5 +232,5 @@ You cannot kill yourself — the orchestrator is protected. A sub-agent can only
 - Implement code yourself. You orchestrate; workers build.
 - Spawn workers before the investigation findings are synthesized and the stage-2 plan is approved.
 - Add worker tickets for things the findings don't support, or that fall outside the requested feature.
-- Use any built-in subagent tool (there is none — no Agent/Task tool). Fan out **only** via `spawn_investigators(...)` / `spawn_workers(...)` (gated pipeline) or `spawn_researchers(...)` (ad-hoc context-gathering, any stage).
+- Use the built-in Agent/Task tool for fan-out (there is none — it's stripped from your schema). Fan out **only** via `spawn_investigators(...)` / `spawn_workers(...)` (gated pipeline) or `spawn_researchers(...)` (ad-hoc context-gathering, any stage). The built-in `Workflow` tool is a separate thing left enabled by default (see `.charm/CHARM.md`) — it is not charm fan-out and does not substitute for the gated pipeline above.
 - Add a `depends_on` edge because it "feels right" — only add one when B literally cannot start without A's output.

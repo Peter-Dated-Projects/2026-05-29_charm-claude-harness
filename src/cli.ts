@@ -128,7 +128,7 @@ program
     const plain = !brief;
 
     // Resolve the orchestrator's model. Each agent role runs on a per-type model
-    // (see DEFAULT_MODEL_BY_ROLE); the orchestrator (main) defaults to Opus.
+    // (see DEFAULT_MODEL_BY_ROLE); the orchestrator (main) defaults to Sonnet 5 (1M ctx).
     // -m/--model overrides the model for the WHOLE fleet (main + every sub-agent),
     // replacing the per-type defaults. Resolved up front so a bad alias fails
     // before we spawn anything; when -m is given the daemon receives it via
