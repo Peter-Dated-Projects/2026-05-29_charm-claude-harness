@@ -8,7 +8,8 @@ import { join } from "node:path";
 
 /**
  * Codex CLI adapter. Mirrors Claude's Charm session surface:
- *   - unattended: danger-full-access + approval never
+ *   - unattended: bypass approvals and sandbox
+ *   - workspace trust: explicitly trust the launch cwd, including worktrees
  *   - instructions: model_instructions_file (replaces built-ins)
  *   - per-session Charm MCP via -c mcp_servers.charm.*
  *   - native multi-agent tools off (Charm MCP owns fan-out), matching
@@ -23,8 +24,9 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   ensureWorkspaceReady(_dir: string): void {
-    // Codex trusts via project config / first-run prompts; Charm launches with
-    // danger-full-access + never, so no ~/.claude.json-style trust edit is needed.
+    // Workspace trust is supplied as a per-launch config override in
+    // buildCommand. This also covers isolated CODEX_HOME directories and
+    // ephemeral worktree paths without mutating the operator's config.
   }
 
   buildCommand(ctx: LaunchContext): string {
@@ -33,16 +35,17 @@ export class CodexRuntime implements AgentRuntime {
     const workDir = spec.cwd ?? paths.root;
 
     // Shared flags valid on both `codex` (interactive) and `codex exec`.
-    // Prefer -c approval_policy over -a: `codex exec` rejects -a when it appears
-    // after the subcommand, and -c works in both modes.
     const sharedFlags: string[] = [
       "-m",
       shellQuote(spec.model ?? "gpt-5.6-terra"),
-      "-s",
-      "danger-full-access",
       "-C",
       shellQuote(workDir),
-      `-c ${shellQuote('approval_policy="never"')}`,
+      "--dangerously-bypass-approvals-and-sandbox",
+      // Recent Codex versions show the directory-trust screen even in dangerous
+      // mode. Every isolated CODEX_HOME starts without project state, and
+      // worktrees have unique paths, so trust the exact launch cwd in the merged
+      // in-memory config. This suppresses the prompt without modifying ~/.codex.
+      `-c ${shellQuote(`projects.${tomlString(workDir)}.trust_level="trusted"`)}`,
       `-c ${shellQuote(`model_instructions_file=${instructionsFile}`)}`,
       `-c ${shellQuote(`model_reasoning_effort=${reasoningEffort}`)}`,
       // Charm MCP — same socket/agent identity Claude gets via --mcp-config + env.

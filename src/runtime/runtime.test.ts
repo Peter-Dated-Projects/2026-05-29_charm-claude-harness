@@ -53,8 +53,8 @@ test("a Codex worker launch uses codex with Charm MCP and no native multi-agent"
   });
   expect(cmd).toContain("exec codex ");
   expect(cmd).toContain("-m 'gpt-5.6-sol'");
-  expect(cmd).toContain("-s danger-full-access");
-  expect(cmd).toContain('approval_policy="never"');
+  expect(cmd).toContain("--dangerously-bypass-approvals-and-sandbox");
+  expect(cmd).toContain(`projects."${paths.root}".trust_level="trusted"`);
   expect(cmd).toContain("model_instructions_file=");
   expect(cmd).toContain("mcp_servers.charm.command=");
   expect(cmd).toContain("--disable multi_agent");
@@ -76,6 +76,7 @@ test("a Claude worker launch still uses claude and skips history", () => {
   });
   expect(cmd).toContain("exec claude ");
   expect(cmd).toContain("export CLAUDE_CODE_SKIP_PROMPT_HISTORY=1");
+  expect(cmd).toContain("--dangerously-skip-permissions");
   expect(cmd).toContain("--disallowed-tools");
   expect(cmd).toContain("Agent");
   expect(cmd).not.toContain("Workflow"); // Workflow stays enabled by default
