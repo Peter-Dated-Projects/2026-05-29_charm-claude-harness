@@ -116,6 +116,7 @@ ephemeral run state. Its layout and schema are specified in [Knowledge base desi
 | Layer | Choice |
 |---|---|
 | Runtime / language | Bun + TypeScript, several entrypoints via `bun build --compile` |
+| Agent runtimes | Hexagonal port in `src/runtime/` — Claude Code + Codex CLI adapters |
 | CLI parsing | `commander` |
 | MCP server | `@modelcontextprotocol/sdk` (official TS SDK), stdio transport |
 | Pane substrate | tmux (shell-out), required at runtime |

@@ -78,6 +78,10 @@ export const Agent = z.object({
   id: z.string(),
   role: AgentRole,
   ticket_id: z.string().nullable(),
+  // Concise, self-contained description of what this agent is trying to
+  // accomplish. This lets fleet/status views explain an agent without forcing
+  // the operator to open its ticket or reconstruct its launch prompt.
+  goal: z.string().max(200).default(""),
   // The agent that authorized this agent's spawn (the spawning orchestrator's
   // id), or null for the root orchestrator and operator-spawned agents. This is
   // the hierarchy edge the Zed orchestration canvas draws the agent tree from:
@@ -176,11 +180,12 @@ export const FinishProposalInput = z.object({
 export type FinishProposalInput = z.infer<typeof FinishProposalInput>;
 
 // Optional per-spawn model override shared by every spawn_* tool. `model` picks a
-// model family (sonnet = Sonnet 5, haiku = Haiku 4.5, opus = Opus 4.8); omit it to
-// keep the role's default. `context_1m` toggles the 1M-token context window (default
-// true, the preferred window) and is honored only for families that offer one — it's
-// a no-op on Haiku. Resolved daemon-side via resolveSpawnModel.
-export const SpawnModelFamily = z.enum(["sonnet", "haiku", "opus"]);
+// family: Claude (sonnet / haiku / opus) or Codex GPT-5.6 (sol / terra / luna).
+// Omit it to keep the role's default (Claude). `context_1m` toggles the 1M-token
+// window for Claude families that offer one; it is a no-op for Haiku and all Codex
+// families. Resolved daemon-side via resolveSpawnModel — Codex families route to
+// the Codex runtime adapter.
+export const SpawnModelFamily = z.enum(["sonnet", "haiku", "opus", "sol", "terra", "luna"]);
 export type SpawnModelFamily = z.infer<typeof SpawnModelFamily>;
 const spawnModelFields = {
   model: SpawnModelFamily.optional(),
@@ -333,6 +338,7 @@ export const RequestReviewInput = z.object({
   // tester in; see SpawnInvestigatorsInput.worktree. A tester validating a worker
   // that ran in a worktree needs the same checkout to see its commit.
   worktree: z.string().optional(),
+  ...spawnModelFields,
 });
 export type RequestReviewInput = z.infer<typeof RequestReviewInput>;
 
@@ -361,6 +367,17 @@ export const ContinueAgentInput = z.object({
   message: z.string().min(1),
 });
 export type ContinueAgentInput = z.infer<typeof ContinueAgentInput>;
+
+// message_agent lets an orchestrator steer any live sub-agent without requiring
+// it to report blocked first. Unlike continue_agent, this is primarily a
+// communication operation: running/spawning targets keep their state, while a
+// blocked target becomes running because submitting a message wakes its TUI.
+export const MessageAgentInput = z.object({
+  caller_id: z.string().optional(),
+  agent_id: z.string(),
+  message: z.string().min(1),
+});
+export type MessageAgentInput = z.infer<typeof MessageAgentInput>;
 
 // cancel_ticket is the deliberate "this ticket is no longer wanted" path. It is
 // intentionally separate from kill_agent: killing a stuck agent marks its ticket

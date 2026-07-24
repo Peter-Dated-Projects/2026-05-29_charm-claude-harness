@@ -30,6 +30,17 @@ test("a freshly create()d worker is in state 'spawning'", () => {
   expect(agent.state).toBe("spawning");
 });
 
+test("registry records a concise fleet-visible agent goal", () => {
+  const registry = new AgentRegistry();
+  const agent = registry.create({
+    role: "worker",
+    ticket_id: "T-001",
+    goal: "Implement: expose agent goals in fleet metadata",
+  });
+  expect(agent.goal).toBe("Implement: expose agent goals in fleet metadata");
+  expect(registry.list()[0]?.goal).toBe(agent.goal);
+});
+
 test("a freshly create()d worker is immediately counted as holding a claim", () => {
   // The crux: the claim must be visible at `spawning`, before attach() flips it
   // to `running`. A concurrent solve happening in this window must see it.

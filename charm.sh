@@ -80,10 +80,11 @@ resolve_session() {
   bun run "${REPO_DIR}/src/cli.ts" session-name --root "$root"
 }
 
-# Make `charm-mcp` resolvable for spawned claude processes without a global install.
-if ! command -v charm-mcp >/dev/null 2>&1; then
-  export CHARM_MCP_BIN="${CHARM_MCP_BIN:-bun run ${REPO_DIR}/src/mcp/server.ts}"
-fi
+# Always prefer this checkout's MCP source over a stale global `charm-mcp`
+# (e.g. ~/.local/bin from a prior `frieren install`). Pass the .ts path; the
+# daemon/CLI resolve it to `bun run <file>` with proper command+args. An
+# explicit CHARM_MCP_BIN still wins.
+export CHARM_MCP_BIN="${CHARM_MCP_BIN:-${REPO_DIR}/src/mcp/server.ts}"
 
 case "${1:-}" in
   "" | -h | --help | help)

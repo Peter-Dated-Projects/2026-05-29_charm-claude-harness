@@ -58,14 +58,14 @@ test("sub-agent spawns skip Claude Code transcript persistence", () => {
 });
 
 test("the orchestrator keeps its transcript (needed for resume)", () => {
-  const main = buildClaudeCommand(paths, "main-001", { role: "main", interactive: true });
-  const sub = buildClaudeCommand(paths, "suborchestrator-001", { role: "suborchestrator", interactive: true });
+  const main = buildClaudeCommand(paths, "main-001", { role: "main", ticket_id: null, prompt: "", interactive: true });
+  const sub = buildClaudeCommand(paths, "suborchestrator-001", { role: "suborchestrator", ticket_id: null, prompt: "", interactive: true });
   expect(main).not.toContain("CLAUDE_CODE_SKIP_PROMPT_HISTORY");
   expect(sub).not.toContain("CLAUDE_CODE_SKIP_PROMPT_HISTORY");
 });
 
 test("a plain human window keeps its transcript", () => {
-  const plain = buildClaudeCommand(paths, "worker-001", { role: "worker", plain: true, interactive: true });
+  const plain = buildClaudeCommand(paths, "worker-001", { role: "worker", ticket_id: null, prompt: "", plain: true, interactive: true });
   expect(plain).not.toContain("CLAUDE_CODE_SKIP_PROMPT_HISTORY");
 });
 
@@ -89,6 +89,10 @@ test("resolveSpawnModel never appends [1m] to a family without a 1M window", () 
   expect(resolveSpawnModel("haiku")).toBe("claude-haiku-4-5-20251001");
   expect(resolveSpawnModel("haiku", true)).toBe("claude-haiku-4-5-20251001");
   expect(resolveSpawnModel("haiku", false)).toBe("claude-haiku-4-5-20251001");
+  // Codex families likewise never grow a [1m] suffix.
+  expect(resolveSpawnModel("sol", true)).toBe("gpt-5.6-sol");
+  expect(resolveSpawnModel("terra", false)).toBe("gpt-5.6-terra");
+  expect(resolveSpawnModel("luna")).toBe("gpt-5.6-luna");
 });
 
 /**

@@ -12,6 +12,7 @@ import { rpcCall } from "./daemon/rpc.ts";
 import { Tmux } from "./daemon/tmux.ts";
 import { killGraphViewers } from "./graph-viewers.ts";
 import { fileURLToPath } from "node:url";
+import { resolveMcpLaunch } from "./mcp-bin.ts";
 
 const program = new Command();
 program
@@ -64,7 +65,7 @@ program
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .option(
     "-m, --model <model>",
-    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-5 | sonnet-5-1m | haiku-4.5 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m | fable-5 (or a raw claude-* id)",
+    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-5 | sonnet-5-1m | haiku-4.5 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m | fable-5 | sol | terra | luna (or a raw claude-*/gpt-5.6-* id). Note: main always stays on Claude — a Codex fleet override applies to :so and other spawnable agents",
   )
   .option(
     "--max-agents <n>",
@@ -242,8 +243,11 @@ program
       prompt: kickoffPrompt(brief),
       interactive: true,
       model: fleetModel,
+      // Orchestrator always runs on Claude Code — Codex is spawn-only for sub-agents.
+      runtime: "claude",
       plain,
       claudeSessionId: orchestratorSessionId,
+      sessionId: orchestratorSessionId,
       projectBrief: brief ? { name: brief.name, slug: brief.slug, body: brief.body } : undefined,
     });
     const consoleArgv = resolveChild("console");
@@ -1230,10 +1234,10 @@ function scaffoldCharmDir(
   // import), not just charm-spawned agents.
   ensureRootClaudeImport(paths);
 
-  const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
+  const { command: mcpCommand, args: mcpArgs } = resolveMcpLaunch();
   const mcpConfig = {
     mcpServers: {
-      charm: { command: mcpBin, args: [], env: {} },
+      charm: { command: mcpCommand, args: mcpArgs, env: {} },
     },
   };
   if (!existsSync(paths.mcpConfig) || refresh) {

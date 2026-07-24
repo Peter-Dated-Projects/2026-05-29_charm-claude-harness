@@ -4,16 +4,21 @@ Each agent charm spawns runs on a model chosen by its **type** — the kind of w
 There is no fleet-wide "mode" to pick; the per-type defaults below apply out of the box, and
 you only reach for an override when you want something other than the default.
 
+Charm hosts agents on two runtimes behind a hexagonal port (`src/runtime/`):
+
+- **Claude Code** (`claude`) — default for most roles; required for the main orchestrator
+- **Codex CLI** (`codex`) — default for `:so` (terra); also available when a spawn picks `sol` / `terra` / `luna`
+
 ## Per-type model defaults
 
-| Agent | Spawned by | Model | Context |
-|---|---|---|---|
-| Orchestrator (main) | `charm start` | `sonnet-5` | **1M** |
-| Suborchestrator | `:so` | `opus-4.8` | 200K |
-| Investigator | `spawn_investigators` | `opus-4.8` | 200K |
-| Worker (coding) | `spawn_workers` | `opus-4.8` | **1M** |
-| Tester (review) | `request_review` | `sonnet-5` | 200K |
-| Researcher | `spawn_researchers` | `sonnet-5` | **1M** |
+| Agent | Spawned by | Model | Runtime | Context |
+|---|---|---|---|---|
+| Orchestrator (main) | `charm start` | `sonnet-5` | Claude | **1M** |
+| Suborchestrator | `:so` | `terra` (GPT-5.6) | Codex | — |
+| Investigator | `spawn_investigators` | `opus-4.8` | Claude | 200K |
+| Worker (coding) | `spawn_workers` | `opus-4.8` | Claude | **1M** |
+| Tester (review) | `request_review` | `sonnet-5` | Claude | 200K |
+| Researcher | `spawn_researchers` | `sonnet-5` | Claude | **1M** |
 
 The reasoning-heavy sub-agent roles (investigation, coding) run on Opus; the higher-volume,
 tighter-scope roles (review, broad research) run on Sonnet. The orchestrator itself runs on
@@ -26,16 +31,19 @@ likely to need the headroom.
 
 ### Per spawn (orchestrator)
 
-The orchestrator can override the model for a single `spawn_*` call — no env vars, no restart —
-by passing two optional params on `spawn_workers`, `spawn_investigators`, or `spawn_researchers`:
+The orchestrator can override the model for a single `spawn_*` / `request_review` call — no env
+vars, no restart — by passing two optional params:
 
-- `model`: the family — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), or `opus` (Opus 4.8). Omit it to
-  keep the role's default.
+- `model`: the family —
+  - Claude: `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 4.8)
+  - Codex: `sol`, `terra`, `luna` (all GPT-5.6)
+  Omit it to keep the role's default (Claude).
 - `context_1m`: use the 1M-token window (default `true`, the preferred window). Only applies when
-  `model` is set, and is ignored for families with no 1M variant (Haiku), which always resolve to
-  their base id rather than a bogus `...[1m]`.
+  `model` is a Claude family that offers one — ignored for Haiku and all Codex families.
 
-This applies to that one batch only; it does not change the role defaults or the fleet override.
+Picking `sol` / `terra` / `luna` routes that agent through the Codex adapter (same Charm MCP
+tools, unattended permissions, instruction injection, native subagent tools disabled). The
+main orchestrator always stays on Claude. `:so` defaults to Codex terra.
 
 ### Fleet / role (operator)
 
@@ -44,14 +52,16 @@ Two operator-level overrides, highest precedence first:
 1. **Per-role**, via the `CHARM_MODEL_<ROLE>` env var — overrides one role's model:
 
    ```sh
-   CHARM_MODEL_WORKER=opus-4.7 charm start --project   # workers on Opus 4.7, everything else default
+   CHARM_MODEL_WORKER=sol charm start --project   # workers on GPT-5.6 Sol (Codex)
    ```
 
 2. **Whole fleet**, via `-m, --model <model>` on `charm start` — replaces the per-type defaults
-   for the orchestrator *and* every sub-agent:
+   for spawnable agents including `:so`. Main still resolves to its Claude default if the
+   override is a Codex model:
 
    ```sh
-   charm start -m opus-4.8 --project   # every agent on Opus 4.8
+   charm start -m opus-4.8 --project   # Claude fleet on Opus 4.8
+   charm start -m sol --project        # Codex Sol for :so + sub-agents; main stays Claude
    ```
 
 Accepted `<model>` values:
@@ -62,9 +72,18 @@ haiku-4.5
 opus-4.7   opus-4.7-1m
 opus-4.8   opus-4.8-1m
 fable-5
+sol        terra        luna          # Codex GPT-5.6 (aliases: sol-5.6, terra-5.6, luna-5.6)
 ```
 
-You can also pass a raw `claude-*` model id (e.g. `claude-haiku-4-5-20251001`). The `haiku-4.5`
-alias is handy for low-cost runs — the [preflight sweep](../developing/preflight.md) uses it to
-smoke-test the harness cheaply. The `-1m` variants select the 1M-token context window for that
-model; only families that offer one (Sonnet, Opus) have a `-1m` variant.
+You can also pass a raw `claude-*` or `gpt-5.6-*` model id. The `haiku-4.5` alias is handy for
+low-cost Claude runs — the [preflight sweep](../developing/preflight.md) uses it to smoke-test
+the harness cheaply. The `-1m` variants select the 1M-token context window for Claude families
+that offer one.
+
+## Runtime notes
+
+- Non-orchestrator agents do not keep chat history (Claude: `CLAUDE_CODE_SKIP_PROMPT_HISTORY`;
+  Codex: isolated per-agent `CODEX_HOME` under the session run dir).
+- Claude's built-in Workflow tool stays enabled by default (`CHARM_WORKFLOW_ENABLE=0` opts out).
+  Codex native multi-agent / `spawn_agent` tools are disabled so Charm MCP owns fan-out.
+- See `src/runtime/` for the port (`AgentRuntime`) and the Claude / Codex adapters.

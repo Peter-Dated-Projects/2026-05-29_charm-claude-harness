@@ -14,9 +14,10 @@ import { buildLayoutString, shouldHideSubagents } from "./layout.ts";
 import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, prettyModel, resolveSpawnModel, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, prettyModel, resolveSpawnModel, runtimeKindForRole, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
+import { resolveMcpLaunch } from "../mcp-bin.ts";
 import {
   CreateTicketsInput,
   CreateProposalInput,
@@ -35,6 +36,7 @@ import {
   KillAgentInput,
   CancelTicketInput,
   ContinueAgentInput,
+  MessageAgentInput,
   CreateWorktreeInput,
   ListWorktreesInput,
   CloseWorktreeInput,
@@ -180,10 +182,10 @@ async function main() {
   // different instances. Without this, all sessions share the one charm-mcp that
   // was started first — closing session A kills it and breaks every other session.
   {
-    const mcpBin = process.env.CHARM_MCP_BIN ?? "charm-mcp";
+    const { command, args } = resolveMcpLaunch();
     const cfg = {
       mcpServers: {
-        charm: { command: mcpBin, args: [], env: { CHARM_SOCKET: paths.socket } },
+        charm: { command, args, env: { CHARM_SOCKET: paths.socket } },
       },
     };
     writeFileSync(paths.sessionMcpConfig, JSON.stringify(cfg, null, 2) + "\n");
@@ -549,6 +551,40 @@ async function main() {
   }
   const clampConsole = () => withLayoutLock(clampConsoleLocked);
 
+  /** Keep fleet metadata useful and bounded for MCP/console rendering. */
+  function conciseGoal(value: string): string {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    return normalized.length <= 200 ? normalized : `${normalized.slice(0, 197).trimEnd()}...`;
+  }
+
+  /** Derive a standalone goal when the caller did not provide one explicitly. */
+  function goalForSpawn(spec: SpawnSpec): string {
+    if (spec.goal?.trim()) return conciseGoal(spec.goal);
+
+    if (spec.ticket_id) {
+      const title = store.read(spec.ticket_id)?.frontmatter.title ?? spec.ticket_id;
+      const verb =
+        spec.role === "investigator"
+          ? "Investigate"
+          : spec.role === "tester"
+            ? "Review"
+            : spec.role === "worker"
+              ? "Implement"
+              : "Work on";
+      return conciseGoal(`${verb}: ${title}`);
+    }
+
+    if (spec.prompt.trim()) {
+      const verb = spec.role === "researcher" ? "Research" : "Complete";
+      return conciseGoal(`${verb}: ${spec.prompt}`);
+    }
+
+    if (spec.role === "suborchestrator") {
+      return "Misc. agent to help the operator with ad-hoc work";
+    }
+    return conciseGoal(`${spec.role} agent`);
+  }
+
   // The core spawn, assuming the caller already holds the layout lock. This is
   // the read-solve-spawn critical section's building block: registry.create()
   // immediately flips the new agent to `spawning`, and because inFlight() counts
@@ -580,15 +616,22 @@ async function main() {
     // on the child so the status RPC can derive the agent hierarchy. Passed as a
     // separate arg rather than on SpawnSpec to keep the spec type (in spawn.ts)
     // untouched.
-    const agent = registry.create({ role: spec.role, ticket_id: spec.ticket_id, parent_id: parentId, claude_session_id: claudeSessionId });
+    const agent = registry.create({
+      role: spec.role,
+      ticket_id: spec.ticket_id,
+      goal: goalForSpawn(spec),
+      parent_id: parentId,
+      claude_session_id: claudeSessionId,
+    });
     try {
-      const resolved: SpawnSpec = { ...spec, model: spec.model ?? defaultModelForRole(spec.role), claudeSessionId };
+      const model = spec.model ?? defaultModelForRole(spec.role);
+      const runtime = spec.runtime ?? runtimeKindForRole(spec.role, model);
+      const resolved: SpawnSpec = { ...spec, model, runtime, claudeSessionId, sessionId: claudeSessionId };
       const cmd = buildClaudeCommand(paths, agent.id, resolved);
-      // Pre-approve the agent's working directory BEFORE launching. NON-NEGOTIABLE:
-      // an unattended agent in an untrusted dir hangs forever on Claude Code's "Do
-      // you trust this directory?" dialog — `--permission-mode auto` does NOT skip
-      // it. paths.root is already trusted at boot, so only a worktree cwd needs it.
-      if (spec.cwd && spec.cwd !== paths.root) ensureDirectoryTrusted(spec.cwd);
+      // Pre-approve the agent's working directory BEFORE launching. Claude agents
+      // hang forever on the trust dialog without this; Codex uses danger-full-access
+      // and is a no-op in its adapter. paths.root is already trusted at boot.
+      if (spec.cwd && spec.cwd !== paths.root) ensureDirectoryTrusted(spec.cwd, runtime);
       // Split the ORCHESTRATOR pane specifically, NOT the window. Two reasons:
       //   1. Pinning to a pane in this session's window keeps the new pane out of
       //      another live charm session's window (a bare `split-window` with no `-t`
@@ -1175,6 +1218,7 @@ async function main() {
           .filter((a) => a.role === "suborchestrator")
           .map((so) => ({
             id: so.id,
+            goal: so.goal,
             worktree: so.worktree_name,
             status: so.state,
             agent_count: agents.filter((a) => a.parent_id === so.id).length,
@@ -1831,6 +1875,53 @@ async function main() {
         refreshCoordination();
         return { ok: true, continued: target.id };
       }
+      case "message_agent": {
+        const input = MessageAgentInput.parse(params);
+        const callerRole = resolveCaller(input.caller_id);
+        if (
+          callerRole !== "operator" &&
+          callerRole !== "main" &&
+          callerRole !== "suborchestrator"
+        ) {
+          throw new Error(
+            `agent ${input.caller_id} (${callerRole}) may not message other agents; that requires an orchestrator`,
+          );
+        }
+        if (input.agent_id === MAIN_AGENT_ID) {
+          throw new Error("message_agent targets sub-agents, not the main orchestrator");
+        }
+        const target = registry.get(input.agent_id);
+        if (!target) throw new Error(`unknown agent: ${input.agent_id}`);
+        if (target.state === "done" || target.state === "failed") {
+          throw new Error(
+            `agent ${target.id} is ${target.state} and is being reaped; spawn a new agent for follow-up work`,
+          );
+        }
+        if (!target.pane_id) {
+          throw new Error(`agent ${target.id} has no pane yet; retry once it is attached`);
+        }
+        if (!tmuxAvailable || !(await tmux.paneAlive(target.pane_id))) {
+          throw new Error(`agent ${target.id}'s pane is gone — it may have exited; kill_agent and respawn instead`);
+        }
+
+        await tmux.sendText(target.pane_id, `[charm] Orchestrator: ${input.message}`);
+        const wasBlocked = target.state === "blocked";
+        if (wasBlocked) registry.setState(target.id, "running");
+        if (target.ticket_id) {
+          store.appendLog(target.ticket_id, {
+            agent: input.caller_id ?? "operator",
+            kind: `message -> ${target.id}`,
+            text: input.message,
+          });
+        }
+        if (wasBlocked) refreshCoordination();
+        return {
+          ok: true,
+          messaged: target.id,
+          previous_state: target.state,
+          state: wasBlocked ? "running" : target.state,
+        };
+      }
       case "orchestrator_pane":
         // The exact pane id the daemon tracks as the orchestrator (main agent).
         // `charm resume` reads this to relaunch the orchestrator IN its own pane
@@ -1844,6 +1935,7 @@ async function main() {
           role: a.role,
           state: a.state,
           ticket_id: a.ticket_id,
+          goal: a.goal,
         }));
       case "set_session_description": {
         const input = SetSessionDescriptionInput.parse(params);
@@ -1910,15 +2002,24 @@ async function main() {
         // window layout, the same shared state every other spawn touches, so it must
         // not interleave with a concurrent spawn or relayout.
         return withLayoutLock(async () => {
-          const agent = registry.create({ role: "suborchestrator", ticket_id: null, parent_id: soParentId, claude_session_id: claudeSessionId });
+          const agent = registry.create({
+            role: "suborchestrator",
+            ticket_id: null,
+            goal: "Misc. agent to help the operator with ad-hoc work",
+            parent_id: soParentId,
+            claude_session_id: claudeSessionId,
+          });
           const model = defaultModelForRole("suborchestrator");
           const cmd = buildClaudeCommand(paths, agent.id, {
             role: "suborchestrator",
             ticket_id: null,
             prompt: "",
             interactive: true,
+            // Default is Codex GPT-5.6 Terra (see DEFAULT_MODEL_BY_ROLE).
             model,
+            runtime: "codex",
             claudeSessionId,
+            sessionId: claudeSessionId,
           });
           try {
             // Split the ORCHESTRATOR pane, exactly like every sub-agent spawn (see
@@ -1962,16 +2063,18 @@ async function main() {
         const input = RequestReviewInput.parse(params);
         assertOrchestrator(input.caller_id, "request_review");
         const reviewCwd = resolveSpawnCwd(input.worktree);
+        const reviewModel = input.model ? resolveSpawnModel(input.model, input.context_1m ?? true) : undefined;
         const id = await spawnAgent({
           role: "tester",
           ticket_id: input.ticket_id,
           prompt: `Read ${ticketReadPath(input.ticket_id, reviewCwd)} and validate it.`,
           cwd: reviewCwd,
+          model: reviewModel,
           // Interactive, same as investigators (and workers): a tester that can't run
           // the validation — unclear acceptance criteria, the diff doesn't match the
           // ticket, a broken environment — must report_status('blocked') and WAIT
           // for the orchestrator to message guidance into its live pane via
-          // continue_agent. A one-shot `claude -p` couldn't be resumed. As with
+          // continue_agent. A one-shot headless run couldn't be resumed. As with
           // investigators, the prompt requires a terminal report_status('done'/'failed')
           // so the orchestrator is pinged and reaps the otherwise-idle pane.
           interactive: true,

@@ -41,13 +41,20 @@ export class AgentRegistry {
   private claudeSessions = new Map<string, string>();
   private seq = 0;
 
-  create(opts: { role: AgentRole; ticket_id: string | null; parent_id?: string | null; claude_session_id?: string }): Agent {
+  create(opts: {
+    role: AgentRole;
+    ticket_id: string | null;
+    goal?: string;
+    parent_id?: string | null;
+    claude_session_id?: string;
+  }): Agent {
     this.seq += 1;
     const id = `${opts.role}-${String(this.seq).padStart(3, "0")}`;
     const agent: Agent = {
       id,
       role: opts.role,
       ticket_id: opts.ticket_id,
+      goal: opts.goal?.trim() ?? "",
       // The agent that authorized this spawn (the spawning orchestrator's id), or
       // null for the root orchestrator / operator-spawned agents. Optional in the
       // opts so existing callers that don't track a parent keep working; the

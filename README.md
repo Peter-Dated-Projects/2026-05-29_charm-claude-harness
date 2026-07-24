@@ -198,11 +198,17 @@ worker-ticket plan, approve that plan, and watch workers fan out. Inside the ses
 suborchestrator.
 
 Each agent runs on a model chosen by its type (coding/investigation on Opus, review/research
-on Sonnet); override the whole fleet with `-m`:
+on Sonnet by default). Override the whole fleet with `-m`, or spawn Codex GPT-5.6 workers with
+`sol` / `terra` / `luna` on `spawn_*`:
 
 ```sh
-./charm.sh start -m opus-4.8 --project  # every agent on one model, overriding the per-type defaults
+./charm.sh start -m opus-4.8 --project  # Claude fleet on one model, overriding the per-type defaults
+# from the orchestrator: spawn_workers({ ticket_ids: [...], model: "sol" })  # Codex GPT-5.6 Sol
 ```
+
+Agent CLIs sit behind a hexagonal runtime port (`src/runtime/`): Claude Code hosts the main
+orchestrator by default; `:so` defaults to Codex terra; workers/investigators/etc. can opt
+into Codex via `sol` / `terra` / `luna` on `spawn_*`.
 
 Install globally (build + place binaries and templates on PATH at `~/.local/bin`, and
 install the `charm:*` Claude Code skills plugin into `~/.claude/skills/charm/`):
@@ -236,6 +242,7 @@ src/
   graph-viewers.ts    graph-viewer process management
   daemon/             charmd: index, rpc, registry, solver, coord, tmux, layout,
                       spawn, approvals
+  runtime/            hexagonal agent-runtime port (Claude + Codex adapters)
   mcp/server.ts       charm-mcp stdio MCP server
   store/tickets.ts    gray-matter + bun:sqlite ticket store
   console/            Ink TUI: app, markdown, graph, mouse

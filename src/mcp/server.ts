@@ -33,16 +33,16 @@ function ok(payload: unknown) {
 // Shared per-spawn model controls for every spawn_* tool. Omit `model` to keep the
 // role's default; set it to pick a family, and `context_1m` to pick the window.
 const MODEL_PARAM = z
-  .enum(["sonnet", "haiku", "opus"])
+  .enum(["sonnet", "haiku", "opus", "sol", "terra", "luna"])
   .optional()
   .describe(
-    "Optional: the model family for the spawned agent(s) — sonnet (Sonnet 5), haiku (Haiku 4.5), or opus (Opus 4.8). Omit to use this role's default model.",
+    "Optional: model family for the spawned agent(s). Claude: sonnet (Sonnet 5), haiku (Haiku 4.5), opus (Opus 4.8). Codex: sol / terra / luna (all GPT-5.6). Omit to use this role's default (Claude) model.",
   );
 const CONTEXT_1M_PARAM = z
   .boolean()
   .optional()
   .describe(
-    "Optional: use the 1M-token context window (default true). Only applies when `model` is set; ignored for families without a 1M window (Haiku).",
+    "Optional: use the 1M-token context window (default true). Only applies when `model` is a Claude family that offers one; ignored for Haiku and all Codex families (sol/terra/luna).",
   );
 
 const server = new McpServer({ name: "charm-mcp", version: "0.0.1" });
@@ -371,7 +371,7 @@ server.registerTool(
 server.registerTool(
   "request_review",
   {
-    description: "Worker-only: spawn a tester agent on a finished ticket.",
+    description: "Spawn a tester agent on a finished ticket.",
     inputSchema: {
       ticket_id: z.string(),
       worktree: z
@@ -380,6 +380,8 @@ server.registerTool(
         .describe(
           "Optional: the plain name of an already-open worktree to run the tester in. A tester validating a worker that ran in a worktree needs the same checkout to see its commit. Omit for the default shared tree.",
         ),
+      model: MODEL_PARAM,
+      context_1m: CONTEXT_1M_PARAM,
     },
   },
   async (args) => ok(await call("request_review", { caller_id: AGENT_ID, ...args })),
@@ -389,7 +391,8 @@ server.registerTool(
   "list_agents",
   {
     description:
-      "List every live sub-agent the daemon is tracking (id, role, state, ticket_id). " +
+      "List every live sub-agent the daemon is tracking (id, role, state, ticket_id, goal). " +
+      "The concise goal explains what each agent is trying to accomplish without opening its ticket. " +
       "Use this before kill_agent to see exactly which agents exist and their ids. " +
       "The orchestrator (main agent) is not listed and cannot be killed.",
     inputSchema: {},
@@ -414,6 +417,26 @@ server.registerTool(
   async (args) => {
     if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
     return ok(await call("kill_agent", { caller_id: AGENT_ID, agent_id: args.agent_id }));
+  },
+);
+
+server.registerTool(
+  "message_agent",
+  {
+    description:
+      "Send guidance or a course correction to any live sub-agent, whether it is spawning, running, or blocked. " +
+      "The message is submitted directly to the agent's interactive pane. A blocked agent is woken and returned " +
+      "to running; a spawning or running agent keeps its current state. Use this to steer work without waiting " +
+      "for the agent to report blocked. Terminal done/failed agents are already being reaped and cannot be messaged. " +
+      "Available to the main orchestrator and suborchestrators.",
+    inputSchema: {
+      agent_id: z.string(),
+      message: z.string().min(1),
+    },
+  },
+  async (args) => {
+    if (!AGENT_ID) throw new Error("CHARM_AGENT_ID not set");
+    return ok(await call("message_agent", { caller_id: AGENT_ID, ...args }));
   },
 );
 

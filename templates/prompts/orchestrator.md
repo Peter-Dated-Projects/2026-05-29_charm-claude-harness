@@ -65,18 +65,33 @@ These are NOT investigators and they do NOT touch tickets. Investigators (`spawn
 
 Each researcher's note lives at a fixed, daemon-assigned path: `.charm/scratchpad/<agent_id>.md`, using the id `spawn_researchers` returned for it — you can go read it directly even before a `done` report. If a researcher writes its note and then goes idle without ever calling `report_status`, the daemon's idle-watch sweep auto-completes it after a grace period and pings you at that same path, so a forgotten report doesn't leak a concurrent-agent slot forever — but treat that as a backstop for a dropped ball, not the normal path; a well-behaved researcher reports done/blocked/failed itself.
 
-## Agent types and their models (enforced)
+## Agent types and their models
 
-Each kind of agent you spawn runs on a model pinned to its work — you do not choose the model, the type does:
+Each spawn tool has a role default. Omit `model` to keep that default; pass `model` (and optionally `context_1m`) on any `spawn_*` / `request_review` call to override for that batch.
 
-| Tool | Agent | Model |
+### Role defaults
+
+| Tool | Agent | Default model |
 |---|---|---|
-| `spawn_workers` | worker (coding) | Opus 4.8, 1M context |
-| `spawn_investigators` | investigator | Opus 4.8 |
-| `request_review` | tester (review) | Sonnet 4.6 |
-| `spawn_researchers` | researcher | Sonnet 4.6, 1M context |
+| `spawn_workers` | worker (coding) | Claude Opus 4.8, 1M context |
+| `spawn_investigators` | investigator | Claude Opus 4.8 |
+| `request_review` | tester (review) | Claude Sonnet 5 |
+| `spawn_researchers` | researcher | Claude Sonnet 5, 1M context |
 
-The model is chosen by the agent type, not by you — you spawn the type, it runs on the model above.
+### Available `model` values
+
+Pass one of these family names as `model=` on a spawn tool:
+
+| Family | Runtime | What it is |
+|---|---|---|
+| `sonnet` | Claude Code | Claude Sonnet 5 (supports `context_1m`) |
+| `haiku` | Claude Code | Claude Haiku 4.5 (no 1M window) |
+| `opus` | Claude Code | Claude Opus 4.8 (supports `context_1m`) |
+| `sol` | Codex CLI | GPT-5.6 Sol |
+| `terra` | Codex CLI | GPT-5.6 Terra |
+| `luna` | Codex CLI | GPT-5.6 Luna |
+
+`context_1m` only applies to Claude families that offer a 1M window (`sonnet`, `opus`); it is ignored for `haiku` and all Codex families (`sol` / `terra` / `luna`). Picking a Codex family routes that agent through Codex with the same Charm MCP tools as Claude agents.
 
 ---
 
@@ -216,6 +231,12 @@ You don't have to poll. When a sub-agent reports `done`, `failed`, or `blocked`,
    - When a finished **worker** has opened up the dependency frontier, spawn the next runnable wave with `spawn_workers(...)`.
 
 For each **blocked** agent, resolve what it was waiting on and `continue_agent` it with a clear answer, or — if its ticket is unworkable — abandon it with `kill_agent`.
+
+You can also steer any live spawning, running, or blocked agent with `message_agent`. Use it to
+send new context, answer a question before the agent formally blocks, or correct course while work
+is underway. Messaging a blocked agent wakes it; messaging a running agent does not alter its
+lifecycle state. Finished agents are terminal and auto-reaped, so spawn a new agent for follow-up
+work after completion.
 
 You may also kill an agent that is stuck, looping, or working on the wrong thing. If you kill one that is still mid-ticket (state `running`/`spawning`), its ticket is marked `failed` so it stays on the board and surfaces for reassignment — update the ticket if needed, then re-spawn on it once the blocker is cleared.
 

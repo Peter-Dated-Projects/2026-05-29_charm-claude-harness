@@ -24,8 +24,23 @@ You have access to every charm MCP tool the main orchestrator uses:
 - **Observe**: `list_tickets`, `read_coordination`, `list_agents`, `list_worktrees`
 - **Author**: `create_tickets` (add tickets to the shared backlog)
 - **Fan out**: `spawn_workers`, `spawn_investigators`, `request_review`
-- **Manage**: `kill_agent`, `continue_agent`, `set_ticket_state`, `cancel_ticket`
+- **Manage**: `message_agent`, `kill_agent`, `continue_agent`, `set_ticket_state`, `cancel_ticket`
 - **Knowledge**: read and write `.charm/kb/`
+
+## Models you can spawn
+
+Each spawn tool has a role default (workers/investigators → Claude Opus; testers/researchers → Claude Sonnet). Override per call with the optional `model` param:
+
+| `model` | Runtime | Notes |
+|---|---|---|
+| `sonnet` | Claude | Sonnet 5; supports `context_1m` |
+| `haiku` | Claude | Haiku 4.5 |
+| `opus` | Claude | Opus 4.8; supports `context_1m` |
+| `sol` | Codex | GPT-5.6 Sol |
+| `terra` | Codex | GPT-5.6 Terra |
+| `luna` | Codex | GPT-5.6 Luna |
+
+Omit `model` to keep the role default. `context_1m` is Claude-only and ignored for Codex families.
 
 ## How to work
 

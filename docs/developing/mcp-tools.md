@@ -217,8 +217,10 @@ teardown. `running`/`spawning` are daemon-managed and not self-reportable.
 ### `list_agents`
 
 **Caller:** any. **Effect:** list every live sub-agent the daemon is tracking (id, role, state,
-`ticket_id`). The orchestrator (main agent) is not listed and cannot be killed. Call this
-before `kill_agent`/`continue_agent` to get valid ids. No parameters.
+`ticket_id`, `goal`). `goal` is a concise description derived from the ticket title or launch
+prompt, so fleet inspection does not require opening every ticket. The orchestrator (main agent)
+is not listed and cannot be killed. Call this before `kill_agent`/`message_agent`/`continue_agent` to get valid
+ids. No parameters.
 
 ### `set_session_description`
 
@@ -264,6 +266,18 @@ killing and respawning. The target must be a live sub-agent currently in the `bl
 | Param | Type | Required | Notes |
 |---|---|---|---|
 | `agent_id` | string | yes | The blocked sub-agent to resume. |
+| `message` | string (non-empty) | yes | Sent into the agent's pane. |
+
+### `message_agent`
+
+**Caller:** main orchestrator or suborchestrator. **Effect:** send guidance or a course correction
+to any live sub-agent without waiting for it to report `blocked`. Spawning and running agents keep
+their current state; messaging a blocked agent wakes it and changes its state to `running`.
+Done/failed agents are terminal and being auto-reaped, so follow-up work requires a new agent.
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `agent_id` | string | yes | Any live sub-agent with an attached pane. |
 | `message` | string (non-empty) | yes | Sent into the agent's pane. |
 
 ### `cancel_ticket`
