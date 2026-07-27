@@ -61,7 +61,12 @@ Inside the tmux session, the `:` key opens a command prompt:
 
 - `:q` — quit this charm (tears down only the session you pressed it in).
 - `:a` — detach from the tmux session (it keeps running; re-`attach` later).
-- `:so` — spawn a suborchestrator (an operator-facing agent with orchestrator-level tools).
+- `:so` / `:so c` — spawn a Claude Sonnet suborchestrator (the default).
+- `:so g` — spawn a GPT Terra suborchestrator.
+- `:cursor` / `:so u` — spawn an operator-only Cursor specialist pane (a bare
+  Cursor CLI session in the project root for fast research/navigation). It joins
+  the grid and counts toward `--max-agents`, but it is **not** a fleet subagent:
+  no Charm MCP, no tickets, no coordination.
 
 The complete keymap is in [Console keybindings](keybindings.md).
 

@@ -26,6 +26,7 @@ export {
   resolveModel,
   resolveSpawnModel,
   defaultModelForRole,
+  suborchestratorModelForRuntime,
   defaultThinkingForRole,
   defaultThinkingTokens,
   reasoningEffortForRole,

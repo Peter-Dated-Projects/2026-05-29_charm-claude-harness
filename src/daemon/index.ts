@@ -14,7 +14,7 @@ import { buildLayoutString, shouldHideSubagents } from "./layout.ts";
 import { WorktreeManager } from "./worktree.ts";
 import { ApprovalQueue } from "./approvals.ts";
 import { startRpcServer } from "./rpc.ts";
-import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, prettyModel, resolveSpawnModel, runtimeKindForRole, type SpawnSpec } from "./spawn.ts";
+import { buildClaudeCommand, defaultModelForRole, ensureDirectoryTrusted, MAIN_AGENT_ID, newClaudeSessionId, prettyModel, resolveSpawnModel, runtimeKindForRole, suborchestratorModelForRuntime, type SpawnSpec } from "./spawn.ts";
 import { killGraphViewers } from "../graph-viewers.ts";
 import { createProposal, listProposals, finishProposal } from "../store/proposals.ts";
 import { resolveMcpLaunch } from "../mcp-bin.ts";
@@ -582,6 +582,9 @@ async function main() {
     if (spec.role === "suborchestrator") {
       return "Misc. agent to help the operator with ad-hoc work";
     }
+    if (spec.role === "cursor") {
+      return "Operator Cursor specialist";
+    }
     return conciseGoal(`${spec.role} agent`);
   }
 
@@ -622,6 +625,7 @@ async function main() {
       goal: goalForSpawn(spec),
       parent_id: parentId,
       claude_session_id: claudeSessionId,
+      model: spec.model ?? defaultModelForRole(spec.role),
     });
     try {
       const model = spec.model ?? defaultModelForRole(spec.role);
@@ -1600,6 +1604,31 @@ async function main() {
       }
       case "read_coordination":
         return { text: coord.read() };
+      case "report_model": {
+        // Claude statusLine hook (`charm report-model`): keep the pane border and
+        // Agents tab in sync when an operator switches models mid-session
+        // (/model). Soft-fail on unknown agents so a stale hook never breaks
+        // Claude's statusLine. Main is not a registry citizen — stamp its pane
+        // directly. Never throws on cosmetic tmux failures.
+        const p = (params ?? {}) as { agent_id?: unknown; model?: unknown };
+        const agentId = typeof p.agent_id === "string" ? p.agent_id.trim() : "";
+        const modelRaw = typeof p.model === "string" ? p.model.trim() : "";
+        if (!agentId || !modelRaw) return { ok: true, unchanged: true };
+        const label = prettyModel(modelRaw);
+        if (agentId === MAIN_AGENT_ID) {
+          if (orchestratorPaneId) {
+            try { await tmux.setPaneModel(orchestratorPaneId, label); } catch { /* cosmetic */ }
+          }
+          return { ok: true, model: modelRaw };
+        }
+        const existing = registry.get(agentId);
+        if (!existing) return { ok: true, unknown: true };
+        const { agent, changed } = registry.setModel(agentId, modelRaw);
+        if (changed && agent.pane_id) {
+          try { await tmux.setPaneModel(agent.pane_id, label); } catch { /* cosmetic */ }
+        }
+        return { ok: true, changed, model: agent.model };
+      }
       case "report_status": {
         const input = ReportStatusInput.parse(params);
         const a = registry.setState(input.agent_id, input.state, input.note);
@@ -1994,6 +2023,10 @@ async function main() {
         // permissions — it can observe the fleet, author tickets, and spawn workers
         // on the operator's behalf while the main orchestrator continues its work.
         const claudeSessionId = newClaudeSessionId();
+        const requestedRuntime =
+          (params as { runtime?: unknown } | undefined)?.runtime === "codex"
+            ? "codex"
+            : "claude";
         // Record the authorizing caller as the parent. Normally the operator
         // (`:so`/`:sub` tmux command, no caller_id -> null); a main-orchestrator caller
         // would pass its id and become the parent edge.
@@ -2002,22 +2035,22 @@ async function main() {
         // window layout, the same shared state every other spawn touches, so it must
         // not interleave with a concurrent spawn or relayout.
         return withLayoutLock(async () => {
+          const model = suborchestratorModelForRuntime(requestedRuntime);
           const agent = registry.create({
             role: "suborchestrator",
             ticket_id: null,
             goal: "Misc. agent to help the operator with ad-hoc work",
             parent_id: soParentId,
             claude_session_id: claudeSessionId,
+            model,
           });
-          const model = defaultModelForRole("suborchestrator");
           const cmd = buildClaudeCommand(paths, agent.id, {
             role: "suborchestrator",
             ticket_id: null,
             prompt: "",
             interactive: true,
-            // Default is Codex GPT-5.6 Terra (see DEFAULT_MODEL_BY_ROLE).
             model,
-            runtime: "codex",
+            runtime: requestedRuntime,
             claudeSessionId,
             sessionId: claudeSessionId,
           });
@@ -2048,6 +2081,73 @@ async function main() {
           } catch (e) {
             // Same rollback as spawnAgentLocked: drop the stranded pane + registry
             // entry so a failed spawn doesn't hold a slot or leave a zombie pane.
+            const stranded = registry.get(agent.id);
+            if (stranded?.pane_id) {
+              try { await tmux.killPane(stranded.pane_id); } catch { /* best effort */ }
+              const i = agentPaneIds.indexOf(stranded.pane_id);
+              if (i >= 0) agentPaneIds.splice(i, 1);
+            }
+            registry.remove(agent.id);
+            throw e;
+          }
+        });
+      }
+      case "spawn_cursor": {
+        // Operator-only Cursor specialist pane (`:cursor` / `:so u`). It joins
+        // the grid as a new pane in the main charm window — a grid citizen for
+        // UX (registry row, pane label, counts toward --max-agents, killable
+        // from the console) — but it is deliberately NOT a fleet citizen: the
+        // Cursor CLI launches bare, with NO Charm MCP, NO Charm prompt/tickets,
+        // and NO fleet coordination (see runtime/adapters/cursor.ts). It is not
+        // exposed as a Charm MCP spawn tool, so only the operator (via ctl) can
+        // reach this RPC; a main-orchestrator caller_id, if present, only
+        // records the parent edge.
+        const cursorParentId = (params as { caller_id?: string } | undefined)?.caller_id ?? null;
+        return withLayoutLock(async () => {
+          // Same cap chokepoint as every other pane: a Cursor pane occupies a
+          // live slot, so refuse once the ceiling is hit.
+          if (liveAgentCount() >= maxAgents) {
+            throw new Error(
+              `agent cap reached: ${liveAgentCount()}/${maxAgents} live (incl. orchestrator). ` +
+                `Wait for an agent to finish, or restart with a higher --max-agents.`,
+            );
+          }
+          const agent = registry.create({
+            role: "cursor",
+            ticket_id: null,
+            goal: "Operator Cursor specialist",
+            parent_id: cursorParentId,
+            claude_session_id: newClaudeSessionId(),
+            model: "cursor",
+          });
+          // No model is pinned — Cursor applies its own default; the pane label
+          // shows `cursor`.
+          const cmd = buildClaudeCommand(paths, agent.id, {
+            role: "cursor",
+            ticket_id: null,
+            prompt: "",
+            interactive: true,
+            runtime: "cursor",
+          });
+          try {
+            // Split the ORCHESTRATOR pane, exactly like the suborchestrator and
+            // sub-agent spawns, so the orchestrator keeps its reserved column.
+            const cursorSplitTarget = orchestratorPaneId ?? `${session}:${WINDOW}`;
+            const pane = await tmux.splitPane({ cmd, cwd: paths.root, direction: "h", target: cursorSplitTarget });
+            registry.attach(agent.id, { pane_id: pane });
+            try {
+              await tmux.setPaneLabel(pane, agent.id);
+              await tmux.setPaneModel(pane, prettyModel("cursor"));
+              await tmux.setPaneState(pane, agent.state);
+            } catch { /* border is cosmetic */ }
+            agentPaneIds.push(pane);
+            refreshCoordination();
+            await relayoutLocked();
+            // Focus the new pane so the operator can start talking to it.
+            tmux.selectPane(pane);
+            return { ok: true, agent_id: agent.id };
+          } catch (e) {
+            // Same rollback as spawnAgentLocked / spawn_suborchestrator.
             const stranded = registry.get(agent.id);
             if (stranded?.pane_id) {
               try { await tmux.killPane(stranded.pane_id); } catch { /* best effort */ }

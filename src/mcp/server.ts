@@ -36,7 +36,7 @@ const MODEL_PARAM = z
   .enum(["sonnet", "haiku", "opus", "sol", "terra", "luna"])
   .optional()
   .describe(
-    "Optional: model family for the spawned agent(s). Claude: sonnet (Sonnet 5), haiku (Haiku 4.5), opus (Opus 4.8). Codex: sol / terra / luna (all GPT-5.6). Omit to use this role's default (Claude) model.",
+    "Optional: model family for the spawned agent(s). Claude: sonnet (Sonnet 5), haiku (Haiku 4.5), opus (Opus 5). Codex: sol / terra / luna (all GPT-5.6). Omit to use this role's default (Claude) model.",
   );
 const CONTEXT_1M_PARAM = z
   .boolean()

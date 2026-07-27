@@ -140,8 +140,8 @@ These cannot be triggered by the agent. Run them against the live session.
   after the session is down (dir-scan fallback: name/path/branch, no agent column), to prove
   both paths. Open/close are MCP-only (`create_worktree`/`close_worktree`) — there is no CLI
   mutation, by design.
-- **In-session `:` commands** — `:so` to spawn a suborchestrator, `:a` to detach, `:q` to
-  tear down. After `:q`,
+- **In-session `:` commands** — verify `:so` / `:so c` spawn Claude Sonnet and `:so g`
+  spawns GPT Terra; use `:a` to detach and `:q` to tear down. After `:q`,
   confirm it killed **only** this UUID's panes and `run/<uuid>/` dir, leaving other
   charm/claude sessions untouched.
 - **Durable KB** — confirm `.charm/kb/` survives a full `:q` + fresh `start` in the same

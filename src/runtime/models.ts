@@ -18,7 +18,7 @@ export type ModelFamilySpec = {
 export const SPAWN_MODEL_FAMILIES = {
   sonnet: { id: "claude-sonnet-5", runtime: "claude", supports1m: true, display: "sonnet-5" },
   haiku: { id: "claude-haiku-4-5-20251001", runtime: "claude", supports1m: false, display: "haiku-4.5" },
-  opus: { id: "claude-opus-4-8", runtime: "claude", supports1m: true, display: "opus-4.8" },
+  opus: { id: "claude-opus-5", runtime: "claude", supports1m: true, display: "opus-5" },
   sol: { id: "gpt-5.6-sol", runtime: "codex", supports1m: false, display: "sol-5.6" },
   terra: { id: "gpt-5.6-terra", runtime: "codex", supports1m: false, display: "terra-5.6" },
   luna: { id: "gpt-5.6-luna", runtime: "codex", supports1m: false, display: "luna-5.6" },
@@ -35,10 +35,12 @@ export const MODEL_ALIASES: Record<string, string> = {
   "opus-4.7-1m": "claude-opus-4-7[1m]",
   "opus-4.8": "claude-opus-4-8",
   "opus-4.8-1m": "claude-opus-4-8[1m]",
+  "opus-5": "claude-opus-5",
+  "opus-5-1m": "claude-opus-5[1m]",
   "fable-5": "claude-fable-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5-20251001",
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5",
   // Codex GPT-5.6 lineup — the only Codex models Charm will launch.
   sol: "gpt-5.6-sol",
   terra: "gpt-5.6-terra",
@@ -53,12 +55,16 @@ export const MODEL_ALIASES: Record<string, string> = {
 
 export const DEFAULT_MODEL_BY_ROLE: Record<AgentRole, string> = {
   main: "sonnet-5-1m",
-  investigator: "opus-4.8",
-  worker: "opus-4.8-1m",
+  investigator: "opus-5",
+  worker: "opus-5-1m",
   tester: "sonnet-5",
   researcher: "sonnet-5-1m",
-  // :so runs on Codex GPT-5.6 Terra by default (main stays on Claude).
-  suborchestrator: "terra",
+  // Bare :so defaults to Claude Sonnet; `:so g` explicitly selects Codex Terra.
+  suborchestrator: "sonnet-5-1m",
+  // Cursor specialist pane omits --model so Cursor's own default applies; the
+  // "cursor" sentinel is treated as non-concrete by the Cursor adapter and the
+  // pane label. Never resolved through resolveModel (see defaultModelForRole).
+  cursor: "cursor",
 };
 
 export function resolveSpawnModel(family: SpawnModelFamily, context1m: boolean = true): string {
@@ -93,12 +99,17 @@ export function runtimeKindForModel(modelId: string): RuntimeKind {
  */
 export function runtimeKindForRole(role: AgentRole, modelId: string): RuntimeKind {
   if (role === "main") return "claude";
+  // The Cursor specialist pane is always hosted by the Cursor CLI, regardless
+  // of any model id in play.
+  if (role === "cursor") return "cursor";
   return runtimeKindForModel(modelId);
 }
 
 /** Compact pane label for known model ids. */
 export function prettyModel(id: string): string {
   const DISPLAY: Record<string, string> = {
+    "claude-opus-5": "opus-5",
+    "claude-opus-5[1m]": "opus-5 1m",
     "claude-opus-4-8": "opus-4.8",
     "claude-opus-4-8[1m]": "opus-4.8 1m",
     "claude-opus-4-7": "opus-4.7",
@@ -115,6 +126,11 @@ export function prettyModel(id: string): string {
 }
 
 export function defaultModelForRole(role: AgentRole): string {
+  // The Cursor specialist pane has no Charm-resolved model — it uses Cursor's
+  // own default. Return the sentinel directly so it never hits resolveModel
+  // (which would throw on the non-model "cursor") and ignore fleet/role env
+  // overrides, which target the Claude/Codex fleet, not this operator pane.
+  if (role === "cursor") return "cursor";
   const roleOverride = process.env[`CHARM_MODEL_${role.toUpperCase()}`];
   if (roleOverride) {
     const resolved = resolveModel(roleOverride);
@@ -135,6 +151,18 @@ export function defaultModelForRole(role: AgentRole): string {
   return resolveModel(DEFAULT_MODEL_BY_ROLE[role]);
 }
 
+/**
+ * Resolve the model for an operator-spawned suborchestrator while honoring
+ * same-runtime fleet/role overrides. An explicit runtime choice always wins:
+ * a Codex override cannot turn bare `:so` into GPT, and a Claude override
+ * cannot turn `:so g` into Claude.
+ */
+export function suborchestratorModelForRuntime(runtime: RuntimeKind = "claude"): string {
+  const configured = defaultModelForRole("suborchestrator");
+  if (runtimeKindForModel(configured) === runtime) return configured;
+  return resolveModel(runtime === "codex" ? "terra" : DEFAULT_MODEL_BY_ROLE.suborchestrator);
+}
+
 export const THINKING_BUDGETS: Record<string, number> = {
   off: 0,
   low: 4000,
@@ -150,6 +178,9 @@ export const DEFAULT_THINKING_BY_ROLE: Record<AgentRole, string> = {
   tester: "high",
   researcher: "high",
   suborchestrator: "max",
+  // Cursor manages its own reasoning; Charm's thinking budget is not applied to
+  // the Cursor adapter. Present only to satisfy the per-role record.
+  cursor: "off",
 };
 
 export function defaultThinkingTokens(): number {

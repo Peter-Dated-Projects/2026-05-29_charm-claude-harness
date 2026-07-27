@@ -65,7 +65,7 @@ program
   .option("-s, --session <name>", "tmux session (default: derived from the project dir)")
   .option(
     "-m, --model <model>",
-    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-5 | sonnet-5-1m | haiku-4.5 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m | fable-5 | sol | terra | luna (or a raw claude-*/gpt-5.6-* id). Note: main always stays on Claude — a Codex fleet override applies to :so and other spawnable agents",
+    "override the model for the WHOLE fleet (main agent + every sub-agent), replacing the per-type defaults: sonnet-5 | sonnet-5-1m | haiku-4.5 | opus-4.7 | opus-4.7-1m | opus-4.8 | opus-4.8-1m | opus-5 | opus-5-1m | fable-5 | sol | terra | luna (or a raw claude-*/gpt-5.6-* id). Note: main always stays on Claude; :so/:so g also enforce their selected runtime",
   )
   .option(
     "--max-agents <n>",
@@ -166,7 +166,12 @@ program
     const child = spawn(daemonCmd!, [...daemonPrefix, "--root", paths.root, "--session", session, "--uuid", sessionId], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
-      env: { ...process.env, CHARM_MAX_AGENTS: String(maxAgents), ...(opts.model ? { CHARM_MODEL: fleetModel } : {}) },
+      env: {
+        ...process.env,
+        CHARM_MAX_AGENTS: String(maxAgents),
+        CHARM_CLI_BIN: charmCliBinEnv(),
+        ...(opts.model ? { CHARM_MODEL: fleetModel } : {}),
+      },
     });
     child.unref();
     console.log(`[charm] daemon pid=${child.pid}, log=${logFile}`);
@@ -508,6 +513,7 @@ program
           detached: true,
           env: {
             ...process.env,
+            CHARM_CLI_BIN: charmCliBinEnv(),
             ...(record.model ? { CHARM_MODEL: record.model } : {}),
             ...(record.permission_mode ? { CHARM_PERMISSION_MODE: record.permission_mode } : {}),
             ...(record.max_agents ? { CHARM_MAX_AGENTS: String(record.max_agents) } : {}),
@@ -823,12 +829,58 @@ program
   });
 
 program
-  .command("ctl <cmd>")
-  .description("internal: handle a vim-style command (`:q`, `:a`, `:so`) from the tmux key binding")
+  .command("report-model")
+  .description("internal: Claude statusLine hook — report the pane's current model to the daemon")
+  .allowExcessArguments(false)
+  .action(async () => {
+    // Invoked by Claude Code's statusLine (see runtime/adapters/claude.ts). Must
+    // be fast, never hang the statusLine, and never print to stdout (empty
+    // status line content — the pane border + Agents tab are the UI).
+    const socket = (process.env.CHARM_SOCKET ?? "").trim();
+    const agentId = (process.env.CHARM_AGENT_ID ?? "").trim();
+    if (!socket || !agentId) process.exit(0);
+
+    let raw = "";
+    try {
+      // Bound the stdin read so a hung Claude never wedges the hook.
+      raw = await Promise.race([
+        new Response(Bun.stdin).text(),
+        Bun.sleep(500).then(() => ""),
+      ]);
+    } catch {
+      process.exit(0);
+    }
+    let model = "";
+    try {
+      const payload = JSON.parse(raw) as {
+        model?: { id?: unknown; display_name?: unknown } | string;
+      };
+      if (typeof payload.model === "string") model = payload.model;
+      else if (payload.model && typeof payload.model === "object") {
+        if (typeof payload.model.id === "string") model = payload.model.id;
+        else if (typeof payload.model.display_name === "string") model = payload.model.display_name;
+      }
+    } catch {
+      process.exit(0);
+    }
+    model = model.trim();
+    if (!model || model === "<synthetic>") process.exit(0);
+
+    try {
+      await rpcCall(socket, "report_model", { agent_id: agentId, model }, { timeoutMs: 1500 });
+    } catch {
+      /* daemon gone / busy — statusLine must not surface errors */
+    }
+    process.exit(0);
+  });
+
+program
+  .command("ctl <cmd> [selector]")
+  .description("internal: handle a vim-style command (`:q`, `:a`, `:so [c|g|u]`, `:cursor`) from the tmux key binding")
   .allowExcessArguments(false)
   .option("--socket <path>", "daemon socket of the session the key was pressed in")
   .option("-s, --session <name>", "tmux session the key was pressed in")
-  .action(async (cmd: string, opts) => {
+  .action(async (cmd: string, selector: string | undefined, opts) => {
     // This runs from the `:` key binding, which passes the ACTIVE session's
     // identity via tmux format expansion (--socket #{@charm_socket}, --session
     // #{session_name}). So a `:q` always targets the session it was pressed in —
@@ -854,14 +906,46 @@ program
       if (session) spawn("tmux", ["detach-client", "-s", session], { stdio: "ignore" });
       return;
     }
+    // Spawn a Cursor specialist pane: an interactive, operator-only Cursor CLI
+    // session in the grid for fast research/navigation. Unlike `:so`, it is NOT
+    // a fleet citizen — no Charm MCP, no tickets, no orchestration. Reachable as
+    // `:cursor` or `:so u` (see below). Opens and focuses the new pane.
+    const CURSOR_ALIASES = new Set(["cursor"]);
+    if (CURSOR_ALIASES.has(c)) {
+      if (socket) {
+        try { await rpcCall(socket, "spawn_cursor", {}); return; }
+        catch { /* daemon gone — fall through */ }
+      }
+      spawn("tmux", ["display-message", `charm: cannot spawn cursor (no daemon)`], { stdio: "ignore" });
+      return;
+    }
     // Spawn a suborchestrator: an interactive, operator-facing agent in its own
     // tmux window that has orchestrator-level MCP permissions. Useful when the
     // operator wants to delegate sub-tasks, query the fleet, or run parallel work
     // while the main orchestrator continues. Opens the new window immediately.
+    // `:so u` is a shorthand for the Cursor specialist pane (u = cUrsor),
+    // routed to spawn_cursor instead of spawn_suborchestrator.
     const SO_ALIASES = new Set(["so", "sub", "suborchestrator"]);
     if (SO_ALIASES.has(c)) {
+      const choice = selector?.trim().toLowerCase() || "c";
+      if (choice === "u" || choice === "cursor") {
+        if (socket) {
+          try { await rpcCall(socket, "spawn_cursor", {}); return; }
+          catch { /* daemon gone — fall through */ }
+        }
+        spawn("tmux", ["display-message", `charm: cannot spawn cursor (no daemon)`], { stdio: "ignore" });
+        return;
+      }
+      const runtime =
+        choice === "c" || choice === "claude" ? "claude"
+          : choice === "g" || choice === "gpt" ? "codex"
+            : null;
+      if (!runtime) {
+        spawn("tmux", ["display-message", "usage: :so [c|g|u] (c = Claude, g = GPT, u = Cursor)"], { stdio: "ignore" });
+        return;
+      }
       if (socket) {
-        try { await rpcCall(socket, "spawn_suborchestrator"); return; }
+        try { await rpcCall(socket, "spawn_suborchestrator", { runtime }); return; }
         catch { /* daemon gone — fall through */ }
       }
       spawn("tmux", ["display-message", `charm: cannot spawn suborchestrator (no daemon)`], { stdio: "ignore" });
@@ -1457,6 +1541,13 @@ function isCompiled(): boolean {
   const url = typeof import.meta.url === "string" ? import.meta.url : "";
   // macOS/Linux use "/$bunfs/"; Windows standalone binaries use "B:/~BUN/".
   return url.includes("/$bunfs/") || url.includes("/~BUN/");
+}
+
+/** Value for CHARM_CLI_BIN so daemon-spawned Claude statusLine hooks can invoke
+ *  `charm report-model` against this same CLI (compiled binary or bun+source). */
+function charmCliBinEnv(): string {
+  if (isCompiled()) return process.execPath;
+  return `${process.execPath} run ${fileURLToPath(import.meta.url)}`;
 }
 
 /** argv used to launch one of charm's sibling processes (daemon or console).

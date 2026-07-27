@@ -1,10 +1,11 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentRuntime, LaunchContext } from "../types.ts";
 import { shellQuote } from "../shell.ts";
 import { prettyModel } from "../models.ts";
+import { resolveCharmCliArgv } from "../charm-cli.ts";
 
 export const PERMISSION_MODES = [
   "auto",
@@ -41,6 +42,32 @@ export function ensureClaudeDirectoryTrusted(dir: string): void {
   writeFileSync(claudeJson, JSON.stringify(data, null, 2) + "\n");
 }
 
+/**
+ * Write a per-agent Claude settings file that only installs Charm's statusLine
+ * reporter. Passed via `claude --settings` so it does not rewrite the project
+ * `.claude/settings.json`. refreshInterval keeps the pane border in sync when
+ * the operator runs `/model` without waiting for the next assistant turn.
+ */
+export function writeClaudeAgentSettings(pathsRunDir: string, agentId: string): string {
+  const dir = join(pathsRunDir, "agent-settings");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${agentId}.json`);
+  const cli = resolveCharmCliArgv();
+  const command = [...cli, "report-model"].map(shellQuote).join(" ");
+  const settings = {
+    statusLine: {
+      type: "command",
+      command,
+      // Event triggers alone miss mid-session /model switches until the next
+      // assistant message; a short interval keeps the border/console current.
+      refreshInterval: 2,
+      padding: 0,
+    },
+  };
+  writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
+  return file;
+}
+
 export class ClaudeRuntime implements AgentRuntime {
   readonly kind = "claude" as const;
 
@@ -68,6 +95,9 @@ export class ClaudeRuntime implements AgentRuntime {
     flags.push("--permission-mode", shellQuote(defaultPermissionMode()));
     flags.push("--dangerously-skip-permissions");
     flags.push("--mcp-config", shellQuote(paths.sessionMcpConfig));
+
+    const settingsFile = writeClaudeAgentSettings(paths.runDir, agentId);
+    flags.push("--settings", shellQuote(settingsFile));
 
     const disallowedTools = ["Agent", "Task"];
     // Workflow stays enabled by default so Charm matches Claude Code's

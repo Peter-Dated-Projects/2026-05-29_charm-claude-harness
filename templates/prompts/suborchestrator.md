@@ -35,7 +35,7 @@ Each spawn tool has a role default (workers/investigators → Claude Opus; teste
 |---|---|---|
 | `sonnet` | Claude | Sonnet 5; supports `context_1m` |
 | `haiku` | Claude | Haiku 4.5 |
-| `opus` | Claude | Opus 4.8; supports `context_1m` |
+| `opus` | Claude | Opus 5; supports `context_1m` |
 | `sol` | Codex | GPT-5.6 Sol |
 | `terra` | Codex | GPT-5.6 Terra |
 | `luna` | Codex | GPT-5.6 Luna |

@@ -60,7 +60,13 @@ export const Ticket = z.object({
 });
 export type Ticket = z.infer<typeof Ticket>;
 
-export const AgentRole = z.enum(["main", "investigator", "worker", "tester", "researcher", "suborchestrator"]);
+// `cursor` is an operator-only specialist pane (`:cursor` / `:so u`): a bare
+// Cursor CLI session in the grid for fast research/navigation. It is a grid
+// citizen for UX (registry entry, pane, counts toward --max-agents, killable)
+// but NOT a fleet citizen — no Charm MCP, no tickets, no spawn/orchestration
+// permissions, no report_status contract. Kept distinct from `suborchestrator`
+// so those permissions and prompts stay clean.
+export const AgentRole = z.enum(["main", "investigator", "worker", "tester", "researcher", "suborchestrator", "cursor"]);
 export type AgentRole = z.infer<typeof AgentRole>;
 
 export const AgentState = z.enum(["spawning", "running", "blocked", "done", "failed"]);
@@ -98,6 +104,11 @@ export const Agent = z.object({
   pane_id: z.string().nullable(),
   pid: z.number().nullable(),
   state: AgentState,
+  // Live model id for UI (pane border + Agents tab). Seeded at spawn from the
+  // launch model; Claude panes refresh it via the statusLine -> report_model
+  // path when the operator switches models mid-session (e.g. /model opus).
+  // Null when unknown (legacy records, or a runtime that does not report).
+  model: z.string().nullable().default(null),
   started_at: z.number(),
 });
 export type Agent = z.infer<typeof Agent>;

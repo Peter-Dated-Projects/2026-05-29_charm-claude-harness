@@ -194,21 +194,26 @@ From source, no install:
 `start --project` opens a tmux session: the console on the left, the main agent on the right. Watch
 investigators gather context, let the orchestrator synthesize their findings into a
 worker-ticket plan, approve that plan, and watch workers fan out. Inside the session, the
-`:` key opens a command prompt — `:q` quits the charm, `:a` detaches, `:so` spawns a
-suborchestrator.
+`:` key opens a command prompt — `:q` quits the charm, `:a` detaches, and `:so`
+spawns a Claude Sonnet suborchestrator. Use `:so g` for GPT Terra (`:so c` is the
+explicit Claude form). `:cursor` (or `:so u`) opens an operator-only Cursor
+specialist pane — a bare Cursor CLI session for fast research/navigation that
+joins the grid but is not a fleet subagent (no Charm MCP, tickets, or coordination).
 
 Each agent runs on a model chosen by its type (coding/investigation on Opus, review/research
 on Sonnet by default). Override the whole fleet with `-m`, or spawn Codex GPT-5.6 workers with
 `sol` / `terra` / `luna` on `spawn_*`:
 
 ```sh
-./charm.sh start -m opus-4.8 --project  # Claude fleet on one model, overriding the per-type defaults
+./charm.sh start -m opus-5 --project  # Claude fleet on one model, overriding the per-type defaults
 # from the orchestrator: spawn_workers({ ticket_ids: [...], model: "sol" })  # Codex GPT-5.6 Sol
 ```
 
 Agent CLIs sit behind a hexagonal runtime port (`src/runtime/`): Claude Code hosts the main
-orchestrator by default; `:so` defaults to Codex terra; workers/investigators/etc. can opt
-into Codex via `sol` / `terra` / `luna` on `spawn_*`.
+orchestrator, and `:so` defaults to Claude Sonnet (`:so g` selects Codex Terra).
+Workers/investigators/etc. can opt into Codex via `sol` / `terra` / `luna` on `spawn_*`.
+The Cursor CLI is a third runtime, used only for the operator's `:cursor` pane — never for
+fleet subagents.
 
 Install globally (build + place binaries and templates on PATH at `~/.local/bin`, and
 install the `charm:*` Claude Code skills plugin into `~/.claude/skills/charm/`):

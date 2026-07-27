@@ -6,7 +6,7 @@
 #   ./charm.sh init [--root PATH]
 #   ./charm.sh start --project             (pick/create a brief; run the pipeline)
 #   ./charm.sh start --project my-slug     (anchor to an existing brief)
-#   ./charm.sh start -m opus-4.8 --project (override the whole fleet's model)
+#   ./charm.sh start -m opus-5 --project (override the whole fleet's model)
 #   ./charm.sh start                       (plain Claude window, no pipeline)
 #   ./charm.sh status
 #   ./charm.sh approve <gate_id> [--reject]

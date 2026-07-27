@@ -96,7 +96,7 @@ self-scoped — never another agent's ticket. At least one of `status`/`stage` m
 ## Fan-out
 
 Each spawn tool runs its agent on a model chosen by the work type: coding (`spawn_workers`) =
-Opus 4.8 / 1M ctx, investigation (`spawn_investigators`) = Opus 4.8, review (`request_review`)
+Opus 5 / 1M ctx, investigation (`spawn_investigators`) = Opus 5, review (`request_review`)
 = Sonnet 4.6, research (`spawn_researchers`) = Sonnet 4.6 / 1M ctx. Override per role with the
 `CHARM_MODEL_<ROLE>` env var, or the whole fleet with `charm start -m`. The orchestrator can also
 override a single spawn by passing `model` (`sonnet`/`haiku`/`opus`) and `context_1m` (default
@@ -114,7 +114,7 @@ read-only on code and resumable: a blocked investigator waits in its pane for `c
 |---|---|---|---|
 | `ticket_ids` | string[] | yes | One investigation ticket per agent. |
 | `worktree` | string | no | Plain name of an already-open worktree (from `create_worktree`) to run the agents in. Omit for the default shared tree. |
-| `model` | `sonnet` \| `haiku` \| `opus` | no | Model family for this batch — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 4.8). Omit to use the role default. |
+| `model` | `sonnet` \| `haiku` \| `opus` | no | Model family for this batch — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 5). Omit to use the role default. |
 | `context_1m` | boolean | no (default `true`) | Use the 1M-token context window. Only applies when `model` is set; ignored for Haiku (no 1M variant). |
 
 ### `spawn_workers`
@@ -129,7 +129,7 @@ them) rather than retry.
 |---|---|---|---|
 | `ticket_ids` | string[] | yes | One implementation ticket per agent. |
 | `worktree` | string | no | Plain name of an already-open worktree (from `create_worktree`) to run every worker in this batch in. Omit for the default shared tree. |
-| `model` | `sonnet` \| `haiku` \| `opus` | no | Model family for this batch — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 4.8). Omit to use the role default. |
+| `model` | `sonnet` \| `haiku` \| `opus` | no | Model family for this batch — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 5). Omit to use the role default. |
 | `context_1m` | boolean | no (default `true`) | Use the 1M-token context window. Only applies when `model` is set; ignored for Haiku (no 1M variant). |
 
 ### `spawn_researchers`
@@ -143,7 +143,7 @@ gated by the pipeline; usable in any stage. Resumable like investigators.
 |---|---|---|---|
 | `prompts` | string[] (min 1, each non-empty) | yes | One research question per agent. |
 | `worktree` | string | no | Plain name of an already-open worktree (from `create_worktree`) to run every researcher in this batch in. Omit for the default shared tree. |
-| `model` | `sonnet` \| `haiku` \| `opus` | no | Model family for this batch — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 4.8). Omit to use the role default. |
+| `model` | `sonnet` \| `haiku` \| `opus` | no | Model family for this batch — `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 5). Omit to use the role default. |
 | `context_1m` | boolean | no (default `true`) | Use the 1M-token context window. Only applies when `model` is set; ignored for Haiku (no 1M variant). |
 
 ### `request_review`

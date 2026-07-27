@@ -141,3 +141,18 @@ test("remove() frees the claim and forgets the claude session", () => {
   expect(registry.list()).toEqual([]);
   expect(registry.claudeSessionId(agent.id)).toBeUndefined();
 });
+
+test("registry records and updates live model", () => {
+  const registry = new AgentRegistry();
+  const agent = registry.create({
+    role: "suborchestrator",
+    ticket_id: null,
+    model: "claude-sonnet-5[1m]",
+  });
+  expect(agent.model).toBe("claude-sonnet-5[1m]");
+  const first = registry.setModel(agent.id, "claude-opus-5");
+  expect(first.changed).toBe(true);
+  expect(first.agent.model).toBe("claude-opus-5");
+  const second = registry.setModel(agent.id, "claude-opus-5");
+  expect(second.changed).toBe(false);
+});

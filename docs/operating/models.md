@@ -4,19 +4,22 @@ Each agent charm spawns runs on a model chosen by its **type** — the kind of w
 There is no fleet-wide "mode" to pick; the per-type defaults below apply out of the box, and
 you only reach for an override when you want something other than the default.
 
-Charm hosts agents on two runtimes behind a hexagonal port (`src/runtime/`):
+Charm hosts agents on three runtimes behind a hexagonal port (`src/runtime/`):
 
 - **Claude Code** (`claude`) — default for most roles; required for the main orchestrator
-- **Codex CLI** (`codex`) — default for `:so` (terra); also available when a spawn picks `sol` / `terra` / `luna`
+- **Codex CLI** (`codex`) — selected for suborchestrators with `:so g` (terra); also available when a spawn picks `sol` / `terra` / `luna`
+- **Cursor CLI** (`cursor`) — the operator-only Cursor specialist pane (`:cursor` / `:so u`). Launched bare (workspace trust only) with Cursor's own default model. It is **not** wired to Charm MCP, prompts, tickets, or coordination — it is a grid pane for the human, not a fleet subagent, and is not spawnable through the Charm MCP tools.
 
 ## Per-type model defaults
 
 | Agent | Spawned by | Model | Runtime | Context |
 |---|---|---|---|---|
 | Orchestrator (main) | `charm start` | `sonnet-5` | Claude | **1M** |
-| Suborchestrator | `:so` | `terra` (GPT-5.6) | Codex | — |
-| Investigator | `spawn_investigators` | `opus-4.8` | Claude | 200K |
-| Worker (coding) | `spawn_workers` | `opus-4.8` | Claude | **1M** |
+| Suborchestrator | `:so` / `:so c` | `sonnet-5` | Claude | **1M** |
+| Suborchestrator | `:so g` | `terra` (GPT-5.6) | Codex | — |
+| Cursor specialist | `:cursor` / `:so u` | Cursor default | Cursor | — |
+| Investigator | `spawn_investigators` | `opus-5` | Claude | 200K |
+| Worker (coding) | `spawn_workers` | `opus-5` | Claude | **1M** |
 | Tester (review) | `request_review` | `sonnet-5` | Claude | 200K |
 | Researcher | `spawn_researchers` | `sonnet-5` | Claude | **1M** |
 
@@ -35,7 +38,7 @@ The orchestrator can override the model for a single `spawn_*` / `request_review
 vars, no restart — by passing two optional params:
 
 - `model`: the family —
-  - Claude: `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 4.8)
+  - Claude: `sonnet` (Sonnet 5), `haiku` (Haiku 4.5), `opus` (Opus 5)
   - Codex: `sol`, `terra`, `luna` (all GPT-5.6)
   Omit it to keep the role's default (Claude).
 - `context_1m`: use the 1M-token window (default `true`, the preferred window). Only applies when
@@ -43,7 +46,8 @@ vars, no restart — by passing two optional params:
 
 Picking `sol` / `terra` / `luna` routes that agent through the Codex adapter (same Charm MCP
 tools, unattended permissions, instruction injection, native subagent tools disabled). The
-main orchestrator always stays on Claude. `:so` defaults to Codex terra.
+main orchestrator always stays on Claude. `:so` defaults to Claude Sonnet; `:so g`
+selects Codex Terra.
 
 ### Fleet / role (operator)
 
@@ -56,12 +60,12 @@ Two operator-level overrides, highest precedence first:
    ```
 
 2. **Whole fleet**, via `-m, --model <model>` on `charm start` — replaces the per-type defaults
-   for spawnable agents including `:so`. Main still resolves to its Claude default if the
-   override is a Codex model:
+   for spawnable agents. For `:so`, the command's runtime selection wins, but a same-runtime
+   override still changes its model. Main always resolves to a Claude model:
 
    ```sh
-   charm start -m opus-4.8 --project   # Claude fleet on Opus 4.8
-   charm start -m sol --project        # Codex Sol for :so + sub-agents; main stays Claude
+   charm start -m opus-5 --project   # Claude fleet on Opus 5
+   charm start -m sol --project        # Codex Sol for :so g + sub-agents; bare :so stays Claude
    ```
 
 Accepted `<model>` values:
@@ -71,6 +75,7 @@ sonnet-5   sonnet-5-1m
 haiku-4.5
 opus-4.7   opus-4.7-1m
 opus-4.8   opus-4.8-1m
+opus-5     opus-5-1m
 fable-5
 sol        terra        luna          # Codex GPT-5.6 (aliases: sol-5.6, terra-5.6, luna-5.6)
 ```
@@ -86,4 +91,7 @@ that offer one.
   Codex: isolated per-agent `CODEX_HOME` under the session run dir).
 - Claude's built-in Workflow tool stays enabled by default (`CHARM_WORKFLOW_ENABLE=0` opts out).
   Codex native multi-agent / `spawn_agent` tools are disabled so Charm MCP owns fan-out.
-- See `src/runtime/` for the port (`AgentRuntime`) and the Claude / Codex adapters.
+- Claude panes report their live model via a per-agent `statusLine` hook (`charm report-model`),
+  so mid-session `/model` switches update the tmux pane border and the Agents console within a
+  couple of seconds. Codex/Cursor panes keep the model stamped at spawn.
+- See `src/runtime/` for the port (`AgentRuntime`) and the Claude / Codex / Cursor adapters.

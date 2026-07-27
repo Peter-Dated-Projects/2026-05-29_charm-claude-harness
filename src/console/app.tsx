@@ -8,6 +8,7 @@ import { charmPaths } from "../paths.ts";
 import { readBrief } from "../store/briefs.ts";
 import { rpcCall } from "../daemon/rpc.ts";
 import type { ApprovalGate, Agent, TicketFrontmatter } from "../schema.ts";
+import { prettyModel } from "../runtime/models.ts";
 
 type Tab = "approvals" | "agents";
 
@@ -220,6 +221,7 @@ function AgentsTab({ status, inputActive }: { status: Status; inputActive: boole
         return (
           <Text key={a.id} color={color} bold={i === idx} wrap="truncate-end">
             {i === idx ? "▶ " : "  "}{a.role} {a.id} — {stateLabel}
+            {a.model ? ` · ${prettyModel(a.model)}` : ""}
             {a.ticket_id ? ` · ${a.ticket_id}` : ""}
             {a.pane_id ? ` · ${a.pane_id}` : ""}
             {badge}
@@ -272,7 +274,7 @@ function App() {
         <Text inverse={tab === "approvals"} wrap="truncate-end"> 1·Approvals{pendingCount ? ` (${pendingCount})` : ""} </Text>
         <Text> </Text>
         <Text inverse={tab === "agents"} wrap="truncate-end"> 2·Agents{finishedCount ? ` (${finishedCount} done)` : ""} </Text>
-        <Text dimColor wrap="truncate-end">   ·  tab to switch · :q quit · :a detach · :sub suborchestrator</Text>
+        <Text dimColor wrap="truncate-end">   ·  tab to switch · :q quit · :a detach · :so [c|g] suborchestrator · :cursor Cursor pane</Text>
       </Box>
       {tab === "approvals"
         ? <ApprovalsTab status={status} inputActive={true} />

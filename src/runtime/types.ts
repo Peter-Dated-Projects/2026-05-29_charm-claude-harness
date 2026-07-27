@@ -1,8 +1,14 @@
 import type { AgentRole } from "../schema.ts";
 import type { CharmPaths } from "../paths.ts";
 
-/** Which coding-agent CLI hosts a Charm pane. */
-export type RuntimeKind = "claude" | "codex";
+/**
+ * Which coding-agent CLI hosts a Charm pane.
+ *
+ * `cursor` is an operator-only specialist runtime: it launches the Cursor CLI
+ * bare (workspace trust only) and is deliberately NOT wired to Charm MCP,
+ * prompts, tickets, or fleet coordination. See `adapters/cursor.ts`.
+ */
+export type RuntimeKind = "claude" | "codex" | "cursor";
 
 /**
  * Provider-agnostic launch request. Adapters turn this into a shell command that
@@ -14,7 +20,7 @@ export type LaunchSpec = {
   ticket_id: string | null;
   prompt: string;
   interactive: boolean;
-  /** Concrete model id after alias resolution (e.g. claude-opus-4-8[1m], gpt-5.6-sol). */
+  /** Concrete model id after alias resolution (e.g. claude-opus-5[1m], gpt-5.6-sol). */
   model?: string;
   /** Force a runtime regardless of model id. Used to pin main on Claude. */
   runtime?: RuntimeKind;

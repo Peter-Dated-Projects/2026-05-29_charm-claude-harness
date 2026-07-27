@@ -44,7 +44,7 @@ charm start [options]
 | Option | Effect |
 |---|---|
 | `-p, --project [slug]` | anchor to a project brief under `.charm/project-briefs/`; bare `--project` opens a picker, `--project <slug>` selects one directly |
-| `-m, --model <model>` | override the model for the **whole** fleet (main agent + every sub-agent), replacing the per-type defaults. Accepts `sonnet-5`, `sonnet-5-1m`, `haiku-4.5`, `opus-4.7`, `opus-4.7-1m`, `opus-4.8`, `opus-4.8-1m`, `fable-5`, or a raw `claude-*` id |
+| `-m, --model <model>` | override the model for the **whole** fleet (main agent + every sub-agent), replacing the per-type defaults. Accepts `sonnet-5`, `sonnet-5-1m`, `haiku-4.5`, `opus-4.7`, `opus-4.7-1m`, `opus-4.8`, `opus-4.8-1m`, `opus-5`, `opus-5-1m`, `fable-5`, or a raw `claude-*` id |
 | `--max-agents <n>` | max concurrent agent sessions **including** the orchestrator (so `n=10` allows the orchestrator plus 9 sub-agents). Default `10` |
 | `--no-attach` | do not auto-attach to the tmux session |
 | `-s, --session <name>` | name the tmux session (default: derived from the project dir) |
@@ -125,6 +125,6 @@ charm reset-kb [-r <path>]
 
 These exist for charm's own plumbing and are not part of the normal operator workflow:
 
-- `ctl <cmd>` — handles a vim-style command (`:q`, `:a`, `:so`) sent from a
+- `ctl <cmd> [selector]` — handles a vim-style command (`:q`, `:a`, `:so [c|g|u]`, `:cursor`) sent from a
   tmux key binding. You trigger these through the keybindings, not by typing `ctl`.
 - `session-name` — prints a session's tmux name for a root; used by `charm.sh`.

@@ -73,8 +73,8 @@ Each spawn tool has a role default. Omit `model` to keep that default; pass `mod
 
 | Tool | Agent | Default model |
 |---|---|---|
-| `spawn_workers` | worker (coding) | Claude Opus 4.8, 1M context |
-| `spawn_investigators` | investigator | Claude Opus 4.8 |
+| `spawn_workers` | worker (coding) | Claude Opus 5, 1M context |
+| `spawn_investigators` | investigator | Claude Opus 5 |
 | `request_review` | tester (review) | Claude Sonnet 5 |
 | `spawn_researchers` | researcher | Claude Sonnet 5, 1M context |
 
@@ -86,7 +86,7 @@ Pass one of these family names as `model=` on a spawn tool:
 |---|---|---|
 | `sonnet` | Claude Code | Claude Sonnet 5 (supports `context_1m`) |
 | `haiku` | Claude Code | Claude Haiku 4.5 (no 1M window) |
-| `opus` | Claude Code | Claude Opus 4.8 (supports `context_1m`) |
+| `opus` | Claude Code | Claude Opus 5 (supports `context_1m`) |
 | `sol` | Codex CLI | GPT-5.6 Sol |
 | `terra` | Codex CLI | GPT-5.6 Terra |
 | `luna` | Codex CLI | GPT-5.6 Luna |

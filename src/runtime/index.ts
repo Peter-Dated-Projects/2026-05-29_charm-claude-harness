@@ -7,6 +7,7 @@ import type { AgentRuntime, LaunchSpec, RuntimeKind } from "./types.ts";
 import { assembleInstructions } from "./prompt.ts";
 import {
   defaultModelForRole,
+  suborchestratorModelForRuntime,
   defaultThinkingForRole,
   prettyModel,
   reasoningEffortForRole,
@@ -15,6 +16,7 @@ import {
 } from "./models.ts";
 import { ClaudeRuntime } from "./adapters/claude.ts";
 import { CodexRuntime } from "./adapters/codex.ts";
+import { CursorRuntime } from "./adapters/cursor.ts";
 
 export type { LaunchSpec, RuntimeKind, AgentRuntime, LaunchContext } from "./types.ts";
 export {
@@ -26,6 +28,7 @@ export {
   resolveModel,
   resolveSpawnModel,
   defaultModelForRole,
+  suborchestratorModelForRuntime,
   defaultThinkingForRole,
   defaultThinkingTokens,
   reasoningEffortForRole,
@@ -43,16 +46,19 @@ export {
 
 const claudeRuntime = new ClaudeRuntime();
 const codexRuntime = new CodexRuntime();
+const cursorRuntime = new CursorRuntime();
 
 export function getRuntime(kind: RuntimeKind): AgentRuntime {
-  return kind === "codex" ? codexRuntime : claudeRuntime;
+  if (kind === "codex") return codexRuntime;
+  if (kind === "cursor") return cursorRuntime;
+  return claudeRuntime;
 }
 
 /**
  * Build the shell command that the tmux pane will run.
  *
  * Hexagonal entry: assemble shared instructions, pick the runtime adapter from
- * the resolved model (main is forced onto Claude; `:so` defaults to Codex terra),
+ * the resolved model (main is forced onto Claude; `:so` defaults to Claude Sonnet),
  * write the instructions file, and let the adapter produce the CLI invocation.
  */
 export function buildAgentCommand(paths: CharmPaths, agentId: string, spec: LaunchSpec): string {
@@ -75,6 +81,9 @@ export function buildAgentCommand(paths: CharmPaths, agentId: string, spec: Laun
   const isOrchestratorRole = resolved.role === "main" || resolved.role === "suborchestrator";
   const persistHistory =
     isOrchestratorRole ||
+    // The Cursor specialist pane is operator-facing like `:so`; keep its history
+    // (the Cursor adapter ignores this flag, but the intent is the same).
+    resolved.role === "cursor" ||
     !!resolved.plain ||
     process.env.CHARM_SAVE_SUBAGENT_HISTORY === "1";
 

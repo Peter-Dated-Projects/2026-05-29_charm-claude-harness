@@ -47,6 +47,8 @@ export class AgentRegistry {
     goal?: string;
     parent_id?: string | null;
     claude_session_id?: string;
+    /** Launch model id (raw CLI id or alias). Null when unknown. */
+    model?: string | null;
   }): Agent {
     this.seq += 1;
     const id = `${opts.role}-${String(this.seq).padStart(3, "0")}`;
@@ -67,6 +69,7 @@ export class AgentRegistry {
       pane_id: null,
       pid: null,
       state: "spawning",
+      model: opts.model?.trim() ? opts.model.trim() : null,
       started_at: Date.now(),
     };
     this.agents.set(id, agent);
@@ -106,6 +109,16 @@ export class AgentRegistry {
     const a = this.require(id);
     a.worktree_name = name;
     return a;
+  }
+
+  /** Update the live model id shown in the Agents tab / pane border. Returns
+   *  whether the stored value changed (callers skip tmux stamps when false). */
+  setModel(id: string, model: string | null): { agent: Agent; changed: boolean } {
+    const a = this.require(id);
+    const next = model?.trim() ? model.trim() : null;
+    const changed = a.model !== next;
+    if (changed) a.model = next;
+    return { agent: a, changed };
   }
 
   get(id: string): Agent | undefined {

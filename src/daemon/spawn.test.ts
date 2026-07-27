@@ -76,12 +76,12 @@ test("a plain human window keeps its transcript", () => {
  */
 test("resolveSpawnModel defaults to the 1M window for families that support it", () => {
   expect(resolveSpawnModel("sonnet")).toBe("claude-sonnet-5[1m]");
-  expect(resolveSpawnModel("opus")).toBe("claude-opus-4-8[1m]");
+  expect(resolveSpawnModel("opus")).toBe("claude-opus-5[1m]");
 });
 
 test("resolveSpawnModel drops the 1M window when context1m is false", () => {
   expect(resolveSpawnModel("sonnet", false)).toBe("claude-sonnet-5");
-  expect(resolveSpawnModel("opus", false)).toBe("claude-opus-4-8");
+  expect(resolveSpawnModel("opus", false)).toBe("claude-opus-5");
 });
 
 test("resolveSpawnModel never appends [1m] to a family without a 1M window", () => {
