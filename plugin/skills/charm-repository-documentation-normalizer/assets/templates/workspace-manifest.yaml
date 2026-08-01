@@ -1,0 +1,10 @@
+version: 1
+scope: REPLACE_WITH_WORKSPACE_PATH
+parent: docs/repository/manifest.yaml
+documents:
+  - id: REPLACE_WITH_WORKSPACE.index
+    path: REPLACE_WITH_WORKSPACE_DOCS_PATH/index.md
+    kind: index
+    summary: Workspace ownership and navigation
+    load_when:
+      - changing this workspace

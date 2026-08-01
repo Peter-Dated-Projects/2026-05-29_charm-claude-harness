@@ -1,0 +1,21 @@
+version: 1
+scope: repository
+documentation_root: docs/repository
+access:
+  default_budget_tokens: 2500
+  architecture_task_budget_tokens: 6000
+  require_reason_for_overage: true
+documents:
+  - id: repository.index
+    path: docs/repository/index.md
+    kind: index
+    summary: Repository orientation and access gate
+    load_when:
+      - beginning a non-localized change
+  - id: repository.agent-policy
+    path: docs/repository/agent-policy.md
+    kind: policy
+    summary: Tool-neutral rules for how agents change this repository
+    load_when:
+      - making a substantive code change
+workspaces: []

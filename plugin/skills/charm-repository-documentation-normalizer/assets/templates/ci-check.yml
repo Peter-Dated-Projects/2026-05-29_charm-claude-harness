@@ -1,0 +1,14 @@
+name: Repository documentation
+
+on:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate normalized documentation
+        run: python3 .charm-docs/validate_docs.py --root . --changed --base origin/${{ github.base_ref }} --require-adapters

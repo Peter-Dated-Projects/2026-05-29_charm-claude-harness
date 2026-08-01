@@ -1,0 +1,4 @@
+interface:
+  display_name: "Charm Repository Documentation Normalizer"
+  short_description: "Normalize repository documentation"
+  default_prompt: "Bootstrap or refresh lean repository documentation and agent adapters."
