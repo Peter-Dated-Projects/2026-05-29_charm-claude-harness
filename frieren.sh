@@ -258,7 +258,15 @@ cmd_install() {
     verify_claude_plugin_installed
 
     echo "==> Installed: charm, ${INSTALL_BINS[*]} -> $bindir"
-    echo "    Claude skills: charm:charm-planning, charm:charm-write-project-brief, charm:charm-update-project-brief, charm:charm-restart, charm:charm-reset-kb (next Claude session)"
+    # Enumerate what actually landed rather than restating a hardcoded list — a
+    # literal here silently goes stale every time a skill is added to plugin/skills/.
+    installed_skills=""
+    for skill_dir in "$CLAUDE_PLUGIN_DIR"/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        installed_skills="${installed_skills:+$installed_skills, }charm:$skill_name"
+    done
+    echo "    Claude skills: ${installed_skills:-none found} (next Claude session)"
     case ":$PATH:" in
         *":$bindir:"*)
             echo "    $bindir is on PATH. Run 'charm --help' to verify, then 'charm start --project'."
