@@ -1,5 +1,26 @@
 # Commit conventions
 
+## Branching: main only
+
+This repo commits **directly to `main`**. Do not open a feature branch for ordinary work,
+and do not merge one in — a merge bubble for a change that could have been three commits on
+`main` makes the log harder to read, not safer.
+
+History stays linear. If you have already committed on a branch, rebase or reset it onto
+`main` rather than merging, so the result is the same sequence of commits you would have
+made directly.
+
+Two exceptions, both machine-driven rather than chosen: charm session worktrees under
+`~/.charm-worktrees/` and `.charm/worktrees/` are real branches by construction, and they
+merge back deliberately. Long-lived spikes that are not meant to land (a platform port, an
+app rewrite) may also sit on their own branch. Neither is a reason to branch for a normal
+change.
+
+Because there is no PR gate, the commit is the review surface. Split changes so each commit
+is separately reviewable and separately revertable.
+
+## Message format
+
 Every commit message in this repo starts with a typed scope:
 
 ```text
