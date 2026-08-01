@@ -24,6 +24,7 @@ These docs are organized by what you are trying to do.
 - [Build](developing/build.md) — the build matrix: host-arch builds, cross-compiling, universal binaries, packaging, Gatekeeper.
 - [Knowledge base design](developing/knowledge-base.md) — the durable, git-tracked `.charm/kb/` cross-session memory: layout and schema.
 - [Preflight](developing/preflight.md) — a repeatable smoke test that exercises every built-in feature of the harness.
+- [Commit conventions](developing/commit-conventions.md) — the `<area>(<scope>): <subject>` message format and the area list.
 
 ## Design notes (the thinking behind the harness)
 
