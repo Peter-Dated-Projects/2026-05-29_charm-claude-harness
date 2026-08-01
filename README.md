@@ -223,12 +223,34 @@ install the `charm:*` Claude Code skills plugin into `~/.claude/skills/charm/`):
 charm init && charm start --project
 ```
 
-The plugin ships the charm skills — `charm:charm-planning` (generate a stacked-PR handoff
-brief, charm sessions only), `charm:charm-restart`, and `charm:charm-reset-kb`. Its canonical
-source is `plugin/` in this repo and these skills live nowhere else; `install` overwrites the
-installed copy each run, so it's always the latest. The orchestrator invokes the operator skills
-straight from the plugin — they are no longer copied into a project's `.charm/skills/`. New skills
-are picked up in your next Claude session (or `/reload-plugins`).
+The plugin ships the `charm:*` skills, in two groups.
+
+**Session operations** — act on a running charm session's state:
+
+| Skill | Does |
+| --- | --- |
+| `charm:charm-planning` | generate a stacked-PR handoff brief (charm sessions only) |
+| `charm:charm-write-project-brief` | author a new `.charm/project-briefs/<slug>.md` |
+| `charm:charm-update-project-brief` | refresh that brief after a session's work |
+| `charm:charm-restart` | reset the ticket backlog; daemon, KB, and session stay up |
+| `charm:charm-reset-kb` | **destructive** — wipe `.charm/kb/` back to the template scaffold |
+
+**Repository authoring** — act on a repo's own structure and docs, and work in any
+project whether or not a charm session is running:
+
+| Skill | Does |
+| --- | --- |
+| `charm:charm-repository-structure-init` | run `charm init`, then scaffold `docs/planning/` (PLAN → PRJ-NNN → TDD-NNN) |
+| `charm:charm-repository-documentation-normalizer` | evidence-backed repo docs, manifests, and tool-neutral agent policy |
+| `charm:charm-feature-tdd` | draft an evidence-backed feature design document |
+| `charm:charm-tdd-design-review` | review a design doc / RFC / ADR, sized to its risk |
+| `charm:charm-frieren-setup` | build or extend a repo's `frieren.sh` entry point |
+
+The canonical source is `plugin/` in this repo and these skills live nowhere else;
+`install` overwrites the installed copy each run, so it's always the latest. The orchestrator
+invokes the operator skills straight from the plugin — they are no longer copied into a
+project's `.charm/skills/`. New skills are picked up in your next Claude session (or
+`/reload-plugins`).
 
 Panic button if a session wedges — kills every charm process machine-wide while sparing
 your other (non-charm) `claude` sessions:
@@ -255,8 +277,11 @@ src/
 templates/            prompts, kb skeleton, CHARM.md, settings — copied into a
                       project's .charm/ on init. Operator skills live in plugin/.
 plugin/               canonical Claude Code plugin (charm:* skills) — installed to
-                      ~/.claude/skills/charm/ by `frieren install`. Sole home of the
-                      charm-planning, charm-restart, and charm-reset-kb skills.
+                      ~/.claude/skills/charm/ by `frieren install`. Sole home of every
+                      charm:* skill: session operations (planning, project briefs,
+                      restart, reset-kb) and repository authoring (structure-init,
+                      documentation-normalizer, feature-tdd, tdd-design-review,
+                      frieren-setup).
 frieren.sh            project lifecycle (setup/build/test/install/kill)
 charm.sh              run-from-source wrapper (forwards to src/cli.ts)
 docs/                 full docs, organized by audience (see docs/README.md)

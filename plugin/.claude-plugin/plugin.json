@@ -1,6 +1,6 @@
 {
   "name": "charm",
-  "description": "Charm skills for Claude Code: charm-planning (generate a stacked-PR handoff brief inside a charm session); charm-write-project-brief and charm-update-project-brief (author and refresh the per-project operational briefs `charm start --project` injects); plus the charm-restart and charm-reset-kb operator skills. Installed into ~/.claude/skills/charm/ by `frieren install`; this repo's plugin/ directory is the canonical source.",
+  "description": "Charm skills for Claude Code. Session operations: charm-planning (generate a stacked-PR handoff brief inside a charm session); charm-write-project-brief and charm-update-project-brief (author and refresh the per-project operational briefs `charm start --project` injects); charm-restart and charm-reset-kb. Repository authoring: charm-repository-structure-init (run `charm init` and scaffold a repo's docs/planning/ PLAN -> PRJ -> TDD structure); charm-repository-documentation-normalizer (evidence-backed repo docs and tool-neutral agent policy); charm-feature-tdd (draft a feature design doc); charm-tdd-design-review (review one); charm-frieren-setup (build a repo's frieren.sh entry point). Installed into ~/.claude/skills/charm/ by `frieren install`; this repo's plugin/ directory is the canonical source.",
   "version": "0.1.0",
   "author": { "name": "Peter Zhang" }
 }
