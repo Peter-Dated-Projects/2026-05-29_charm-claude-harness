@@ -84,3 +84,20 @@ improvise the operation.
 | reset / wipe the knowledge base / start the kb fresh | `charm:charm-reset-kb` — **destructive**; wipes `.charm/kb/` and restores the template scaffold; double-confirm first |
 | write / author a project brief for a project | `charm:charm-write-project-brief` — interview + repo scan, then write a new `.charm/project-briefs/<slug>.md` (the standing context `charm start --project` injects) |
 | update / refresh the project brief after this session's work | `charm:charm-update-project-brief` — revise the current project's brief file in place (standing facts only; operator-owned, so surface what changed) |
+
+## Repository authoring skills
+
+Also in the plugin, but these act on the **repo's own structure and docs** rather
+than on session state, and they work with or without a running charm session. Same
+rule: invoke via the Skill tool and follow it, don't improvise.
+
+| User asks to… | Invoke |
+| --- | --- |
+| initialize a repo / scaffold `docs/planning` / set up the project + TDD planning structure | `charm:charm-repository-structure-init` — runs `charm init`, then scaffolds the PLAN → PRJ-NNN → TDD-NNN tree; structure only, authors no content |
+| bootstrap / refresh repository documentation / set up `AGENTS.md` and tool adapters | `charm:charm-repository-documentation-normalizer` |
+| design / feasibility-check a feature before coding / draft a feature TDD | `charm:charm-feature-tdd` |
+| review a design doc / RFC / ADR / tech spec | `charm:charm-tdd-design-review` — a written proposal, **not** test-driven development |
+| create or extend a repo's `frieren.sh` entry point | `charm:charm-frieren-setup` |
+
+These are operator-facing. A worker mid-ticket should not reach for one unless its
+ticket says to — scaffolding a repo's docs is not part of implementing a feature.
